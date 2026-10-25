@@ -33,18 +33,19 @@ export const VERBS = Object.freeze({
     'files.write': { reads: false, kinds: FOLDERS, needs: ['path', 'text'] },
     'files.move': { reads: false, kinds: FOLDERS, needs: ['from', 'to'] },
     'files.delete': { reads: false, kinds: FOLDERS, needs: ['path'] },
-    /* Declared, so names and rights are settled; their connector comes in a later version. */
-    'browser.tabs': { reads: true, kinds: ['browser'], needs: [], done: false },
-    'browser.open': { reads: false, kinds: ['browser'], needs: ['url'], done: false },
-    'browser.shot': { reads: true, kinds: ['browser'], needs: [], done: false },
-    'browser.html': { reads: true, kinds: ['browser'], needs: [], done: false },
-    'browser.console': { reads: true, kinds: ['browser'], needs: [], done: false },
-    'browser.eval': { reads: false, kinds: ['browser'], needs: ['script'], done: false },
-    'browser.click': { reads: false, kinds: ['browser'], needs: ['selector'], done: false },
-    'browser.type': { reads: false, kinds: ['browser'], needs: ['text'], done: false },
-    'browser.key': { reads: false, kinds: ['browser'], needs: ['key'], done: false },
-    'browser.scroll': { reads: false, kinds: ['browser'], needs: [], done: false },
-    'browser.drag': { reads: false, kinds: ['browser'], needs: ['from', 'to'], done: false },
+    /* The browser: tabs a person grants to an agent through the Tether extension.
+       Reached by the `browser` connector, which the extension connects out to. */
+    'browser.tabs': { reads: true, kinds: ['browser'], needs: [] },
+    'browser.open': { reads: false, kinds: ['browser'], needs: ['url'] },
+    'browser.shot': { reads: true, kinds: ['browser'], needs: [] },
+    'browser.html': { reads: true, kinds: ['browser'], needs: [] },
+    'browser.console': { reads: true, kinds: ['browser'], needs: [] },
+    'browser.eval': { reads: false, kinds: ['browser'], needs: ['script'] },
+    'browser.click': { reads: false, kinds: ['browser'], needs: [] },
+    'browser.type': { reads: false, kinds: ['browser'], needs: ['text'] },
+    'browser.key': { reads: false, kinds: ['browser'], needs: ['key'] },
+    'browser.scroll': { reads: false, kinds: ['browser'], needs: [] },
+    'browser.drag': { reads: false, kinds: ['browser'], needs: ['from', 'to'] },
     /* THE SCREEN OF A MACHINE, A SLOT: these verbs and their rights are settled here,
        but Tether writes no engine for them. A host plugs one in (connectors: { screen }),
        speaking a standard such as VNC/RFB; without one, a screen target says its
@@ -80,6 +81,9 @@ export function check(verb, a = {}) {
         if (s.length > max) no(`${k} is too long (${max} characters at most)`);
         out[k] = s;
     };
+    /* Which granted tab a browser verb acts on (optional: none means the agent's active one). */
+    const tab = () => { if (a.tab !== undefined && a.tab !== null && a.tab !== '') out.tab = typeof a.tab === 'number' ? Math.trunc(a.tab) : oneLine(a.tab, 100); };
+    const num = (k) => { if (a[k] !== undefined && a[k] !== null && a[k] !== '') { const n = Number(a[k]); if (Number.isFinite(n)) out[k] = Math.trunc(n); } };
     switch (verb) {
         case 'terminal.read': if (a.lines !== undefined) out.lines = Math.max(1, Math.min(2000, Math.trunc(Number(a.lines)) || 0)); break;
         case 'terminal.type': str('text', COMMAND_MAX, true); out.enter = a.enter === true; break;
@@ -92,6 +96,21 @@ export function check(verb, a = {}) {
         case 'files.search': str('path', PATH_MAX); if (!out.path) out.path = '.'; str('text', 200); break;
         case 'files.write': str('path', PATH_MAX); str('text', TEXT_MAX, true); break;
         case 'files.move': str('from', PATH_MAX); str('to', PATH_MAX); break;
+        case 'browser.tabs': break;
+        case 'browser.open': tab(); str('url', PATH_MAX); break;
+        case 'browser.shot': tab(); break;
+        case 'browser.html': tab(); str('selector', PATH_MAX); if (a.readable === true || a.readable === 'true') out.readable = true; break;
+        case 'browser.console': tab(); if (a.lines !== undefined) out.lines = Math.max(1, Math.min(1000, Math.trunc(Number(a.lines)) || 0)); break;
+        case 'browser.eval': tab(); str('script', COMMAND_MAX, true); break;
+        case 'browser.click':
+            tab(); str('selector', PATH_MAX); num('x'); num('y');
+            if (a.button) out.button = oneLine(a.button, 10);
+            if (out.selector === undefined && (out.x === undefined || out.y === undefined)) no('click needs a selector or x and y');
+            break;
+        case 'browser.type': tab(); str('text', COMMAND_MAX, true); str('selector', PATH_MAX); break;
+        case 'browser.key': tab(); str('key', 60); str('selector', PATH_MAX); break;
+        case 'browser.scroll': tab(); num('dx'); num('dy'); str('selector', PATH_MAX); break;
+        case 'browser.drag': tab(); str('from', PATH_MAX); str('to', PATH_MAX); break;
         default: for (const k of v.needs) str(k, COMMAND_MAX, true);
     }
     for (const k of v.needs) if (out[k] === undefined || out[k] === '') no(`${verb} needs ${k}`);
@@ -111,6 +130,12 @@ export function detail(verb, a = {}) {
         case 'files.list': case 'files.read': case 'files.delete': return a.path;
         case 'browser.open': return a.url;
         case 'browser.eval': return a.script;
+        case 'browser.html': return a.selector ?? '';
+        case 'browser.click': return a.selector ?? (a.x !== undefined ? `${a.x},${a.y}` : 'click');
+        case 'browser.type': return a.selector ? `${a.selector}: ${a.text}` : a.text;
+        case 'browser.key': return a.selector ? `${a.selector}: ${a.key}` : a.key;
+        case 'browser.scroll': return `${a.dx ?? 0},${a.dy ?? 0}`;
+        case 'browser.drag': return `${a.from} → ${a.to}`;
         case 'screen.move': return `${a.x},${a.y}`;
         case 'screen.click': return a.x !== undefined ? `${a.x},${a.y}` : 'click';
         case 'screen.drag': return `${a.from} → ${a.to}`;

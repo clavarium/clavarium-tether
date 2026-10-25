@@ -11,6 +11,7 @@
  *                 [--webdav-root DIR] [--webdav-title T] [--webdav-level LEVEL]]
  *                [--graph-drive ID --graph-token-env VAR
  *                 [--graph-root DIR] [--graph-title T] [--graph-level LEVEL]]
+ *                [--browser [--browser-title T] [--browser-level LEVEL]]
  *
  * The store is DIR (default: $TETHER_STORE, else ~/.local/share/clavarium-tether):
  * put it where the agents cannot write, since whoever writes the store gives
@@ -38,15 +39,21 @@
  * variable holding a bearer token the host keeps fresh, and --graph-root a
  * sub-folder. Both are given at level "propose"; their secret is read from the
  * environment, never the command line.
+ * --browser gives the agents a `browser` target: the Tether extension connects
+ * out to ws://127.0.0.1:PORT/browser and is paired by a short code entered on
+ * the page. Given at level "propose" (every action asked). --browser-title and
+ * --browser-level change its name and level.
  *
  * The page listens on 127.0.0.1 only: who reaches it is the person.
  */
 import { createServer } from 'node:http';
-import { readFileSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join, resolve, dirname, basename } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { keeper } from './keeper.mjs';
+import { browser as browserConnector } from './connectors/browser.mjs';
+import { wsUpgrade } from './ws.mjs';
 import { NAME, PACKAGE, FOLDER, ENV_STORE } from '../server/name.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -56,22 +63,44 @@ const BODY_MAX = 256 * 1024;
 export const PORT = 4190;
 const TITLE = NAME.charAt(0).toUpperCase() + NAME.slice(1);
 
-const PAGE = (lang) => `<!doctype html><html lang="${lang}"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+const PAGE = (lang, hasBrowser = false) => `<!doctype html><html lang="${lang}"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${TITLE}</title><link rel="stylesheet" href="/ui/ui.css">
 <style>html,body{margin:0;background:#faf9f6;color:#1f2328}@media (prefers-color-scheme:dark){html,body{background:#121418;color:#e7e9ee}}
-body{font:15px/1.4 system-ui,sans-serif;padding:16px 20px 40px;max-width:1240px;margin:auto;box-sizing:border-box}h1{font-size:1.15rem;margin:0 0 14px}</style>
-<h1>${TITLE}</h1><div id="app"></div>
+body{font:15px/1.4 system-ui,sans-serif;padding:16px 20px 40px;max-width:1240px;margin:auto;box-sizing:border-box}h1{font-size:1.15rem;margin:0 0 14px}
+#pair{border:1px solid #0002;border-radius:10px;padding:10px 14px;margin:0 0 16px;max-width:460px}@media (prefers-color-scheme:dark){#pair{border-color:#fff2}}
+#pair h2{font-size:.95rem;margin:0 0 6px}#pair input{font:inherit;padding:4px 8px;width:7em}#pair button{font:inherit;padding:4px 10px}#pair .s{font-size:.85rem;opacity:.75}</style>
+<h1>${TITLE}</h1>
+${hasBrowser ? '<section id="pair"><h2>Pair a browser</h2><div class="s" id="pstat">…</div><p>Enter the code shown in the Tether extension: <input id="pcode" inputmode="numeric" autocomplete="off"> <button id="pgo">Pair</button></p></section>' : ''}
+<div id="app"></div>
 <script type="module">
 import { mount } from '/ui/ui.js';
 const words = await (await fetch('/ui/texts/${lang}.json')).json();
 const call = async (op, args) => (await fetch('/api', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ op, args }) })).json();
 const s = mount(document.getElementById('app'), { call, words, lang: '${lang}' });
+const hasBrowser = ${hasBrowser ? 'true' : 'false'};
+async function browserStatus() {
+  if (!hasBrowser) return;
+  const r = await call('browser', {});
+  const d = r.data || {};
+  const el = document.getElementById('pstat');
+  el.textContent = d.connected ? ('Connected · ' + d.tabs.length + ' tab(s) granted') : (d.waiting ? 'An extension is waiting: enter its code below.' : 'No extension connected yet.');
+}
+if (hasBrowser) {
+  document.getElementById('pgo').onclick = async () => {
+    const code = document.getElementById('pcode').value.trim();
+    const r = await call('pair', { code });
+    document.getElementById('pstat').textContent = r.ok ? 'Paired.' : r.text;
+    if (r.ok) document.getElementById('pcode').value = '';
+    browserStatus();
+  };
+  browserStatus();
+}
 let soon = null;
-new EventSource('/api/changes').onmessage = () => { clearTimeout(soon); soon = setTimeout(() => s.refresh(), 60); };
+new EventSource('/api/changes').onmessage = () => { clearTimeout(soon); soon = setTimeout(() => { s.refresh(); browserStatus(); }, 60); };
 </script></html>`;
 
 export function options(argv, { env = process.env, cwd = process.cwd() } = {}) {
-    const o = { store: env[ENV_STORE] || join(homedir(), '.local', 'share', PACKAGE), port: PORT, sides: [], lang: 'en', local: null, timeout: 10, ssh: null, webdav: null, graph: null };
+    const o = { store: env[ENV_STORE] || join(homedir(), '.local', 'share', PACKAGE), port: PORT, sides: [], lang: 'en', local: null, timeout: 10, ssh: null, webdav: null, graph: null, browser: null };
     const sshOf = () => (o.ssh ??= { port: 22, title: '', pin: '', root: '', level: 'propose', keyFile: '', passphraseEnv: '' });
     const webdavOf = () => (o.webdav ??= { url: '', user: '', root: '', title: '', level: 'propose', passEnv: '' });
     const graphOf = () => (o.graph ??= { drive: '', root: '', title: '', level: 'propose', tokenEnv: '' });
@@ -103,6 +132,9 @@ export function options(argv, { env = process.env, cwd = process.cwd() } = {}) {
         else if (a === '--graph-title' && v) { graphOf().title = v; i++; }
         else if (a === '--graph-level' && v) { graphOf().level = v; i++; }
         else if (a === '--graph-token-env' && v) { graphOf().tokenEnv = v; i++; }
+        else if (a === '--browser') { o.browser ??= { title: 'Browser', level: 'propose' }; }
+        else if (a === '--browser-title' && v) { (o.browser ??= { title: 'Browser', level: 'propose' }).title = v; i++; }
+        else if (a === '--browser-level' && v) { (o.browser ??= { title: 'Browser', level: 'propose' }).level = v; i++; }
         else if (a === '--local' && v) {
             const at = v.lastIndexOf('='); const folder = resolve(cwd, at > 0 ? v.slice(0, at) : v);
             o.local = { folder, title: at > 0 ? v.slice(at + 1) : basename(folder) }; i++;
@@ -133,6 +165,10 @@ export function options(argv, { env = process.env, cwd = process.cwd() } = {}) {
         if (!levelOk(o.graph.level)) throw new Error('--graph-level is one of: watch, propose, frame, free');
         o.graph.title ||= 'Online folder';
     }
+    if (o.browser) {
+        if (!['watch', 'propose', 'frame', 'free'].includes(o.browser.level)) throw new Error('--browser-level is one of: watch, propose, frame, free');
+        o.browser.title ||= 'Browser';
+    }
     return o;
 }
 
@@ -148,7 +184,23 @@ export function start(o, { quiet = false } = {}) {
         if (o.graph && name === 'graph-token') return process.env[o.graph.tokenEnv] ?? '';
         throw new Error(`no secret named ${name}`);
     } : undefined;
-    const k = keeper(o.store, { sides: () => o.sides, local: !!o.local, timeout: o.timeout * 60_000, ...(secrets ? { secrets } : {}) });
+    /* The browser connector: the extension connects out to it over a WebSocket
+       (the /browser endpoint below). Its tokens are kept in a file of the store,
+       never in the journal; only names and tab lists ever leave this process. */
+    let browser = null;
+    if (o.browser) {
+        const file = join(o.store, 'browser-tokens.json');
+        const read = () => { try { return JSON.parse(readFileSync(file, 'utf8')); } catch { return []; } };
+        let toks = read();
+        const save = () => { try { writeFileSync(file, JSON.stringify(toks)); } catch { /* best effort */ } };
+        const tokens = { has: (t) => toks.includes(t), add: (t) => { if (!toks.includes(t)) { toks.push(t); save(); } }, remove: (t) => { toks = toks.filter((x) => x !== t); save(); }, list: () => [...toks] };
+        browser = browserConnector({ tokens });
+    }
+    const k = keeper(o.store, { sides: () => o.sides, local: !!o.local, timeout: o.timeout * 60_000, ...(secrets ? { secrets } : {}), ...(browser ? { connectors: { browser } } : {}) });
+    if (o.browser) {
+        const t = k.store.putTarget({ id: 'browser', title: o.browser.title, kind: 'browser', connector: 'browser', config: {} });
+        for (const s of o.sides) if (!t.grants[s.who.id]) k.store.grant(t.id, s.who.id, o.browser.level);
+    }
     if (o.local) {
         const t = k.store.putTarget({ id: 'local', title: o.local.title, kind: 'computer', connector: 'local', config: { folder: o.local.folder } });
         for (const s of o.sides) if (!t.grants[s.who.id]) k.store.grant(t.id, s.who.id, 'propose');
@@ -175,13 +227,15 @@ export function start(o, { quiet = false } = {}) {
         for (const s of o.sides) if (!t.grants[s.who.id]) k.store.grant(t.id, s.who.id, o.graph.level);
     }
     const watchers = new Set();
-    k.onChange(() => { for (const res of watchers) res.write('data: change\n\n'); });
+    const nudge = () => { for (const res of watchers) res.write('data: change\n\n'); };
+    k.onChange(nudge);
+    if (browser) browser.onChange(nudge);
     const pump = setInterval(() => { try { k.pump(); } catch (error) { if (!quiet) process.stderr.write(`${NAME}: ${error.message}\n`); } }, 300);
     const files = { '/ui/ui.js': 'text/javascript', '/ui/ui.css': 'text/css', '/ui/texts/en.json': 'application/json', '/ui/texts/fr.json': 'application/json' };
     const server = createServer((req, res) => {
         const url = new URL(req.url, 'http://local');
         const send = (code, type, body) => { res.writeHead(code, { 'content-type': `${type}; charset=utf-8`, 'cache-control': 'no-store', 'x-content-type-options': 'nosniff', 'x-frame-options': 'DENY' }); res.end(body); };
-        if (req.method === 'GET' && url.pathname === '/') return send(200, 'text/html', PAGE(o.lang));
+        if (req.method === 'GET' && url.pathname === '/') return send(200, 'text/html', PAGE(o.lang, !!browser));
         if (req.method === 'GET' && files[url.pathname]) return send(200, files[url.pathname], readFileSync(join(UI, url.pathname.slice('/ui/'.length))));
         if (req.method === 'GET' && url.pathname === '/api/changes') {
             res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store' }); res.write(': on\n\n');
@@ -194,17 +248,30 @@ export function start(o, { quiet = false } = {}) {
             req.on('data', (c) => { body += c; if (body.length > BODY_MAX) req.destroy(); });
             req.on('end', async () => {
                 let q; try { q = JSON.parse(body); } catch { return send(400, 'application/json', JSON.stringify({ ok: false, text: 'not understood' })); }
-                const r = await k.act(String(q?.op ?? ''), q?.args && typeof q.args === 'object' ? q.args : {}, PERSON);
+                const op = String(q?.op ?? '');
+                const args = q?.args && typeof q.args === 'object' ? q.args : {};
+                /* Pairing and browser status are the connector's, not the keeper store's. */
+                if (browser && op === 'pair') { try { return send(200, 'application/json', JSON.stringify({ ok: true, text: 'Paired.', data: browser.pair(args.code) })); } catch (e) { return send(200, 'application/json', JSON.stringify({ ok: false, text: e.message })); } }
+                if (browser && op === 'browser') return send(200, 'application/json', JSON.stringify({ ok: true, text: 'ok', data: browser.status() }));
+                const r = await k.act(op, args, PERSON);
                 return send(200, 'application/json', JSON.stringify(r));
             });
             return undefined;
         }
         return send(404, 'text/plain', 'not here');
     });
+    /* The extension connects out to this endpoint; the raw socket is wrapped as
+       a channel and handed to the browser connector. 127.0.0.1 only, like the page. */
+    if (browser) server.on('upgrade', (req, socket, head) => {
+        const url = new URL(req.url, 'http://local');
+        if (url.pathname !== '/browser') { try { socket.destroy(); } catch { /* gone */ } return; }
+        const channel = wsUpgrade(req, socket, head);
+        if (channel) browser.accept(channel);
+    });
     return new Promise((ok) => server.listen(o.port, '127.0.0.1', () => {
         const port = server.address().port;
-        if (!quiet) process.stdout.write(`${TITLE} kept in ${o.store}\nPage: http://127.0.0.1:${port}/\nAgents: ${o.sides.map((s) => `${s.who.name} (${s.dir})`).join(', ')}\n${o.local ? `This machine given: ${o.local.folder}\n` : ''}${o.ssh ? `SSH target "${o.ssh.title}": ${o.ssh.user}@${o.ssh.host}:${o.ssh.port} (${o.ssh.level})\n` : ''}${o.webdav ? `WebDAV target "${o.webdav.title}": ${o.webdav.url} (${o.webdav.level})\n` : ''}${o.graph ? `Graph target "${o.graph.title}": drive ${o.graph.drive} (${o.graph.level})\n` : ''}`);
-        ok({ server, keeper: k, port, close: async () => { clearInterval(pump); for (const r of watchers) r.end(); server.close(); await k.close(); } });
+        if (!quiet) process.stdout.write(`${TITLE} kept in ${o.store}\nPage: http://127.0.0.1:${port}/\nAgents: ${o.sides.map((s) => `${s.who.name} (${s.dir})`).join(', ')}\n${o.local ? `This machine given: ${o.local.folder}\n` : ''}${o.ssh ? `SSH target "${o.ssh.title}": ${o.ssh.user}@${o.ssh.host}:${o.ssh.port} (${o.ssh.level})\n` : ''}${o.webdav ? `WebDAV target "${o.webdav.title}": ${o.webdav.url} (${o.webdav.level})\n` : ''}${o.graph ? `Graph target "${o.graph.title}": drive ${o.graph.drive} (${o.graph.level})\n` : ''}${o.browser ? `Browser target "${o.browser.title}" (${o.browser.level}): pair the extension at ws://127.0.0.1:${port}/browser\n` : ''}`);
+        ok({ server, keeper: k, port, close: async () => { clearInterval(pump); for (const r of watchers) r.end(); if (browser) browser.shutdown(); server.close(); await k.close(); } });
     }));
 }
 

@@ -75,6 +75,7 @@ export async function ask(dir, verb, args = {}, { wait = WAIT_MS, grace = GRACE_
 const S = (description) => ({ type: 'string', description });
 const TARGET = S('a target you were given (see targets)');
 const WHY = S('one short line for the person: why you do this');
+const TAB = { type: 'number', description: 'which granted tab (its id from browser-tabs); your active one by default' };
 const tool = (name, description, properties = {}, required = []) => ({ name, description, inputSchema: { type: 'object', properties, required } });
 /* Tool names use "-" where a verb has ".": terminal-run is terminal.run. */
 export const TOOLS = [
@@ -89,6 +90,17 @@ export const TOOLS = [
     tool('files-write', 'Write a text file on a target (made, or replaced).', { target: TARGET, path: { type: 'string' }, text: { type: 'string' }, why: WHY }, ['target', 'path', 'text']),
     tool('files-move', 'Move or rename a file or folder on a target.', { target: TARGET, from: { type: 'string' }, to: { type: 'string' }, why: WHY }, ['target', 'from', 'to']),
     tool('files-delete', 'Delete a file, or an empty folder, on a target.', { target: TARGET, path: { type: 'string' }, why: WHY }, ['target', 'path']),
+    tool('browser-tabs', 'The browser tabs a person granted you (id, title, address).', { target: TARGET }, ['target']),
+    tool('browser-open', 'Open a web address: in a granted tab (give tab), or a new tab. A person may approve: say why.', { target: TARGET, url: S('the address to open'), tab: TAB, why: WHY }, ['target', 'url']),
+    tool('browser-shot', 'A screenshot of a granted tab (returned as a data: image URL).', { target: TARGET, tab: TAB }, ['target']),
+    tool('browser-html', 'The HTML of a granted tab, or of one element (selector), or a readable text extract.', { target: TARGET, tab: TAB, selector: S('a CSS selector; the whole page by default'), readable: { type: 'boolean', description: 'a readable text extract instead of HTML' } }, ['target']),
+    tool('browser-console', 'Recent console messages captured in a granted tab.', { target: TARGET, tab: TAB, lines: { type: 'number', description: 'how many back' } }, ['target']),
+    tool('browser-eval', 'Run a JavaScript snippet in a granted tab and get its result. A person may approve: say why.', { target: TARGET, tab: TAB, script: S('JavaScript; its last value comes back'), why: WHY }, ['target', 'script']),
+    tool('browser-click', 'Click in a granted tab, by CSS selector or by x,y. A person may approve: say why.', { target: TARGET, tab: TAB, selector: S('a CSS selector'), x: { type: 'number' }, y: { type: 'number' }, button: S('left (default), middle, right'), why: WHY }, ['target']),
+    tool('browser-type', 'Type text in a granted tab (into the focused field, or a selector first). A person may approve: say why.', { target: TARGET, tab: TAB, text: { type: 'string' }, selector: S('a field to focus first'), why: WHY }, ['target', 'text']),
+    tool('browser-key', 'Press a key or chord in a granted tab (Enter, ctrl+a). A person may approve: say why.', { target: TARGET, tab: TAB, key: { type: 'string' }, selector: S('an element to focus first'), why: WHY }, ['target', 'key']),
+    tool('browser-scroll', 'Scroll a granted tab by dx,dy (or an element, by selector). A person may approve: say why.', { target: TARGET, tab: TAB, dx: { type: 'number' }, dy: { type: 'number' }, selector: S('an element to scroll'), why: WHY }, ['target']),
+    tool('browser-drag', 'Drag in a granted tab from one point or element to another ("x,y" or a selector). A person may approve: say why.', { target: TARGET, tab: TAB, from: { type: 'string' }, to: { type: 'string' }, why: WHY }, ['target', 'from', 'to']),
 ];
 /* A tool's arguments as the keeper reads them: [verb, args], or null. */
 export function asked(name, a = {}) {

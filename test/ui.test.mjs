@@ -44,6 +44,11 @@ test('serve: the local target only when asked for; options read', () => {
     assert.deepEqual(o.local, { folder: '/srv/work', title: 'My files' });
     assert.equal(options([], { env: {}, cwd: '/srv' }).local, null);
     assert.throws(() => options(['--fly'], { env: {}, cwd: '/srv' }), /not understood/);
+    /* The browser target: off unless asked for, then propose with a title. */
+    assert.equal(options([], { env: {}, cwd: '/srv' }).browser, null);
+    assert.deepEqual(options(['--browser'], { env: {}, cwd: '/srv' }).browser, { title: 'Browser', level: 'propose' });
+    assert.deepEqual(options(['--browser', '--browser-title', 'Work Chrome', '--browser-level', 'frame'], { env: {}, cwd: '/srv' }).browser, { title: 'Work Chrome', level: 'frame' });
+    assert.throws(() => options(['--browser', '--browser-level', 'boss'], { env: {}, cwd: '/srv' }), /--browser-level is one of/);
 });
 
 test('the screen: a card per call waiting, hostile text stays text, Accept decides', async () => {
