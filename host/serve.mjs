@@ -1,0 +1,117 @@
+/* WITHOUT AN APPLICATION: `serve` keeps the targets itself, and shows their
+ * page to the person on this machine: the calls waiting, the levels, the
+ * journal, Stop.
+ *
+ *   tether serve [--store DIR] [--port N] [--side FOLDER=NAME]... [--lang fr]
+ *                [--local FOLDER[=TITLE]] [--timeout MINUTES]
+ *
+ * The store is DIR (default: $TETHER_STORE, else ~/.local/share/clavarium-tether):
+ * put it where the agents cannot write, since whoever writes the store gives
+ * themselves any level. Each --side is an agent's folder and the name it is
+ * shown by; without one, the folder's own, as "Agent".
+ *
+ * --local gives the agents THIS machine as a target, through the local
+ * connector: a shell in tmux and FOLDER. Off unless asked for. Given at level
+ * "propose" the first time: every action is asked.
+ *
+ * The page listens on 127.0.0.1 only: who reaches it is the person.
+ */
+import { createServer } from 'node:http';
+import { readFileSync, mkdirSync } from 'node:fs';
+import { join, resolve, dirname, basename } from 'node:path';
+import { homedir } from 'node:os';
+import { fileURLToPath } from 'node:url';
+import { keeper } from './keeper.mjs';
+import { NAME, PACKAGE, FOLDER, ENV_STORE } from '../server/name.mjs';
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+const UI = resolve(HERE, '../ui');
+const PERSON = { id: 'person:you', kind: 'person', name: 'You' };
+const BODY_MAX = 256 * 1024;
+export const PORT = 4190;
+const TITLE = NAME.charAt(0).toUpperCase() + NAME.slice(1);
+
+const PAGE = (lang) => `<!doctype html><html lang="${lang}"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${TITLE}</title><link rel="stylesheet" href="/ui/ui.css">
+<style>html,body{margin:0;background:#faf9f6;color:#1f2328}@media (prefers-color-scheme:dark){html,body{background:#121418;color:#e7e9ee}}
+body{font:15px/1.4 system-ui,sans-serif;padding:16px 20px 40px;max-width:1240px;margin:auto;box-sizing:border-box}h1{font-size:1.15rem;margin:0 0 14px}</style>
+<h1>${TITLE}</h1><div id="app"></div>
+<script type="module">
+import { mount } from '/ui/ui.js';
+const words = await (await fetch('/ui/texts/${lang}.json')).json();
+const call = async (op, args) => (await fetch('/api', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ op, args }) })).json();
+const s = mount(document.getElementById('app'), { call, words, lang: '${lang}' });
+let soon = null;
+new EventSource('/api/changes').onmessage = () => { clearTimeout(soon); soon = setTimeout(() => s.refresh(), 60); };
+</script></html>`;
+
+export function options(argv, { env = process.env, cwd = process.cwd() } = {}) {
+    const o = { store: env[ENV_STORE] || join(homedir(), '.local', 'share', PACKAGE), port: PORT, sides: [], lang: 'en', local: null, timeout: 10 };
+    for (let i = 0; i < argv.length; i++) {
+        const a = argv[i]; const v = argv[i + 1];
+        if (a === '--store' && v) { o.store = resolve(cwd, v); i++; }
+        else if (a === '--port' && v) { o.port = Number(v); i++; }
+        else if (a === '--lang' && v) { o.lang = v === 'fr' ? 'fr' : 'en'; i++; }
+        else if (a === '--timeout' && v) { o.timeout = Number(v); i++; }
+        else if (a === '--local' && v) {
+            const at = v.lastIndexOf('='); const folder = resolve(cwd, at > 0 ? v.slice(0, at) : v);
+            o.local = { folder, title: at > 0 ? v.slice(at + 1) : basename(folder) }; i++;
+        } else if (a === '--side' && v) {
+            const at = v.lastIndexOf('='); const dir = resolve(cwd, at > 0 ? v.slice(0, at) : v); const name = at > 0 ? v.slice(at + 1) : 'Agent';
+            o.sides.push({ dir, who: { id: `agent:${name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`, kind: 'agent', name } }); i++;
+        } else throw new Error(`not understood: ${a}`);
+    }
+    if (!o.sides.length) o.sides.push({ dir: join(cwd, FOLDER), who: { id: 'agent:agent', kind: 'agent', name: 'Agent' } });
+    if (!Number.isInteger(o.port) || o.port < 0 || o.port > 65535) throw new Error('--port takes a number');
+    if (!(o.timeout > 0)) throw new Error('--timeout takes a number of minutes');
+    return o;
+}
+
+export function start(o, { quiet = false } = {}) {
+    for (const s of o.sides) mkdirSync(s.dir, { recursive: true });
+    const k = keeper(o.store, { sides: () => o.sides, local: !!o.local, timeout: o.timeout * 60_000 });
+    if (o.local) {
+        const t = k.store.putTarget({ id: 'local', title: o.local.title, kind: 'computer', connector: 'local', config: { folder: o.local.folder } });
+        for (const s of o.sides) if (!t.grants[s.who.id]) k.store.grant(t.id, s.who.id, 'propose');
+    }
+    const watchers = new Set();
+    k.onChange(() => { for (const res of watchers) res.write('data: change\n\n'); });
+    const pump = setInterval(() => { try { k.pump(); } catch (error) { if (!quiet) process.stderr.write(`${NAME}: ${error.message}\n`); } }, 300);
+    const files = { '/ui/ui.js': 'text/javascript', '/ui/ui.css': 'text/css', '/ui/texts/en.json': 'application/json', '/ui/texts/fr.json': 'application/json' };
+    const server = createServer((req, res) => {
+        const url = new URL(req.url, 'http://local');
+        const send = (code, type, body) => { res.writeHead(code, { 'content-type': `${type}; charset=utf-8`, 'cache-control': 'no-store', 'x-content-type-options': 'nosniff', 'x-frame-options': 'DENY' }); res.end(body); };
+        if (req.method === 'GET' && url.pathname === '/') return send(200, 'text/html', PAGE(o.lang));
+        if (req.method === 'GET' && files[url.pathname]) return send(200, files[url.pathname], readFileSync(join(UI, url.pathname.slice('/ui/'.length))));
+        if (req.method === 'GET' && url.pathname === '/api/changes') {
+            res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store' }); res.write(': on\n\n');
+            watchers.add(res); req.on('close', () => watchers.delete(res)); return undefined;
+        }
+        if (req.method === 'POST' && url.pathname === '/api') {
+            /* A page of another site cannot post here: the type it would need is not one a form sends. */
+            if (!String(req.headers['content-type'] ?? '').startsWith('application/json')) return send(415, 'text/plain', 'json only');
+            let body = '';
+            req.on('data', (c) => { body += c; if (body.length > BODY_MAX) req.destroy(); });
+            req.on('end', async () => {
+                let q; try { q = JSON.parse(body); } catch { return send(400, 'application/json', JSON.stringify({ ok: false, text: 'not understood' })); }
+                const r = await k.act(String(q?.op ?? ''), q?.args && typeof q.args === 'object' ? q.args : {}, PERSON);
+                return send(200, 'application/json', JSON.stringify(r));
+            });
+            return undefined;
+        }
+        return send(404, 'text/plain', 'not here');
+    });
+    return new Promise((ok) => server.listen(o.port, '127.0.0.1', () => {
+        const port = server.address().port;
+        if (!quiet) process.stdout.write(`${TITLE} kept in ${o.store}\nPage: http://127.0.0.1:${port}/\nAgents: ${o.sides.map((s) => `${s.who.name} (${s.dir})`).join(', ')}\n${o.local ? `This machine given: ${o.local.folder}\n` : ''}`);
+        ok({ server, keeper: k, port, close: async () => { clearInterval(pump); for (const r of watchers) r.end(); server.close(); await k.close(); } });
+    }));
+}
+
+export async function serveMain(argv) {
+    let o;
+    try { o = options(argv); } catch (error) { process.stderr.write(`${error.message}\n`); process.exitCode = 64; return; }
+    const s = await start(o);
+    const down = async () => { await s.close(); process.exit(0); };
+    process.on('SIGINT', down); process.on('SIGTERM', down);
+}
