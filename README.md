@@ -69,6 +69,39 @@ from that file (its content is the secret; the path is not stored); the target
 starts at level Propose. A host-key `--ssh-pin` refuses a server whose key does
 not match.
 
+## Reach an online folder
+
+A target of kind `files` is an online folder on a server the person runs or
+owns. The keeper talks to it as an ordinary file-sync client over HTTPS (no
+extra dependency — Node's own `fetch`); **nothing is installed anywhere**, and
+the agent never connects. The agent gets the `files.*` verbs — `tether files …
+list / read / search / write / move / delete` — each through its level and a
+person's approval. Two kinds of server are reached:
+
+**Nextcloud (and any WebDAV).** The target says the WebDAV `url`, a Basic-auth
+`user`, and optionally a `root` folder files may not leave. The password — a
+Nextcloud **app password** is ideal — is held by the keeper, from the
+application's secret store, and only named in the target.
+
+    tether serve --side ./.tether=Assistant \
+      --webdav https://cloud.example.com/remote.php/dav/files/alice \
+      --webdav-user alice --webdav-pass-env NEXTCLOUD_APP_PASSWORD \
+      --webdav-root /Projects --webdav-title "Cloud"
+
+**SharePoint / OneDrive (Microsoft Graph).** The target says the `drive` id and
+optionally a `root`. V1 takes a bearer token the host keeps fresh (named in the
+target, read here from an environment variable); a client-credentials flow with
+a client secret is also supported (see the protocol). Large-file upload sessions
+are left for a later version.
+
+    tether serve --side ./.tether=Assistant \
+      --graph-drive <drive-id> --graph-token-env GRAPH_TOKEN \
+      --graph-root /Shared --graph-title "Team drive"
+
+`--webdav-pass-env` and `--graph-token-env` name an environment variable; the
+secret is never passed on the command line, written to the store or journalled.
+Both targets start at level Propose.
+
 ## Without an application
 
     tether serve --store ~/tether-data --side ./.tether=Assistant --local ~/Projects
@@ -81,7 +114,9 @@ cannot write.
 See [docs/protocol.md](docs/protocol.md). One dependency, `ssh2` (the SSH
 connector); Node 22 or later; tmux for the local connector's terminals.
 
-**Status:** first version (0.1), not yet published. The `local` and `ssh`
-connectors are built. A `screen` slot is ready for a host to plug an engine into (see docs). `computer`, `browser` and online folders come next.
+**Status:** first version (0.1), not yet published. The `local`, `ssh`,
+`webdav` (Nextcloud/WebDAV) and `graph` (SharePoint/OneDrive) connectors are
+built. A `screen` slot is ready for a host to plug an engine into (see docs).
+The `computer` and `browser` connectors come next.
 
 License: MIT.

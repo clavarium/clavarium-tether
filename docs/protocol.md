@@ -8,9 +8,11 @@ that holds the targets and their secrets, and a screen for people.
 - **Target**: one access given to an agent. Its kind: `computer` (a machine,
   through a small program installed there), `ssh` (a machine the keeper reaches
   by SSH), `browser` (tabs given by an extension), `files` (an online folder).
-- **Connector**: the code that reaches one kind of target. Two are built:
-  `local` (the keeper's own machine, for tests and `tether serve`) and `ssh`
-  (a machine the keeper reaches as an ordinary SSH client — see below).
+- **Connector**: the code that reaches one kind of target. Four are built:
+  `local` (the keeper's own machine, for tests and `tether serve`), `ssh`
+  (a machine the keeper reaches as an ordinary SSH client), and two online-folder
+  connectors of kind `files` — `webdav` (Nextcloud and any WebDAV server) and
+  `graph` (SharePoint/OneDrive through Microsoft Graph) — all below.
 - **Level**: what an agent may do on a target without asking.
 
 ## Rights
@@ -148,6 +150,63 @@ paths resolve from the login home on the far machine.
 The `ssh` connector is wired into the keeper by default (it holds nothing until
 a target asks it to connect, and loads `ssh2` lazily); a host that does not want
 it passes `connectors: { ssh: null }`.
+
+## Reach an online folder (WebDAV and Microsoft Graph)
+
+A target of kind `files` is an online folder on a server the person already
+runs or owns. The keeper is an ordinary file-sync client over HTTPS (through
+Node's own `fetch`; no extra dependency) — nothing is installed anywhere, and
+the agent never connects. Two connectors serve the `files.*` verbs:
+`files.list`, `files.read`, `files.search`, `files.write`, `files.move`,
+`files.delete`, with the same output and read caps as `local`/`ssh`, and the
+same path rules — `~/...` from the target's root, `..` resolved, a path that
+leaves the root refused.
+
+### `webdav` — Nextcloud and any WebDAV server
+
+The target's `config` holds `url` (the WebDAV collection this target is anchored
+at, e.g. `https://cloud.example.com/remote.php/dav/files/alice`), an optional
+`user` for Basic auth, and an optional `root` (a sub-folder `files.*` may not
+leave; `/` by default, which is the collection itself). The password is **named**
+in `secrets` — `{password: "name"}` — never written in the target; it is a
+Nextcloud **app password** (app token) or any Basic-auth password.
+
+| Verb | HTTP |
+|---|---|
+| `files.list` | `PROPFIND` depth 1 |
+| `files.read` | `GET` (over the read cap → refused) |
+| `files.search` | a bounded walk of `PROPFIND`s, matching names (not content) |
+| `files.write` | `MKCOL` for missing parent collections, then `PUT` |
+| `files.move` | `MOVE` with `Overwrite: F` (a name already taken → refused) |
+| `files.delete` | `DELETE` (a non-empty folder → refused, as `local`/`ssh`) |
+
+### `graph` — SharePoint and OneDrive
+
+The target's `config` holds `drive` (the drive id of a OneDrive or a SharePoint
+document library — resolving a site name to a drive id is the host's job), an
+optional `root`, and an optional `api` (the Graph base,
+`https://graph.microsoft.com/v1.0` by default). The verbs run against the
+drive's `/drives/{id}/root:/path` endpoints: list children, `GET …/content`,
+`PUT …/content` (creating missing parent folders first), `PATCH` the
+`parentReference` to move, `DELETE`, and `…/search(q=…)` for search.
+
+**The token.** V1 takes a **bearer token the host keeps fresh**: the keeper
+fetches it per call through `ctx.secret("token")` and the host refreshes it
+(Graph tokens last about an hour; Tether never sees the refresh). As an
+alternative, a target that names a client `secret` and sets `tenant`/`clientId`
+in `config` has the connector run the OAuth 2.0 **client-credentials** flow
+itself and cache the token until it is about to expire. Either way the secret
+is named in `secrets` (`{token: "name"}` or `{secret: "name"}`), never written
+in the target, and never reaches the agent, the journal or any log.
+
+**What V1 does.** Simple uploads up to 4 MB (and `files.write` is already capped
+at 1 MB of text by the verb layer). **What it leaves for later:** large-file
+upload sessions, and delta/change tracking. A folder's whole contents are not
+deleted by surprise — a non-empty folder is refused, as on the other kinds.
+
+Both connectors are stateless (`webdav` holds nothing; `graph` caches only a
+token it fetched) and are wired into the keeper by default; a host that does not
+want one passes `connectors: { webdav: null }` or `{ graph: null }`.
 
 ## The application's side
 
