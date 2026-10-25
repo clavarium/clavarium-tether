@@ -12,6 +12,9 @@
  *                [--graph-drive ID --graph-token-env VAR
  *                 [--graph-root DIR] [--graph-title T] [--graph-level LEVEL]]
  *                [--browser [--browser-title T] [--browser-level LEVEL]]
+ *                [--screen URL --screen-token-env VAR [--screen-engine MODULE]
+ *                 [--screen-user NAME] [--screen-node ID] [--screen-title T]
+ *                 [--screen-level LEVEL]]
  *
  * The store is DIR (default: $TETHER_STORE, else ~/.local/share/clavarium-tether):
  * put it where the agents cannot write, since whoever writes the store gives
@@ -39,6 +42,14 @@
  * variable holding a bearer token the host keeps fresh, and --graph-root a
  * sub-folder. Both are given at level "propose"; their secret is read from the
  * environment, never the command line.
+ *
+ * --screen declares one `screen` target: URL is the engine's endpoint (stored in
+ * the target's config, never taken from the agent). --screen-token-env names an
+ * environment variable holding the login token (the secret); --screen-user and
+ * --screen-node are passed to the engine when it connects. Tether ships no engine:
+ * --screen-engine MODULE points at a module exporting the engine factory
+ * (createScreen, or a default export). Without it the target is declared but its
+ * connector stays off. Given at level "propose".
  * --browser gives the agents a `browser` target: the Tether extension connects
  * out to ws://127.0.0.1:PORT/browser and is paired by a short code entered on
  * the page. Given at level "propose" (every action asked). --browser-title and
@@ -51,8 +62,10 @@ import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join, resolve, dirname, basename } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { pathToFileURL } from 'node:url';
 import { keeper } from './keeper.mjs';
 import { browser as browserConnector } from './connectors/browser.mjs';
+import { screen as screenConnector } from './connectors/screen.mjs';
 import { wsUpgrade } from './ws.mjs';
 import { NAME, PACKAGE, FOLDER, ENV_STORE } from '../server/name.mjs';
 
@@ -100,10 +113,11 @@ new EventSource('/api/changes').onmessage = () => { clearTimeout(soon); soon = s
 </script></html>`;
 
 export function options(argv, { env = process.env, cwd = process.cwd() } = {}) {
-    const o = { store: env[ENV_STORE] || join(homedir(), '.local', 'share', PACKAGE), port: PORT, sides: [], lang: 'en', local: null, timeout: 10, ssh: null, webdav: null, graph: null, browser: null };
+    const o = { store: env[ENV_STORE] || join(homedir(), '.local', 'share', PACKAGE), port: PORT, sides: [], lang: 'en', local: null, timeout: 10, ssh: null, webdav: null, graph: null, browser: null, screen: null };
     const sshOf = () => (o.ssh ??= { port: 22, title: '', pin: '', root: '', level: 'propose', keyFile: '', passphraseEnv: '' });
     const webdavOf = () => (o.webdav ??= { url: '', user: '', root: '', title: '', level: 'propose', passEnv: '' });
     const graphOf = () => (o.graph ??= { drive: '', root: '', title: '', level: 'propose', tokenEnv: '' });
+    const screenOf = () => (o.screen ??= { url: '', user: '', node: '', title: '', level: 'propose', tokenEnv: '', enginePath: '' });
     for (let i = 0; i < argv.length; i++) {
         const a = argv[i]; const v = argv[i + 1];
         if (a === '--store' && v) { o.store = resolve(cwd, v); i++; }
@@ -132,6 +146,13 @@ export function options(argv, { env = process.env, cwd = process.cwd() } = {}) {
         else if (a === '--graph-title' && v) { graphOf().title = v; i++; }
         else if (a === '--graph-level' && v) { graphOf().level = v; i++; }
         else if (a === '--graph-token-env' && v) { graphOf().tokenEnv = v; i++; }
+        else if (a === '--screen' && v) { screenOf().url = v; i++; }
+        else if (a === '--screen-token-env' && v) { screenOf().tokenEnv = v; i++; }
+        else if (a === '--screen-engine' && v) { screenOf().enginePath = resolve(cwd, v); i++; }
+        else if (a === '--screen-user' && v) { screenOf().user = v; i++; }
+        else if (a === '--screen-node' && v) { screenOf().node = v; i++; }
+        else if (a === '--screen-title' && v) { screenOf().title = v; i++; }
+        else if (a === '--screen-level' && v) { screenOf().level = v; i++; }
         else if (a === '--browser') { o.browser ??= { title: 'Browser', level: 'propose' }; }
         else if (a === '--browser-title' && v) { (o.browser ??= { title: 'Browser', level: 'propose' }).title = v; i++; }
         else if (a === '--browser-level' && v) { (o.browser ??= { title: 'Browser', level: 'propose' }).level = v; i++; }
@@ -169,19 +190,26 @@ export function options(argv, { env = process.env, cwd = process.cwd() } = {}) {
         if (!['watch', 'propose', 'frame', 'free'].includes(o.browser.level)) throw new Error('--browser-level is one of: watch, propose, frame, free');
         o.browser.title ||= 'Browser';
     }
+    if (o.screen) {
+        if (!o.screen.url) throw new Error('--screen takes a URL');
+        if (!o.screen.tokenEnv) throw new Error('--screen needs --screen-token-env VAR');
+        if (!levelOk(o.screen.level)) throw new Error('--screen-level is one of: watch, propose, frame, free');
+        o.screen.title ||= 'Screen';
+    }
     return o;
 }
 
-export function start(o, { quiet = false } = {}) {
+export function start(o, { quiet = false, screenEngine = null } = {}) {
     for (const s of o.sides) mkdirSync(s.dir, { recursive: true });
     /* The SSH key and its passphrase are read here, when a connector asks for
        them by the name the target gave. Neither is written to the store, the
        journal or the page: only the names "ssh-key" and "ssh-passphrase" are. */
-    const secrets = (o.ssh || o.webdav || o.graph) ? async (name) => {
+    const secrets = (o.ssh || o.webdav || o.graph || o.screen) ? async (name) => {
         if (o.ssh && name === 'ssh-key') return readFileSync(o.ssh.keyFile, 'utf8');
         if (o.ssh && name === 'ssh-passphrase' && o.ssh.passphraseEnv) return process.env[o.ssh.passphraseEnv] ?? '';
         if (o.webdav && name === 'webdav-pass') return process.env[o.webdav.passEnv] ?? '';
         if (o.graph && name === 'graph-token') return process.env[o.graph.tokenEnv] ?? '';
+        if (o.screen && name === 'screen-token') return process.env[o.screen.tokenEnv] ?? '';
         throw new Error(`no secret named ${name}`);
     } : undefined;
     /* The browser connector: the extension connects out to it over a WebSocket
@@ -196,7 +224,11 @@ export function start(o, { quiet = false } = {}) {
         const tokens = { has: (t) => toks.includes(t), add: (t) => { if (!toks.includes(t)) { toks.push(t); save(); } }, remove: (t) => { toks = toks.filter((x) => x !== t); save(); }, list: () => [...toks] };
         browser = browserConnector({ tokens });
     }
-    const k = keeper(o.store, { sides: () => o.sides, local: !!o.local, timeout: o.timeout * 60_000, ...(secrets ? { secrets } : {}), ...(browser ? { connectors: { browser } } : {}) });
+    /* The screen connector is the envelope; the engine is the operator's, loaded
+       (if any) by serveMain and passed in. With none, the target stays off. */
+    const screen = o.screen ? screenConnector({ engine: screenEngine ?? undefined }) : null;
+    const connectors = { ...(browser ? { browser } : {}), ...(screen ? { screen } : {}) };
+    const k = keeper(o.store, { sides: () => o.sides, local: !!o.local, timeout: o.timeout * 60_000, ...(secrets ? { secrets } : {}), ...(Object.keys(connectors).length ? { connectors } : {}) });
     if (o.browser) {
         const t = k.store.putTarget({ id: 'browser', title: o.browser.title, kind: 'browser', connector: 'browser', config: {} });
         for (const s of o.sides) if (!t.grants[s.who.id]) k.store.grant(t.id, s.who.id, o.browser.level);
@@ -225,6 +257,13 @@ export function start(o, { quiet = false } = {}) {
         if (o.graph.root) config.root = o.graph.root;
         const t = k.store.putTarget({ id: 'graph', title: o.graph.title, kind: 'files', connector: 'graph', config, secrets: { token: 'graph-token' } });
         for (const s of o.sides) if (!t.grants[s.who.id]) k.store.grant(t.id, s.who.id, o.graph.level);
+    }
+    if (o.screen) {
+        const config = { url: o.screen.url };
+        if (o.screen.user) config.user = o.screen.user;
+        if (o.screen.node) config.node = o.screen.node;
+        const t = k.store.putTarget({ id: 'screen', title: o.screen.title, kind: 'screen', connector: 'screen', config, secrets: { token: 'screen-token' } });
+        for (const s of o.sides) if (!t.grants[s.who.id]) k.store.grant(t.id, s.who.id, o.screen.level);
     }
     const watchers = new Set();
     const nudge = () => { for (const res of watchers) res.write('data: change\n\n'); };
@@ -270,7 +309,7 @@ export function start(o, { quiet = false } = {}) {
     });
     return new Promise((ok) => server.listen(o.port, '127.0.0.1', () => {
         const port = server.address().port;
-        if (!quiet) process.stdout.write(`${TITLE} kept in ${o.store}\nPage: http://127.0.0.1:${port}/\nAgents: ${o.sides.map((s) => `${s.who.name} (${s.dir})`).join(', ')}\n${o.local ? `This machine given: ${o.local.folder}\n` : ''}${o.ssh ? `SSH target "${o.ssh.title}": ${o.ssh.user}@${o.ssh.host}:${o.ssh.port} (${o.ssh.level})\n` : ''}${o.webdav ? `WebDAV target "${o.webdav.title}": ${o.webdav.url} (${o.webdav.level})\n` : ''}${o.graph ? `Graph target "${o.graph.title}": drive ${o.graph.drive} (${o.graph.level})\n` : ''}${o.browser ? `Browser target "${o.browser.title}" (${o.browser.level}): pair the extension at ws://127.0.0.1:${port}/browser\n` : ''}`);
+        if (!quiet) process.stdout.write(`${TITLE} kept in ${o.store}\nPage: http://127.0.0.1:${port}/\nAgents: ${o.sides.map((s) => `${s.who.name} (${s.dir})`).join(', ')}\n${o.local ? `This machine given: ${o.local.folder}\n` : ''}${o.ssh ? `SSH target "${o.ssh.title}": ${o.ssh.user}@${o.ssh.host}:${o.ssh.port} (${o.ssh.level})\n` : ''}${o.webdav ? `WebDAV target "${o.webdav.title}": ${o.webdav.url} (${o.webdav.level})\n` : ''}${o.graph ? `Graph target "${o.graph.title}": drive ${o.graph.drive} (${o.graph.level})\n` : ''}${o.browser ? `Browser target "${o.browser.title}" (${o.browser.level}): pair the extension at ws://127.0.0.1:${port}/browser\n` : ''}${o.screen ? `Screen target "${o.screen.title}" (${o.screen.level}): ${o.screen.url}${screenEngine ? '' : ' — no engine plugged in (connector off); use --screen-engine'}\n` : ''}`);
         ok({ server, keeper: k, port, close: async () => { clearInterval(pump); for (const r of watchers) r.end(); if (browser) browser.shutdown(); server.close(); await k.close(); } });
     }));
 }
@@ -278,7 +317,17 @@ export function start(o, { quiet = false } = {}) {
 export async function serveMain(argv) {
     let o;
     try { o = options(argv); } catch (error) { process.stderr.write(`${error.message}\n`); process.exitCode = 64; return; }
-    const s = await start(o);
+    /* The screen engine is the operator's, not Tether's: loaded here from the
+       module --screen-engine names, so serve has no hard dependency on it. */
+    let screenEngine = null;
+    if (o.screen?.enginePath) {
+        try {
+            const mod = await import(pathToFileURL(o.screen.enginePath).href);
+            screenEngine = mod.createScreen ?? mod.default;
+            if (typeof screenEngine !== 'function') throw new Error('it exports no createScreen (or default) factory');
+        } catch (error) { process.stderr.write(`--screen-engine: ${error.message}\n`); process.exitCode = 64; return; }
+    }
+    const s = await start(o, { screenEngine });
     /* Down within three seconds, whatever a connector is still doing. */
     const down = async () => { setTimeout(() => process.exit(0), 3000).unref(); try { await s.close(); } finally { process.exit(0); } };
     process.on('SIGINT', down); process.on('SIGTERM', down);
