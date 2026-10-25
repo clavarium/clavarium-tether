@@ -22,6 +22,17 @@ export const HELP = `${NAME}: act on the targets you were given (machines, folde
   ${NAME} files TARGET write PATH --text "..." | --from LOCAL_FILE
   ${NAME} files TARGET move FROM TO
   ${NAME} files TARGET delete PATH
+  ${NAME} browser TARGET tabs               the tabs a person granted you
+  ${NAME} browser TARGET open URL [--tab N]  open a URL (a granted tab, or a new one)
+  ${NAME} browser TARGET shot [--tab N]      a screenshot of a granted tab
+  ${NAME} browser TARGET html [--tab N] [--selector S] [--readable]
+  ${NAME} browser TARGET console [--tab N] [--lines N]
+  ${NAME} browser TARGET eval "script" [--tab N]
+  ${NAME} browser TARGET click [SELECTOR | --x N --y N] [--tab N]
+  ${NAME} browser TARGET type "text" [--selector S] [--tab N]
+  ${NAME} browser TARGET key KEY [--selector S] [--tab N]
+  ${NAME} browser TARGET scroll [--dx N] [--dy N] [--selector S] [--tab N]
+  ${NAME} browser TARGET drag FROM TO [--tab N]
   ${NAME} serve [--store DIR] [--port N] [--side FOLDER=NAME] [--local FOLDER[=TITLE]]
                                        keep targets yourself, with their page (no application)
 
@@ -32,6 +43,7 @@ The folder used is --dir FOLDER, else $${ENV_DIR}, else the nearest ${FOLDER} fo
 ${NAME} ${VERSION}`;
 
 const FILE_VERBS = ['list', 'read', 'search', 'write', 'move', 'delete'];
+const BROWSER_VERBS = ['tabs', 'open', 'shot', 'html', 'console', 'eval', 'click', 'type', 'key', 'scroll', 'drag'];
 
 /* A command line, read: [verb, args] or { refused }. A --from file is read by run(). */
 export function read(argv) {
@@ -39,6 +51,7 @@ export function read(argv) {
     for (let i = 0; i < argv.length; i++) {
         const a = argv[i];
         if (a === '--enter') { flags.enter = true; continue; }
+        if (a === '--readable') { flags.readable = true; continue; }
         if (a.startsWith('--')) { if (argv[i + 1] === undefined) return { refused: `${a} needs a value` }; flags[a.slice(2)] = argv[++i]; continue; }
         words.push(a);
     }
@@ -63,6 +76,25 @@ export function read(argv) {
                     return ['files.write', { target, path: p[0], ...(flags.text !== undefined ? { text: flags.text } : { from: flags.from }), ...why }];
                 case 'move': return need(p.length === 2, 'files TARGET move FROM TO') ?? ['files.move', { target, from: p[0], to: p[1], ...why }];
                 default: return need(p[0], 'files TARGET delete PATH') ?? ['files.delete', { target, path: p[0], ...why }];
+            }
+        }
+        case 'browser': {
+            const [what, ...p] = rest;
+            if (!target || !BROWSER_VERBS.includes(what)) return { refused: `${NAME} browser TARGET ${BROWSER_VERBS.join('|')} ...` };
+            const tab = flags.tab !== undefined ? { tab: Number(flags.tab) } : {};
+            const sel = flags.selector !== undefined ? { selector: flags.selector } : {};
+            switch (what) {
+                case 'tabs': return ['browser.tabs', { target }];
+                case 'open': return need(p[0], 'browser TARGET open URL') ?? ['browser.open', { target, url: p[0], ...tab, ...why }];
+                case 'shot': return ['browser.shot', { target, ...tab }];
+                case 'html': return ['browser.html', { target, ...tab, ...sel, ...(flags.readable ? { readable: true } : {}) }];
+                case 'console': return ['browser.console', { target, ...tab, ...(flags.lines !== undefined ? { lines: Number(flags.lines) } : {}) }];
+                case 'eval': return need(p.length, 'browser TARGET eval "script"') ?? ['browser.eval', { target, script: p.join(' '), ...tab, ...why }];
+                case 'click': return ['browser.click', { target, ...tab, ...(p[0] ? { selector: p[0] } : sel), ...(flags.x !== undefined ? { x: Number(flags.x) } : {}), ...(flags.y !== undefined ? { y: Number(flags.y) } : {}), ...(flags.button ? { button: flags.button } : {}), ...why }];
+                case 'type': return need(p.length, 'browser TARGET type "text"') ?? ['browser.type', { target, text: p.join(' '), ...tab, ...sel, ...why }];
+                case 'key': return need(p[0], 'browser TARGET key KEY') ?? ['browser.key', { target, key: p[0], ...tab, ...sel, ...why }];
+                case 'scroll': return ['browser.scroll', { target, ...tab, ...sel, ...(flags.dx !== undefined ? { dx: Number(flags.dx) } : {}), ...(flags.dy !== undefined ? { dy: Number(flags.dy) } : {}), ...why }];
+                default: return need(p.length === 2, 'browser TARGET drag FROM TO') ?? ['browser.drag', { target, from: p[0], to: p[1], ...tab, ...why }];
             }
         }
         default: return { refused: `Unknown: ${verb}. Run "${NAME} --help".` };

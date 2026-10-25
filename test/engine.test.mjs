@@ -81,7 +81,12 @@ test('a verb\'s arguments are checked; its detail never holds a file\'s content'
     assert.equal(check('files.list', { target: 'x' }).path, '.');
     assert.equal(detail('files.write', check('files.write', { target: 'x', path: 'a.txt', text: 'the secret plan' })), 'a.txt (15 bytes)');
     assert.equal(detail('files.move', { from: 'a', to: 'b' }), 'a → b');
-    assert.equal(Object.keys(VERBS).filter((v) => VERBS[v].done === false).length, 11, 'the browser verbs are declared');
+    /* The browser verbs are live (none is merely declared), and their args are checked. */
+    assert.equal(Object.keys(VERBS).filter((v) => VERBS[v].done === false).length, 0, 'no verb is left merely declared');
+    assert.equal(check('browser.eval', { target: 'b', script: '1+1', tab: 7 }).tab, 7);
+    assert.throws(() => check('browser.click', { target: 'b' }), /selector or x and y/);
+    assert.equal(detail('browser.click', check('browser.click', { target: 'b', selector: '.buy' })), '.buy');
+    assert.equal(detail('browser.open', check('browser.open', { target: 'b', url: 'https://example.com' })), 'https://example.com');
 });
 
 test('the store: a target holds no secret; grants, rules and stops are kept across a restart', () => {
@@ -238,10 +243,10 @@ test('the keeper: watch refuses an action; a target not given, a kind that does 
     assert.match((await k.act('terminal.run', { target: 'web', command: 'ls' }, BOT)).text, /level watch: read only/);
     assert.equal((await k.act('terminal.read', { target: 'web' }, BOT)).ok, true);
     assert.match((await k.act('files.read', { target: 'web', path: 'a' }, OTHER)).text, /no target web that you were given/);
-    k.store.putTarget({ id: 'tab', title: 'A tab', kind: 'browser', connector: 'fake' });
+    k.store.putTarget({ id: 'tab', title: 'A tab', kind: 'browser', connector: 'browser' });
     k.store.grant('tab', BOT.id, 'free');
     assert.match((await k.act('terminal.run', { target: 'tab', command: 'ls' }, BOT)).text, /not for a browser target/);
-    assert.match((await k.act('browser.tabs', { target: 'tab' }, BOT)).text, /not available yet/);
+    assert.match((await k.act('browser.tabs', { target: 'tab' }, BOT)).text, /connector is off/, 'a browser verb with no browser connector wired');
     k.store.putTarget({ id: 'pc', title: 'PC', kind: 'computer', connector: 'local' });
     k.store.grant('pc', BOT.id, 'free');
     assert.match((await k.act('files.list', { target: 'pc' }, BOT)).text, /connector is off/, 'local is off unless asked for');
@@ -339,7 +344,7 @@ test('the MCP tools map to the verbs, and each verb they name exists and is done
     assert.deepEqual(asked('terminal-run', { target: 'web', command: 'ls', why: 'look', extra: 1 }), ['terminal.run', { target: 'web', command: 'ls', why: 'look' }]);
     assert.deepEqual(asked('targets', {}), ['targets', {}]);
     assert.deepEqual(asked('files-move', { target: 'w', from: 'a', to: 'b' }), ['files.move', { target: 'w', from: 'a', to: 'b' }]);
-    assert.equal(asked('browser-eval', {}), null, 'browser verbs are declared, not offered yet');
+    assert.deepEqual(asked('browser-eval', { target: 'b', tab: 7, script: '1+1', why: 'check', extra: 1 }), ['browser.eval', { target: 'b', tab: 7, script: '1+1', why: 'check' }]);
     for (const t of TOOLS) {
         assert.match(t.name, /^[a-z-]{1,64}$/);
         const [verb] = asked(t.name, {});
