@@ -112,6 +112,7 @@ export async function serveMain(argv) {
     let o;
     try { o = options(argv); } catch (error) { process.stderr.write(`${error.message}\n`); process.exitCode = 64; return; }
     const s = await start(o);
-    const down = async () => { await s.close(); process.exit(0); };
+    /* Down within three seconds, whatever a connector is still doing. */
+    const down = async () => { setTimeout(() => process.exit(0), 3000).unref(); try { await s.close(); } finally { process.exit(0); } };
     process.on('SIGINT', down); process.on('SIGTERM', down);
 }

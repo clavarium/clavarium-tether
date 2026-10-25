@@ -17,7 +17,7 @@
  * close() takes this connector's sessions and running commands down.
  */
 import { spawn, execFile } from 'node:child_process';
-import { promises as fs, realpathSync, mkdirSync } from 'node:fs';
+import { promises as fs, realpathSync, mkdirSync, rmSync } from 'node:fs';
 import { join, resolve, dirname, relative, sep } from 'node:path';
 import { createHash } from 'node:crypto';
 import { NAME } from '../../server/name.mjs';
@@ -40,7 +40,8 @@ export function cleanEnv(from = process.env) {
 export function local({ socket = `${NAME}-local`, env = cleanEnv(), shell = 'bash' } = {}) {
     const children = new Map(); // agent -> Set of running commands
     const sessions = new Map(); // agent -> Set of tmux session names
-    const tmux = (args) => new Promise((ok, fail) => execFile('tmux', ['-L', socket, ...args], { env, timeout: 10_000, maxBuffer: 4 * 1024 * 1024 }, (error, stdout, stderr) => (error ? fail(Object.assign(error, { stderr })) : ok(stdout))));
+    let socketPath = '';
+    const tmux = (args) => new Promise((ok, fail) => execFile('tmux', ['-L', socket, ...args], { env, timeout: 5_000, maxBuffer: 4 * 1024 * 1024 }, (error, stdout, stderr) => (error ? fail(Object.assign(error, { stderr })) : ok(stdout))));
     const sessionOf = (target, agent) => `${target.id}-${createHash('sha256').update(String(agent)).digest('hex').slice(0, 8)}`.replace(/[^A-Za-z0-9_-]/g, '-');
     const hasSession = async (name) => { try { await tmux(['has-session', '-t', `=${name}`]); return true; } catch { return false; } };
 
@@ -71,6 +72,8 @@ export function local({ socket = `${NAME}-local`, env = cleanEnv(), shell = 'bas
         async 'terminal.open'(target, a, ctx) {
             const name = sessionOf(target, ctx.agent);
             if (!(await hasSession(name))) await tmux(['new-session', '-d', '-s', name, '-x', '120', '-y', '40', '-c', folderOf(target), shell, '--noprofile', '--norc']);
+            /* Where tmux put its socket: it outlives a server that ended with its last session. */
+            if (!socketPath) { try { socketPath = (await tmux(['display-message', '-p', '#{socket_path}'])).trim(); } catch { /* asked again next time */ } }
             keep(ctx.agent, sessions, name);
             return { text: `A terminal is open on ${target.title}.`, size: 0 };
         },
@@ -196,6 +199,11 @@ export function local({ socket = `${NAME}-local`, env = cleanEnv(), shell = 'bas
             for (const [who, set] of sessions) if (agent === '*' || who === agent) { for (const s of set) { try { await tmux(['kill-session', '-t', `=${s}`]); } catch { /* gone */ } } set.clear(); }
         },
         /* Everything of this connector, its tmux server included. */
-        async shutdown() { await this.close('*'); try { await tmux(['kill-server']); } catch { /* none */ } },
+        async shutdown() {
+            await this.close('*');
+            /* tmux leaves its socket file behind: it names this connector, so it goes too. */
+            try { await tmux(['kill-server']); } catch { /* none */ }
+            if (socketPath) rmSync(socketPath, { force: true });
+        },
     };
 }
