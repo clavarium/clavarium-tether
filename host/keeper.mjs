@@ -8,6 +8,7 @@
  *       secrets: (name) => Promise<string>,   a secret a connector needs, from the host's store
  *       connectors: { name: connector },      how each kind of target is reached
  *       local: false,                         true adds the `local` connector (tests, serve)
+ *                                             the `ssh` connector is added unless `connectors.ssh` is given (null to drop it)
  *       timeout: 10 * 60_000,                 how long a call waits for a person
  *   });
  *   k.pump();                     take what the agents asked since (every half second or so)
@@ -34,6 +35,7 @@ import { lines } from '../server/mcp.mjs';
 import { openJournal, hide } from './journal.mjs';
 import { approvals as openApprovals, TIMEOUT_MS } from './approvals.mjs';
 import { local as localConnector } from './connectors/local.mjs';
+import { ssh as sshConnector } from './connectors/ssh.mjs';
 
 export { openStore, Refused, LEVELS };
 /* Older than this when first seen, an ask is not done: its command stopped waiting a while ago. */
@@ -69,6 +71,10 @@ export function keeper(dir, { sides = () => [], ask, secrets = async () => { thr
     const queue = openApprovals({ now, timeout, onChange: (w) => changed({ approvals: w }) });
     const conns = { ...connectors };
     if (local && !conns.local) conns.local = localConnector();
+    /* The SSH connector is wired in by default: it is only a client, holds
+       nothing until a target asks it to connect, and loads ssh2 lazily. A host
+       that does not want it passes `connectors: { ssh: null }`. */
+    if (!('ssh' in conns)) conns.ssh = sshConnector();
     store.onChange((w) => changed({ store: w }));
     journal.onAppend((l) => changed({ journal: l }));
 
