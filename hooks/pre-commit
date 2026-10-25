@@ -1,0 +1,16 @@
+#!/bin/bash
+# ---------------------------------------------------------------------------
+# BEFORE A COMMIT: what can never be taken back, and nothing else.
+#
+# The full suite belongs to pre-push. A commit is the unit of work here, and
+# gating every one of them on a slow suite would make people commit less. What
+# CANNOT wait is a name: once it is in a commit it is in the history, and a
+# later commit does not take it out.
+# ---------------------------------------------------------------------------
+set -u
+here="$(dirname "$0")"
+# No assistant signature in the lines this commit ADDS, and no assistant in
+# the git identity. Never the lines it removes, or the guard would forbid its
+# own cleanup.
+node "${here}/../tools/check-ai-names.mjs" staged || exit 1
+exec "${here}/guard.sh"

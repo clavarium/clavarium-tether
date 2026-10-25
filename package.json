@@ -1,0 +1,55 @@
+{
+  "name": "clavarium-tether",
+  "version": "0.1.0-next.1",
+  "description": "Clavarium Tether: an AI agent acts outside its own machine on a tether: levels per target, a person's approval, a journal and a stop (a command and an MCP server for agents, a keeper and a screen for the application). No dependency.",
+  "license": "MIT",
+  "homepage": "https://github.com/clavarium/clavarium-tether#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/clavarium/clavarium-tether.git"
+  },
+  "type": "module",
+  "bin": {
+    "tether": "bin/cli.mjs",
+    "tether-mcp": "server/mcp.mjs"
+  },
+  "files": [
+    "bin/",
+    "server/",
+    "host/",
+    "ui/",
+    "docs/",
+    "README.md",
+    "LICENSE"
+  ],
+  "dependencies": {},
+  "engines": {
+    "node": ">=22"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "check": "npm run check:hooks && npm run check:shapes && npm run check:names && npm run check:shell && npm run check:version && npm test",
+    "check:shapes": "node tools/check-shapes.mjs",
+    "check:names": "node tools/check-ai-names.mjs",
+    "check:shell": "node tools/check-shell.mjs",
+    "check:hooks": "node tools/check-hooks.mjs",
+    "check:version": "node tools/check-version.mjs",
+    "hooks": "git config core.hooksPath hooks",
+    "test": "node --test \"test/*.test.mjs\""
+  },
+  "exports": {
+    "./host": "./host/keeper.mjs",
+    "./serve": "./host/serve.mjs",
+    "./server": "./server/mcp.mjs",
+    "./store": "./server/store.mjs",
+    "./rights": "./server/rights.mjs",
+    "./verbs": "./server/verbs.mjs",
+    "./name": "./server/name.mjs",
+    "./connectors/local": "./host/connectors/local.mjs",
+    "./ui": "./ui/ui.js",
+    "./ui.css": "./ui/ui.css",
+    "./ui/texts/*": "./ui/texts/*"
+  }
+}

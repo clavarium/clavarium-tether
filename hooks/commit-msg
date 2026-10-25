@@ -1,0 +1,10 @@
+#!/bin/bash
+# ---------------------------------------------------------------------------
+# BEFORE THE MESSAGE IS ACCEPTED: no assistant signs it.
+#
+# The tools that write here add a co-author trailer and a session URL by
+# default. This is the only hook that sees the message, so it is the only
+# place that can refuse it -- pre-commit runs before the message exists.
+# ---------------------------------------------------------------------------
+set -u
+exec node "$(dirname "$0")/../tools/check-ai-names.mjs" message "$1"

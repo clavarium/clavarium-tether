@@ -1,0 +1,74 @@
+# publish.yml -- npm, with no stored token (trusted publishing, OIDC).
+#
+# It publishes this repository root: Clavarium Tether.
+# On every push to main it reads the declared
+# version and asks the registry whether it is online already; only a version
+# that is not online is published. A version with a "-" goes out under "next".
+#
+# Set up once on npmjs.com: clavarium-tether > Settings > Trusted publishing >
+# GitHub Actions, organisation "clavarium", repository "clavarium-tether", workflow
+# "publish.yml" -- the exact file name.
+name: publish
+
+on:
+  push:
+    branches: [main, next]
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+          package-manager-cache: false
+      - name: Trusted publishing needs npm 11.5.1 or later
+        run: |
+          set -eu
+          at_least() { [ "$(printf '%s\n%s\n' "$2" "$1" | sort -V | head -n 1)" = "$2" ]; }
+          v="$(npm -v)"; at_least "$v" 11.5.1 || npm install -g npm@11
+          npm -v
+      - name: The command says the version of the package, and the tests pass
+        run: |
+          set -eu
+          [ "$(node bin/cli.mjs --version)" = "$(node -p "require('./package.json').version")" ]
+          npm test
+      - name: Is this version online already?
+        id: target
+        run: |
+          set -eu
+          name="$(node -p "require('./package.json').name")"
+          version="$(node -p "require('./package.json').version")"
+          status=0; out="$(npm view "${name}@${version}" version 2>&1)" || status=$?
+          if [ "$status" -eq 0 ] && [ -n "$out" ]; then echo "publish=no" >> "$GITHUB_OUTPUT"; echo "::notice::${name}@${version} is online already"
+          elif printf '%s' "$out" | grep -q E404; then echo "publish=yes" >> "$GITHUB_OUTPUT"; echo "::notice::publishing ${name}@${version}"
+          else echo "::error::the registry did not answer: $out"; exit 1; fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          # TWO BRANCHES: next publishes the versions to try (with a "-"), main the versions for
+          # everybody, and main is moved to a commit of next that was tried. A version for everybody
+          # on next waits for main; a version to try on main is refused. The last "publish" counts.
+          case "${GITHUB_REF_NAME}:${version}" in
+            main:*-*) echo "::error::${name}@${version} is a version to try: it goes out from next, never from main"; exit 1 ;;
+            next:*-*|main:*) : ;;
+            next:*) echo "::notice::${name}@${version} is for everybody: published from main once main is moved here"; echo "publish=no" >> "$GITHUB_OUTPUT" ;;
+            *) echo "::error::published from main or next only, not from ${GITHUB_REF_NAME}"; exit 1 ;;
+          esac
+      - name: Publish
+        if: steps.target.outputs.publish == 'yes'
+        run: |
+          set -eu
+          case "${{ steps.target.outputs.version }}" in
+            *-*) npm publish --tag next ;;
+            *)   npm publish ;;
+          esac

@@ -1,0 +1,44 @@
+#!/bin/bash
+# ---------------------------------------------------------------------------
+# BEFORE A PUSH: everything, because a push is what leaves this machine.
+#
+# A gate that depends on somebody reading a screen is not a gate: the suite
+# runs here, and a failure stops the push.
+#
+# --no-verify still bypasses it, as it bypasses every hook. That is git's
+# design; what this removes is a green-looking screen nobody read.
+# ---------------------------------------------------------------------------
+set -u
+# TWO HALVES OF ONE GUARD. This half knows NAMES and lives outside the
+# repository. The other -- check-shapes.mjs, inside `npm run check` -- knows
+# SHAPES and runs anywhere. Neither replaces the other.
+echo "--- local guard: names (outside the repository, on purpose)"
+"$(dirname "$0")/guard.sh" || exit 1
+# THE MESSAGES OF THE COMMITS BEING PUSHED, not only the files: a commit made
+# on a machine without these hooks arrives here having never passed commit-msg.
+# What is being pushed is read on standard input, one line per ref.
+echo "--- no assistant signs the commits being pushed"
+pushing=0
+while read -r local_ref local_sha remote_ref remote_sha; do
+    [ -z "${local_sha:-}" ] && continue
+    case "$local_sha" in *[!0]*) : ;; *) continue ;; esac   # a deletion
+    if [ -z "${remote_sha:-}" ] || ! echo "$remote_sha" | grep -q '[1-9a-f]'; then
+        range="$local_sha"                  # a new ref: everything it carries
+    else
+        range="$remote_sha..$local_sha"     # what this push adds
+    fi
+    node "$(dirname "$0")/../tools/check-ai-names.mjs" range "$range" || exit 1
+    pushing=1
+done
+# Nothing on standard input: we cannot conclude, so we look at everything.
+if [ "$pushing" = 0 ]; then
+    node "$(dirname "$0")/../tools/check-ai-names.mjs" range HEAD || exit 1
+fi
+echo "--- npm run check"
+if ! npm run check --silent; then
+    echo
+    echo "REFUSED: the suite fails. Nothing goes out."
+    echo "Fix the cause, never the check."
+    exit 1
+fi
+echo "--- all green"
