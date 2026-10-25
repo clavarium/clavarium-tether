@@ -111,6 +111,15 @@ export function check(verb, a = {}) {
         case 'browser.key': tab(); str('key', 60); str('selector', PATH_MAX); break;
         case 'browser.scroll': tab(); num('dx'); num('dy'); str('selector', PATH_MAX); break;
         case 'browser.drag': tab(); str('from', PATH_MAX); str('to', PATH_MAX); break;
+        /* The screen of a machine: coordinates are numbers, a drag's ends are points
+           like "12,40", a key is a name or chord. The engine clamps to the screen. */
+        case 'screen.shot': break;
+        case 'screen.move': num('x'); num('y'); break;
+        case 'screen.click': num('x'); num('y'); if (a.button) out.button = oneLine(a.button, 10); break;
+        case 'screen.drag': str('from', 100); str('to', 100); break;
+        case 'screen.scroll': num('dx'); num('dy'); break;
+        case 'screen.type': str('text', COMMAND_MAX, true); break;
+        case 'screen.key': str('key', 60); break;
         default: for (const k of v.needs) str(k, COMMAND_MAX, true);
     }
     for (const k of v.needs) if (out[k] === undefined || out[k] === '') no(`${verb} needs ${k}`);
