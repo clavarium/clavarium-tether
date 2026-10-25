@@ -4,6 +4,9 @@
  *
  *   tether serve [--store DIR] [--port N] [--side FOLDER=NAME]... [--lang fr]
  *                [--local FOLDER[=TITLE]] [--timeout MINUTES]
+ *                [--ssh USER@HOST[:PORT] --ssh-key FILE
+ *                 [--ssh-title T] [--ssh-pin PIN] [--ssh-root DIR]
+ *                 [--ssh-level LEVEL] [--ssh-passphrase-env VAR]]
  *
  * The store is DIR (default: $TETHER_STORE, else ~/.local/share/clavarium-tether):
  * put it where the agents cannot write, since whoever writes the store gives
@@ -13,6 +16,13 @@
  * --local gives the agents THIS machine as a target, through the local
  * connector: a shell in tmux and FOLDER. Off unless asked for. Given at level
  * "propose" the first time: every action is asked.
+ *
+ * --ssh declares one SSH target: USER@HOST[:PORT], its private key read from
+ * --ssh-key FILE (the FILE's content is the secret; the path is not stored).
+ * --ssh-pin checks the server's identity (an "SHA256:…" fingerprint, a
+ * known-hosts line, or the base64 key); --ssh-root scopes files.* to a remote
+ * folder; --ssh-passphrase-env names an environment variable holding the key's
+ * passphrase (never passed on the command line). Given at level "propose".
  *
  * The page listens on 127.0.0.1 only: who reaches it is the person.
  */
@@ -46,13 +56,25 @@ new EventSource('/api/changes').onmessage = () => { clearTimeout(soon); soon = s
 </script></html>`;
 
 export function options(argv, { env = process.env, cwd = process.cwd() } = {}) {
-    const o = { store: env[ENV_STORE] || join(homedir(), '.local', 'share', PACKAGE), port: PORT, sides: [], lang: 'en', local: null, timeout: 10 };
+    const o = { store: env[ENV_STORE] || join(homedir(), '.local', 'share', PACKAGE), port: PORT, sides: [], lang: 'en', local: null, timeout: 10, ssh: null };
+    const sshOf = () => (o.ssh ??= { port: 22, title: '', pin: '', root: '', level: 'propose', keyFile: '', passphraseEnv: '' });
     for (let i = 0; i < argv.length; i++) {
         const a = argv[i]; const v = argv[i + 1];
         if (a === '--store' && v) { o.store = resolve(cwd, v); i++; }
         else if (a === '--port' && v) { o.port = Number(v); i++; }
         else if (a === '--lang' && v) { o.lang = v === 'fr' ? 'fr' : 'en'; i++; }
         else if (a === '--timeout' && v) { o.timeout = Number(v); i++; }
+        else if (a === '--ssh' && v) {
+            const m = /^([^@/]+)@([^@:/]+)(?::(\d+))?$/.exec(v);
+            if (!m) throw new Error('--ssh takes USER@HOST[:PORT]');
+            const s = sshOf(); s.user = m[1]; s.host = m[2]; if (m[3]) s.port = Number(m[3]); i++;
+        }
+        else if (a === '--ssh-key' && v) { sshOf().keyFile = resolve(cwd, v); i++; }
+        else if (a === '--ssh-title' && v) { sshOf().title = v; i++; }
+        else if (a === '--ssh-pin' && v) { sshOf().pin = v; i++; }
+        else if (a === '--ssh-root' && v) { sshOf().root = v; i++; }
+        else if (a === '--ssh-passphrase-env' && v) { sshOf().passphraseEnv = v; i++; }
+        else if (a === '--ssh-level' && v) { sshOf().level = v; i++; }
         else if (a === '--local' && v) {
             const at = v.lastIndexOf('='); const folder = resolve(cwd, at > 0 ? v.slice(0, at) : v);
             o.local = { folder, title: at > 0 ? v.slice(at + 1) : basename(folder) }; i++;
@@ -64,15 +86,37 @@ export function options(argv, { env = process.env, cwd = process.cwd() } = {}) {
     if (!o.sides.length) o.sides.push({ dir: join(cwd, FOLDER), who: { id: 'agent:agent', kind: 'agent', name: 'Agent' } });
     if (!Number.isInteger(o.port) || o.port < 0 || o.port > 65535) throw new Error('--port takes a number');
     if (!(o.timeout > 0)) throw new Error('--timeout takes a number of minutes');
+    if (o.ssh) {
+        if (!o.ssh.host || !o.ssh.user) throw new Error('--ssh takes USER@HOST[:PORT]');
+        if (!o.ssh.keyFile) throw new Error('--ssh needs --ssh-key FILE');
+        if (!['watch', 'propose', 'frame', 'free'].includes(o.ssh.level)) throw new Error('--ssh-level is one of: watch, propose, frame, free');
+        o.ssh.title ||= o.ssh.host;
+    }
     return o;
 }
 
 export function start(o, { quiet = false } = {}) {
     for (const s of o.sides) mkdirSync(s.dir, { recursive: true });
-    const k = keeper(o.store, { sides: () => o.sides, local: !!o.local, timeout: o.timeout * 60_000 });
+    /* The SSH key and its passphrase are read here, when a connector asks for
+       them by the name the target gave. Neither is written to the store, the
+       journal or the page: only the names "ssh-key" and "ssh-passphrase" are. */
+    const secrets = o.ssh ? async (name) => {
+        if (name === 'ssh-key') return readFileSync(o.ssh.keyFile, 'utf8');
+        if (name === 'ssh-passphrase' && o.ssh.passphraseEnv) return process.env[o.ssh.passphraseEnv] ?? '';
+        throw new Error(`no secret named ${name}`);
+    } : undefined;
+    const k = keeper(o.store, { sides: () => o.sides, local: !!o.local, timeout: o.timeout * 60_000, ...(secrets ? { secrets } : {}) });
     if (o.local) {
         const t = k.store.putTarget({ id: 'local', title: o.local.title, kind: 'computer', connector: 'local', config: { folder: o.local.folder } });
         for (const s of o.sides) if (!t.grants[s.who.id]) k.store.grant(t.id, s.who.id, 'propose');
+    }
+    if (o.ssh) {
+        const config = { host: o.ssh.host, port: o.ssh.port, user: o.ssh.user };
+        if (o.ssh.pin) config.pin = o.ssh.pin;
+        if (o.ssh.root) config.root = o.ssh.root;
+        const sec = { key: 'ssh-key', ...(o.ssh.passphraseEnv ? { passphrase: 'ssh-passphrase' } : {}) };
+        const t = k.store.putTarget({ id: 'ssh', title: o.ssh.title, kind: 'ssh', connector: 'ssh', config, secrets: sec });
+        for (const s of o.sides) if (!t.grants[s.who.id]) k.store.grant(t.id, s.who.id, o.ssh.level);
     }
     const watchers = new Set();
     k.onChange(() => { for (const res of watchers) res.write('data: change\n\n'); });
@@ -103,7 +147,7 @@ export function start(o, { quiet = false } = {}) {
     });
     return new Promise((ok) => server.listen(o.port, '127.0.0.1', () => {
         const port = server.address().port;
-        if (!quiet) process.stdout.write(`${TITLE} kept in ${o.store}\nPage: http://127.0.0.1:${port}/\nAgents: ${o.sides.map((s) => `${s.who.name} (${s.dir})`).join(', ')}\n${o.local ? `This machine given: ${o.local.folder}\n` : ''}`);
+        if (!quiet) process.stdout.write(`${TITLE} kept in ${o.store}\nPage: http://127.0.0.1:${port}/\nAgents: ${o.sides.map((s) => `${s.who.name} (${s.dir})`).join(', ')}\n${o.local ? `This machine given: ${o.local.folder}\n` : ''}${o.ssh ? `SSH target "${o.ssh.title}": ${o.ssh.user}@${o.ssh.host}:${o.ssh.port} (${o.ssh.level})\n` : ''}`);
         ok({ server, keeper: k, port, close: async () => { clearInterval(pump); for (const r of watchers) r.end(); server.close(); await k.close(); } });
     }));
 }
