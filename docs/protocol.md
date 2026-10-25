@@ -332,41 +332,73 @@ keyboard. Tether settles the verbs and their rights, but writes no engine for
 them: a host plugs one in. Without one, a `screen` target says its connector is
 off, like any kind with no connector.
 
-The engine is an ordinary connector under the name `screen`:
+Tether ships the **envelope** — the `screen` connector — and the host supplies
+the **engine** it wraps. The envelope (`host/connectors/screen.mjs`) does the
+Tether-side work: one session per target and agent, the target's URL and secret,
+the verb mapping, the key map, finite coordinates, a per-session rate limit, and
+keeping the token out of every answer. The engine does the capture and the
+injection; Tether writes none of it, and never imports one.
 
-    keeper(storeDir, { connectors: { screen: myEngine }, /* ... */ });
+    import { screen } from 'clavarium-tether/host/connectors/screen.mjs';
+    keeper(storeDir, { connectors: { screen: screen({ engine: createScreen }) }, /* ... */ });
 
-It answers these verbs (rights, approval, journal and stop already wrap every
-call, so the engine only does the work):
+`engine` is a **factory**: calling it returns one session. The envelope expects
+the shape
 
-| verb | args | does |
+    createScreen() -> {
+      connect({ url, token, user?, key?, node?, signal? }),
+      shot() -> { dataUrl, width, height },
+      move(x, y), click(x, y, button?), drag(from, to), scroll(dx, dy),
+      type(text), key(vk, code?), keyDown(vk), keyUp(vk), close()
+    }
+
+Pass no engine (`screen({})`) and the target stays visible but every call says
+the connector has no engine, like any kind with no connector.
+
+The envelope answers these verbs (rights, approval, journal and stop already
+wrap every call):
+
+| verb | args | engine call |
 |---|---|---|
-| `screen.shot` | — | returns the screen; `{ text, size }` — `text` a `data:` image URL, or a note with it saved |
-| `screen.move` | `x`, `y` | moves the pointer |
-| `screen.click` | `x?`, `y?`, `button?` | clicks |
-| `screen.drag` | `from`, `to` | drags (points like `"12,40"`) |
-| `screen.scroll` | `dx?`, `dy?` | scrolls |
-| `screen.type` | `text` | types text |
-| `screen.key` | `key` | a key or chord (`"Enter"`, `"ctrl+c"`) |
+| `screen.shot` | — | `shot()`; returns `{ text: dataUrl, size }` |
+| `screen.move` | `x`, `y` | `move(x, y)` |
+| `screen.click` | `x?`, `y?`, `button?` | `click(x, y, button)`; no coords → the last pointer; button `left`/`middle`/`right` (or `0`/`1`/`2`) |
+| `screen.drag` | `from`, `to` | `drag(from, to)`; points like `"12,40"` |
+| `screen.scroll` | `dx?`, `dy?` | `scroll(dx, dy)` |
+| `screen.type` | `text` | `type(text)` |
+| `screen.key` | `key` | a key or chord (see below) |
 
 `screen.shot` reads; the rest act and are proposed for approval (and a person's
-"Always" allows that whole verb on the target). The engine reaches the machine
-however it likes; the simple, firewall-friendly way is **RFB (VNC) over a
-WebSocket**: put `websockify`/noVNC in front of a standard VNC server
-(TigerVNC, x11vnc, wayvnc), or use a VNC server with native WebSocket
-(KasmVNC), and have the engine speak RFB to it. The password or key stays a
-Tether secret the target names (`ctx.secret('password')`); it never reaches the
-agent. A `Refused` thrown is told to the agent as is.
+"Always" allows that whole verb on the target). The acting verbs are rate-limited
+per session (≤ 30 a second), so a run-away agent cannot flood the far machine.
 
-    const myEngine = {
-        async run(verb, target, args, ctx) {
-            // connect once to target.config.url (e.g. a ws:// of websockify),
-            // using await ctx.secret('password'); then:
-            //   screen.shot  -> { text: `data:image/png;base64,...`, size }
-            //   screen.move/click/drag/scroll/type/key -> do it, { text: 'Done.', size: 0 }
-        },
-        close(agent) { /* drop that agent's connection */ },
-    };
+**The key map.** `screen.key` takes a key name or a chord and maps it to Windows
+virtual-key codes. The envelope knows a modest table — `Enter`, `Escape`, `Tab`,
+`Backspace`, `Delete`, the arrows (`Left`/`ArrowLeft` …), `Home`/`End`/`PageUp`/
+`PageDown`/`Insert`, `Space`, the function keys `F1`–`F12`, and the modifiers
+`Ctrl`, `Alt`, `Shift`, `Win` — and a single letter or digit maps to its own code.
+A chord like `"ctrl+c"` holds its modifiers down with `keyDown`, strikes the main
+key with `key`, then releases them with `keyUp`, in order. An unknown key name is
+refused rather than guessed.
+
+**The secret.** The URL is `target.config.url` (never from the agent's args); the
+login secret is a Tether secret the target names — `ctx.secret('token')` (and/or
+`ctx.secret('key')`), with an optional `config.user` and `config.node`. It is
+handed straight to the engine's `connect`, kept in the session, and never
+returned, journalled or logged; the keeper masks it a second time. A `Refused`
+the engine throws is told to the agent as is.
+
+The engine reaches the machine however it likes. One worked example is
+MeshCentral's KVM over a WebSocket (the reference engine an operator wrote);
+another firewall-friendly way is **RFB (VNC) over a WebSocket** — `websockify`/
+noVNC in front of a standard VNC server (TigerVNC, x11vnc, wayvnc), or a VNC
+server with native WebSocket (KasmVNC).
+
+With `serve`, `--screen URL` declares one screen target. Its login token is read
+from an environment variable named by `--screen-token-env`, never the command
+line, and `--screen-engine MODULE` points at a module that exports the engine
+factory (`createScreen`, or a default export). Without that module the target is
+declared but its connector stays off until a host plugs an engine in.
 
 Nothing else changes: the target is given to a conversation, its level set, its
 calls approved and journalled, and Stop cuts it, like every other target.
