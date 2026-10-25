@@ -8,8 +8,9 @@ that holds the targets and their secrets, and a screen for people.
 - **Target**: one access given to an agent. Its kind: `computer` (a machine,
   through a small program installed there), `ssh` (a machine the keeper reaches
   by SSH), `browser` (tabs given by an extension), `files` (an online folder).
-- **Connector**: the code that reaches one kind of target. V1 has `local`
-  only: the keeper's own machine, for tests and `tether serve`.
+- **Connector**: the code that reaches one kind of target. Two are built:
+  `local` (the keeper's own machine, for tests and `tether serve`) and `ssh`
+  (a machine the keeper reaches as an ordinary SSH client — see below).
 - **Level**: what an agent may do on a target without asking.
 
 ## Rights
@@ -118,6 +119,35 @@ Every acting verb takes `why` (`--why`): one line a person reads before
 deciding. Declared, not done yet: `browser.tabs`, `open`, `shot`, `html`,
 `console`, `eval`, `click`, `type`, `key`, `scroll`, `drag` (the keeper
 answers "not available yet"; no MCP tool is offered for them).
+
+## Reach a server over SSH
+
+A target of kind `ssh` is a machine that already runs an SSH server. The keeper
+connects to it as an ordinary SSH client (through the `ssh2` library, pure JS —
+no system `ssh`, nothing installed on the far machine). It serves the same
+`terminal.*` and `files.*` verbs as `local`: commands and an interactive shell
+over SSH channels, files over SFTP.
+
+The target's `config` holds `host`, `port` (22 by default), `user`, an optional
+`pin` (the server's host key, to check its identity) and an optional `root` (a
+remote folder `files.*` may not leave). The private key is **named** in
+`secrets` — `{key: "name"}`, and `{passphrase: "name"}` if it is encrypted —
+never written in the target. At connect time the keeper fetches the key from the
+host's secret store, hands it straight to `ssh2`, and keeps it in the one
+connection it holds per target (reused across calls, reopened if it drops). The
+key is never returned to the agent, never journalled, never logged; the keeper
+masks any secret it handed out, as the local connector's environment does.
+
+`pin` checks the server is the one expected: an `SHA256:…` fingerprint, a
+known-hosts line, or the base64 host key. A server whose key does not match is
+refused before anything runs. With no `pin`, the server's identity is not
+checked. With a `root`, every `files.*` path resolves inside it (symlinks that
+point out are refused, as with `local`); `~` is that folder. With no `root`,
+paths resolve from the login home on the far machine.
+
+The `ssh` connector is wired into the keeper by default (it holds nothing until
+a target asks it to connect, and loads `ssh2` lazily); a host that does not want
+it passes `connectors: { ssh: null }`.
 
 ## The application's side
 

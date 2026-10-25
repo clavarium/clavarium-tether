@@ -45,6 +45,30 @@ same way, universal (nothing in it is specific to Clavarium).
   waits is refused, terminals are closed, every call after is refused until
   a person resumes.
 
+## Reach a server over SSH
+
+A target of kind `ssh` is a machine that already runs an SSH server. The
+keeper connects to it as an ordinary SSH client — like ansible or a deploy
+job — through the `ssh2` library (pure JS; no system `ssh`, and **nothing is
+installed on the far machine**). The agent gets the same verbs as on any
+other target: `tether run`, `tether read`, `tether files …`, each through its
+level and a person's approval.
+
+The target says `host`, `port`, `user`, optionally a host-key `pin` to check
+the server's identity and a `root` folder that files may not leave. The
+private key is held by the keeper, from the application's secret store, and
+named in the target — never the key itself; it never reaches the agent, the
+journal or any log.
+
+    tether serve --side ./.tether=Assistant \
+      --ssh deploy@example.com --ssh-key ~/.ssh/deploy_ed25519 \
+      --ssh-root /srv/app --ssh-pin SHA256:… --ssh-title "App server"
+
+declares one SSH target without an application. `--ssh-key FILE` reads the key
+from that file (its content is the secret; the path is not stored); the target
+starts at level Propose. A host-key `--ssh-pin` refuses a server whose key does
+not match.
+
 ## Without an application
 
     tether serve --store ~/tether-data --side ./.tether=Assistant --local ~/Projects
@@ -54,10 +78,10 @@ keeps the targets and shows their page on `http://127.0.0.1:4190/`.
 at level Propose; it is off unless asked for. Put the store where the agents
 cannot write.
 
-See [docs/protocol.md](docs/protocol.md). No dependency; Node 22 or later;
-tmux for the local connector's terminals.
+See [docs/protocol.md](docs/protocol.md). One dependency, `ssh2` (the SSH
+connector); Node 22 or later; tmux for the local connector's terminals.
 
-**Status:** first version (0.1), not yet published. The `local` connector
-only: `computer`, `ssh`, `browser` and online folders come next.
+**Status:** first version (0.1), not yet published. The `local` and `ssh`
+connectors are built; `computer`, `browser` and online folders come next.
 
 License: MIT.
