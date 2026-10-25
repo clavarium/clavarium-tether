@@ -1,7 +1,7 @@
 {
   "name": "clavarium-tether",
   "version": "0.1.0-next.1",
-  "description": "Clavarium Tether: an AI agent acts outside its own machine on a tether: levels per target, a person's approval, a journal and a stop (a command and an MCP server for agents, a keeper and a screen for the application). No dependency.",
+  "description": "Clavarium Tether: an AI agent acts outside its own machine on a tether: levels per target, a person's approval, a journal and a stop (a command and an MCP server for agents, a keeper and a screen for the application). One dependency: ssh2, for the SSH connector.",
   "license": "MIT",
   "homepage": "https://github.com/clavarium/clavarium-tether#readme",
   "repository": {
@@ -22,7 +22,9 @@
     "README.md",
     "LICENSE"
   ],
-  "dependencies": {},
+  "dependencies": {
+    "ssh2": "1.17.0"
+  },
   "engines": {
     "node": ">=22"
   },
@@ -48,6 +50,7 @@
     "./verbs": "./server/verbs.mjs",
     "./name": "./server/name.mjs",
     "./connectors/local": "./host/connectors/local.mjs",
+    "./connectors/ssh": "./host/connectors/ssh.mjs",
     "./ui": "./ui/ui.js",
     "./ui.css": "./ui/ui.css",
     "./ui/texts/*": "./ui/texts/*"
