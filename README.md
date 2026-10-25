@@ -69,6 +69,34 @@ from that file (its content is the secret; the path is not stored); the target
 starts at level Propose. A host-key `--ssh-pin` refuses a server whose key does
 not match.
 
+## Reach a browser
+
+A target of kind `browser` is a set of tabs a person grants to an agent through
+the **Tether extension** (Chrome and Firefox, one codebase; `extension/`). The
+extension connects OUT to the keeper over a WebSocket — nothing is installed as a
+server, and the browser may sit behind any firewall. The agent gets browser
+verbs scoped to the granted tabs only: `tabs`, `open`, `shot`, `html`,
+`console`, `eval`, `click`, `type`, `key`, `scroll`, `drag`.
+
+    tether serve --browser --port 8787 --side ./.tether=Assistant
+
+serves the browser endpoint at `ws://127.0.0.1:8787/browser` (a browser-safe
+port — browsers refuse 4190). The person opens the popup, which shows a short
+code; they type it in the keeper page to pair. A long-lived token is then kept
+in the extension's storage — never logged, never shown to the agent. In the
+popup the person turns tabs on one by one, or allows a whole site.
+
+- **Granted tabs only.** A verb on a tab that was not granted is refused, on both
+  the extension's side and the keeper's. `browser.open` of a new tab grants it.
+- **Propose by default.** Each action waits for the person; sites are allowed one
+  at a time. Always ask before a payment, a post or a send.
+- **A visible indicator.** While the agent acts in a tab, the extension shows a
+  badge on its icon and a red border around the page.
+
+Build the extension with WXT (`cd extension && npm install && npm run build`
+for Chrome, `npm run build:firefox` for Firefox); load the unpacked build from
+`extension/.output/`.
+
 ## Without an application
 
     tether serve --store ~/tether-data --side ./.tether=Assistant --local ~/Projects
@@ -81,7 +109,9 @@ cannot write.
 See [docs/protocol.md](docs/protocol.md). One dependency, `ssh2` (the SSH
 connector); Node 22 or later; tmux for the local connector's terminals.
 
-**Status:** first version (0.1), not yet published. The `local` and `ssh`
-connectors are built. A `screen` slot is ready for a host to plug an engine into (see docs). `computer`, `browser` and online folders come next.
+**Status:** first version (0.1), not yet published. The `local`, `ssh` and
+`browser` connectors are built (the browser one with its WebExtension in
+`extension/`). A `screen` slot is ready for a host to plug an engine into (see
+docs). The `computer` connector and online folders come next.
 
 License: MIT.

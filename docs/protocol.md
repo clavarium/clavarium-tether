@@ -8,9 +8,10 @@ that holds the targets and their secrets, and a screen for people.
 - **Target**: one access given to an agent. Its kind: `computer` (a machine,
   through a small program installed there), `ssh` (a machine the keeper reaches
   by SSH), `browser` (tabs given by an extension), `files` (an online folder).
-- **Connector**: the code that reaches one kind of target. Two are built:
-  `local` (the keeper's own machine, for tests and `tether serve`) and `ssh`
-  (a machine the keeper reaches as an ordinary SSH client — see below).
+- **Connector**: the code that reaches one kind of target. Three are built:
+  `local` (the keeper's own machine, for tests and `tether serve`), `ssh`
+  (a machine the keeper reaches as an ordinary SSH client — see below) and
+  `browser` (tabs a person grants through the Tether extension — see below).
 - **Level**: what an agent may do on a target without asking.
 
 ## Rights
@@ -115,10 +116,27 @@ targets, 4 not answered in time, 64 not understood.
 | `tether files TARGET move FROM TO` | `files-move` | `files.move` |
 | `tether files TARGET delete PATH` | `files-delete` | `files.delete` |
 
+And the browser (a `browser` target, through the extension — see "Reach a
+browser"):
+
+| Command | MCP tool | Verb |
+|---|---|---|
+| `tether browser TARGET tabs` | `browser-tabs` | `browser.tabs` |
+| `tether browser TARGET open URL [--tab N]` | `browser-open` | `browser.open` |
+| `tether browser TARGET shot [--tab N]` | `browser-shot` | `browser.shot` |
+| `tether browser TARGET html [--tab N] [--selector S] [--readable]` | `browser-html` | `browser.html` |
+| `tether browser TARGET console [--tab N] [--lines N]` | `browser-console` | `browser.console` |
+| `tether browser TARGET eval "script" [--tab N]` | `browser-eval` | `browser.eval` |
+| `tether browser TARGET click [SELECTOR \| --x N --y N] [--tab N]` | `browser-click` | `browser.click` |
+| `tether browser TARGET type "text" [--selector S] [--tab N]` | `browser-type` | `browser.type` |
+| `tether browser TARGET key KEY [--selector S] [--tab N]` | `browser-key` | `browser.key` |
+| `tether browser TARGET scroll [--dx N] [--dy N] [--selector S] [--tab N]` | `browser-scroll` | `browser.scroll` |
+| `tether browser TARGET drag FROM TO [--tab N]` | `browser-drag` | `browser.drag` |
+
 Every acting verb takes `why` (`--why`): one line a person reads before
-deciding. Declared, not done yet: `browser.tabs`, `open`, `shot`, `html`,
-`console`, `eval`, `click`, `type`, `key`, `scroll`, `drag` (the keeper
-answers "not available yet"; no MCP tool is offered for them).
+deciding. `--tab` picks which granted tab to act on (its id from
+`browser tabs`); with none, the agent's active granted tab. A verb on a tab the
+person did not grant is refused.
 
 ## Reach a server over SSH
 
@@ -148,6 +166,66 @@ paths resolve from the login home on the far machine.
 The `ssh` connector is wired into the keeper by default (it holds nothing until
 a target asks it to connect, and loads `ssh2` lazily); a host that does not want
 it passes `connectors: { ssh: null }`.
+
+## Reach a browser
+
+A target of kind `browser` is a set of tabs a person grants to an agent through
+the **Tether extension** (Chrome and Firefox, one codebase built with WXT;
+`extension/`). The keeper does not reach out — the extension connects OUT to the
+keeper over a WebSocket, so nothing is installed as a server, no port is opened
+for the browser to find, and the browser may sit behind any firewall. V1 uses no
+`chrome.debugger`: the verbs use `scripting.executeScript` in the page's own
+world, `tabs.captureVisibleTab` and synthetic DOM events only.
+
+**The endpoint.** The keeper serves the WebSocket at `/browser` on its own
+server (`tether serve --browser`, or a host wiring the connector into its serve
+server). Browsers refuse port 4190 (`ERR_UNSAFE_PORT`), so for browser use the
+keeper runs on a browser-safe port: `tether serve --browser --port 8787`, which
+the extension defaults to (`ws://127.0.0.1:8787/browser`; `wss://` in real use,
+`ws://` only for 127.0.0.1). The person may change the URL in the popup.
+
+**Pairing.** An extension with no token connects and sends `{t:"pair", code}`
+showing a short code in its popup. A person reads that code and types it in the
+keeper page (the `pair {code}` op); the keeper mints a long-lived token, hands it
+back as `{t:"paired", token}`, and the extension keeps it in extension storage.
+On every later connection the extension sends `{t:"hello", token}` and is
+welcomed. The token is never logged, never journalled, and never reaches an
+agent; it lives only in the connector's token store and the extension's storage.
+
+**The messages** (JSON, each way):
+
+| From | Message | Meaning |
+|---|---|---|
+| extension | `{t:"hello", token?}` | on connect; with a token, authenticate |
+| extension | `{t:"pair", code}` | offer the code shown in the popup |
+| keeper | `{t:"pair-needed"}` / `{t:"welcome"}` / `{t:"paired", token}` | pairing state |
+| extension | `{t:"tabs", tabs:[{id,url,title,site}]}` | the granted tabs (only those), pushed on change |
+| keeper | `{t:"call", id, verb, args}` | run one browser verb (`verb` without the `browser.` prefix) |
+| extension | `{t:"result", id, ok, text, size}` / `{ok:false, error}` | its answer |
+| either | `{t:"ping"}` / `{t:"pong"}` | heartbeat (every ~20 s); a missed pong reconnects |
+
+**Tab scoping.** A person grants a tab in the popup (per tab on/off) or allows a
+whole site. The extension pushes only the granted tabs; the connector keeps that
+set and **refuses a verb that names a non-granted tab before sending it** — the
+same refusal the extension makes on its side, as a second lock. `browser.open`
+with no tab opens a new tab, which the extension grants as it opens it.
+`browser.tabs` is answered by the keeper from the pushed list without a round
+trip. `browser.shot` returns a `data:image/png;base64,…` URL.
+
+**Rights and the indicator.** The level (watch / propose / frame / free) and a
+person's approval are applied by the keeper BEFORE it calls the connector,
+exactly as for ssh and local. The **default per-site level is Propose**: every
+action is asked, with sites allowed one by one. While the agent acts in a tab the
+extension shows a **visible indicator** — a badge on the toolbar icon and a red
+border around the page — so the person always sees when a tab is being driven.
+
+**Wiring.** `host/connectors/browser.mjs` exports `browser({ tokens? })`; the
+connector is an ordinary connector (`run(verb, target, args, ctx)`) plus
+`accept(channel)` (hand it a socket wrapped as `{send, onMessage, onClose,
+close}`), `pair(code)`, `status()` and `onChange(fn)`. `tether serve --browser`
+wires it in, upgrades `/browser` to a WebSocket (`host/ws.mjs`, a tiny RFC 6455
+server, no dependency) and adds the `pair` page op. A host does the same in its
+own serve server and pairing UI.
 
 ## The application's side
 
