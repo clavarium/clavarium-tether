@@ -36,6 +36,8 @@ import { openJournal, hide } from './journal.mjs';
 import { approvals as openApprovals, TIMEOUT_MS } from './approvals.mjs';
 import { local as localConnector } from './connectors/local.mjs';
 import { ssh as sshConnector } from './connectors/ssh.mjs';
+import { webdav as webdavConnector } from './connectors/webdav.mjs';
+import { graph as graphConnector } from './connectors/graph.mjs';
 
 export { openStore, Refused, LEVELS };
 /* Older than this when first seen, an ask is not done: its command stopped waiting a while ago. */
@@ -75,6 +77,12 @@ export function keeper(dir, { sides = () => [], ask, secrets = async () => { thr
        nothing until a target asks it to connect, and loads ssh2 lazily. A host
        that does not want it passes `connectors: { ssh: null }`. */
     if (!('ssh' in conns)) conns.ssh = sshConnector();
+    /* The online-folder connectors are wired in by default too: each is a plain
+       HTTPS client that holds nothing until a target asks it to connect (webdav
+       holds nothing at all; graph caches only a token it fetched). A host that
+       does not want one passes `connectors: { webdav: null }` / `{ graph: null }`. */
+    if (!('webdav' in conns)) conns.webdav = webdavConnector();
+    if (!('graph' in conns)) conns.graph = graphConnector();
     store.onChange((w) => changed({ store: w }));
     journal.onAppend((l) => changed({ journal: l }));
 
