@@ -7,6 +7,10 @@
  *                [--ssh USER@HOST[:PORT] --ssh-key FILE
  *                 [--ssh-title T] [--ssh-pin PIN] [--ssh-root DIR]
  *                 [--ssh-level LEVEL] [--ssh-passphrase-env VAR]]
+ *                [--webdav URL --webdav-pass-env VAR [--webdav-user NAME]
+ *                 [--webdav-root DIR] [--webdav-title T] [--webdav-level LEVEL]]
+ *                [--graph-drive ID --graph-token-env VAR
+ *                 [--graph-root DIR] [--graph-title T] [--graph-level LEVEL]]
  *
  * The store is DIR (default: $TETHER_STORE, else ~/.local/share/clavarium-tether):
  * put it where the agents cannot write, since whoever writes the store gives
@@ -23,6 +27,17 @@
  * known-hosts line, or the base64 key); --ssh-root scopes files.* to a remote
  * folder; --ssh-passphrase-env names an environment variable holding the key's
  * passphrase (never passed on the command line). Given at level "propose".
+ *
+ * --webdav declares one online-folder target on a WebDAV server (Nextcloud and
+ * the like): --webdav URL is the collection, --webdav-user the Basic-auth user,
+ * --webdav-pass-env names an environment variable holding the password (an app
+ * password / app token), --webdav-root scopes files.* to a sub-folder.
+ *
+ * --graph-drive declares one online-folder target on SharePoint/OneDrive through
+ * Microsoft Graph: the drive id, with --graph-token-env naming an environment
+ * variable holding a bearer token the host keeps fresh, and --graph-root a
+ * sub-folder. Both are given at level "propose"; their secret is read from the
+ * environment, never the command line.
  *
  * The page listens on 127.0.0.1 only: who reaches it is the person.
  */
@@ -56,8 +71,10 @@ new EventSource('/api/changes').onmessage = () => { clearTimeout(soon); soon = s
 </script></html>`;
 
 export function options(argv, { env = process.env, cwd = process.cwd() } = {}) {
-    const o = { store: env[ENV_STORE] || join(homedir(), '.local', 'share', PACKAGE), port: PORT, sides: [], lang: 'en', local: null, timeout: 10, ssh: null };
+    const o = { store: env[ENV_STORE] || join(homedir(), '.local', 'share', PACKAGE), port: PORT, sides: [], lang: 'en', local: null, timeout: 10, ssh: null, webdav: null, graph: null };
     const sshOf = () => (o.ssh ??= { port: 22, title: '', pin: '', root: '', level: 'propose', keyFile: '', passphraseEnv: '' });
+    const webdavOf = () => (o.webdav ??= { url: '', user: '', root: '', title: '', level: 'propose', passEnv: '' });
+    const graphOf = () => (o.graph ??= { drive: '', root: '', title: '', level: 'propose', tokenEnv: '' });
     for (let i = 0; i < argv.length; i++) {
         const a = argv[i]; const v = argv[i + 1];
         if (a === '--store' && v) { o.store = resolve(cwd, v); i++; }
@@ -75,6 +92,17 @@ export function options(argv, { env = process.env, cwd = process.cwd() } = {}) {
         else if (a === '--ssh-root' && v) { sshOf().root = v; i++; }
         else if (a === '--ssh-passphrase-env' && v) { sshOf().passphraseEnv = v; i++; }
         else if (a === '--ssh-level' && v) { sshOf().level = v; i++; }
+        else if (a === '--webdav' && v) { webdavOf().url = v; i++; }
+        else if (a === '--webdav-user' && v) { webdavOf().user = v; i++; }
+        else if (a === '--webdav-root' && v) { webdavOf().root = v; i++; }
+        else if (a === '--webdav-title' && v) { webdavOf().title = v; i++; }
+        else if (a === '--webdav-level' && v) { webdavOf().level = v; i++; }
+        else if (a === '--webdav-pass-env' && v) { webdavOf().passEnv = v; i++; }
+        else if (a === '--graph-drive' && v) { graphOf().drive = v; i++; }
+        else if (a === '--graph-root' && v) { graphOf().root = v; i++; }
+        else if (a === '--graph-title' && v) { graphOf().title = v; i++; }
+        else if (a === '--graph-level' && v) { graphOf().level = v; i++; }
+        else if (a === '--graph-token-env' && v) { graphOf().tokenEnv = v; i++; }
         else if (a === '--local' && v) {
             const at = v.lastIndexOf('='); const folder = resolve(cwd, at > 0 ? v.slice(0, at) : v);
             o.local = { folder, title: at > 0 ? v.slice(at + 1) : basename(folder) }; i++;
@@ -86,11 +114,24 @@ export function options(argv, { env = process.env, cwd = process.cwd() } = {}) {
     if (!o.sides.length) o.sides.push({ dir: join(cwd, FOLDER), who: { id: 'agent:agent', kind: 'agent', name: 'Agent' } });
     if (!Number.isInteger(o.port) || o.port < 0 || o.port > 65535) throw new Error('--port takes a number');
     if (!(o.timeout > 0)) throw new Error('--timeout takes a number of minutes');
+    const levelOk = (level) => ['watch', 'propose', 'frame', 'free'].includes(level);
     if (o.ssh) {
         if (!o.ssh.host || !o.ssh.user) throw new Error('--ssh takes USER@HOST[:PORT]');
         if (!o.ssh.keyFile) throw new Error('--ssh needs --ssh-key FILE');
-        if (!['watch', 'propose', 'frame', 'free'].includes(o.ssh.level)) throw new Error('--ssh-level is one of: watch, propose, frame, free');
+        if (!levelOk(o.ssh.level)) throw new Error('--ssh-level is one of: watch, propose, frame, free');
         o.ssh.title ||= o.ssh.host;
+    }
+    if (o.webdav) {
+        if (!o.webdav.url) throw new Error('--webdav takes a URL');
+        if (!o.webdav.passEnv) throw new Error('--webdav needs --webdav-pass-env VAR');
+        if (!levelOk(o.webdav.level)) throw new Error('--webdav-level is one of: watch, propose, frame, free');
+        o.webdav.title ||= o.webdav.url;
+    }
+    if (o.graph) {
+        if (!o.graph.drive) throw new Error('--graph-drive takes a drive id');
+        if (!o.graph.tokenEnv) throw new Error('--graph-drive needs --graph-token-env VAR');
+        if (!levelOk(o.graph.level)) throw new Error('--graph-level is one of: watch, propose, frame, free');
+        o.graph.title ||= 'Online folder';
     }
     return o;
 }
@@ -100,9 +141,11 @@ export function start(o, { quiet = false } = {}) {
     /* The SSH key and its passphrase are read here, when a connector asks for
        them by the name the target gave. Neither is written to the store, the
        journal or the page: only the names "ssh-key" and "ssh-passphrase" are. */
-    const secrets = o.ssh ? async (name) => {
-        if (name === 'ssh-key') return readFileSync(o.ssh.keyFile, 'utf8');
-        if (name === 'ssh-passphrase' && o.ssh.passphraseEnv) return process.env[o.ssh.passphraseEnv] ?? '';
+    const secrets = (o.ssh || o.webdav || o.graph) ? async (name) => {
+        if (o.ssh && name === 'ssh-key') return readFileSync(o.ssh.keyFile, 'utf8');
+        if (o.ssh && name === 'ssh-passphrase' && o.ssh.passphraseEnv) return process.env[o.ssh.passphraseEnv] ?? '';
+        if (o.webdav && name === 'webdav-pass') return process.env[o.webdav.passEnv] ?? '';
+        if (o.graph && name === 'graph-token') return process.env[o.graph.tokenEnv] ?? '';
         throw new Error(`no secret named ${name}`);
     } : undefined;
     const k = keeper(o.store, { sides: () => o.sides, local: !!o.local, timeout: o.timeout * 60_000, ...(secrets ? { secrets } : {}) });
@@ -117,6 +160,19 @@ export function start(o, { quiet = false } = {}) {
         const sec = { key: 'ssh-key', ...(o.ssh.passphraseEnv ? { passphrase: 'ssh-passphrase' } : {}) };
         const t = k.store.putTarget({ id: 'ssh', title: o.ssh.title, kind: 'ssh', connector: 'ssh', config, secrets: sec });
         for (const s of o.sides) if (!t.grants[s.who.id]) k.store.grant(t.id, s.who.id, o.ssh.level);
+    }
+    if (o.webdav) {
+        const config = { url: o.webdav.url };
+        if (o.webdav.user) config.user = o.webdav.user;
+        if (o.webdav.root) config.root = o.webdav.root;
+        const t = k.store.putTarget({ id: 'webdav', title: o.webdav.title, kind: 'files', connector: 'webdav', config, secrets: { password: 'webdav-pass' } });
+        for (const s of o.sides) if (!t.grants[s.who.id]) k.store.grant(t.id, s.who.id, o.webdav.level);
+    }
+    if (o.graph) {
+        const config = { drive: o.graph.drive };
+        if (o.graph.root) config.root = o.graph.root;
+        const t = k.store.putTarget({ id: 'graph', title: o.graph.title, kind: 'files', connector: 'graph', config, secrets: { token: 'graph-token' } });
+        for (const s of o.sides) if (!t.grants[s.who.id]) k.store.grant(t.id, s.who.id, o.graph.level);
     }
     const watchers = new Set();
     k.onChange(() => { for (const res of watchers) res.write('data: change\n\n'); });
@@ -147,7 +203,7 @@ export function start(o, { quiet = false } = {}) {
     });
     return new Promise((ok) => server.listen(o.port, '127.0.0.1', () => {
         const port = server.address().port;
-        if (!quiet) process.stdout.write(`${TITLE} kept in ${o.store}\nPage: http://127.0.0.1:${port}/\nAgents: ${o.sides.map((s) => `${s.who.name} (${s.dir})`).join(', ')}\n${o.local ? `This machine given: ${o.local.folder}\n` : ''}${o.ssh ? `SSH target "${o.ssh.title}": ${o.ssh.user}@${o.ssh.host}:${o.ssh.port} (${o.ssh.level})\n` : ''}`);
+        if (!quiet) process.stdout.write(`${TITLE} kept in ${o.store}\nPage: http://127.0.0.1:${port}/\nAgents: ${o.sides.map((s) => `${s.who.name} (${s.dir})`).join(', ')}\n${o.local ? `This machine given: ${o.local.folder}\n` : ''}${o.ssh ? `SSH target "${o.ssh.title}": ${o.ssh.user}@${o.ssh.host}:${o.ssh.port} (${o.ssh.level})\n` : ''}${o.webdav ? `WebDAV target "${o.webdav.title}": ${o.webdav.url} (${o.webdav.level})\n` : ''}${o.graph ? `Graph target "${o.graph.title}": drive ${o.graph.drive} (${o.graph.level})\n` : ''}`);
         ok({ server, keeper: k, port, close: async () => { clearInterval(pump); for (const r of watchers) r.end(); server.close(); await k.close(); } });
     }));
 }
