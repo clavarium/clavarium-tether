@@ -25,6 +25,7 @@
   "kind-ssh": "Terminal SSH",
   "kind-browser": "Navigateur",
   "kind-files": "Dossier en ligne",
+  "kind-screen": "Écran (moteur à brancher)",
   "ask-terminal.run": "Lancer une commande sur {target} ?",
   "ask-terminal.type": "Taper dans {target} ?",
   "ask-terminal.open": "Ouvrir un terminal sur {target} ?",

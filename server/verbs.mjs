@@ -10,7 +10,7 @@
  * nothing. Everything else ACTS.
  */
 
-export const KINDS = ['computer', 'ssh', 'browser', 'files'];
+export const KINDS = ['computer', 'ssh', 'browser', 'files', 'screen'];
 const SHELLS = ['computer', 'ssh'];
 const FOLDERS = ['computer', 'ssh', 'files'];
 
@@ -45,6 +45,17 @@ export const VERBS = Object.freeze({
     'browser.key': { reads: false, kinds: ['browser'], needs: ['key'], done: false },
     'browser.scroll': { reads: false, kinds: ['browser'], needs: [], done: false },
     'browser.drag': { reads: false, kinds: ['browser'], needs: ['from', 'to'], done: false },
+    /* THE SCREEN OF A MACHINE, A SLOT: these verbs and their rights are settled here,
+       but Tether writes no engine for them. A host plugs one in (connectors: { screen }),
+       speaking a standard such as VNC/RFB; without one, a screen target says its
+       connector is off. See docs/protocol.md, "Plug in a screen engine". */
+    'screen.shot': { reads: true, kinds: ['screen'], needs: [] },
+    'screen.move': { reads: false, kinds: ['screen'], needs: ['x', 'y'] },
+    'screen.click': { reads: false, kinds: ['screen'], needs: [] },
+    'screen.drag': { reads: false, kinds: ['screen'], needs: ['from', 'to'] },
+    'screen.scroll': { reads: false, kinds: ['screen'], needs: [] },
+    'screen.type': { reads: false, kinds: ['screen'], needs: ['text'] },
+    'screen.key': { reads: false, kinds: ['screen'], needs: ['key'] },
 });
 
 export class Refused extends Error {}
@@ -100,6 +111,11 @@ export function detail(verb, a = {}) {
         case 'files.list': case 'files.read': case 'files.delete': return a.path;
         case 'browser.open': return a.url;
         case 'browser.eval': return a.script;
+        case 'screen.move': return `${a.x},${a.y}`;
+        case 'screen.click': return a.x !== undefined ? `${a.x},${a.y}` : 'click';
+        case 'screen.drag': return `${a.from} → ${a.to}`;
+        case 'screen.type': return a.text;
+        case 'screen.key': return a.key;
         default: return '';
     }
 }

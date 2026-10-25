@@ -82,6 +82,6 @@ See [docs/protocol.md](docs/protocol.md). One dependency, `ssh2` (the SSH
 connector); Node 22 or later; tmux for the local connector's terminals.
 
 **Status:** first version (0.1), not yet published. The `local` and `ssh`
-connectors are built; `computer`, `browser` and online folders come next.
+connectors are built. A `screen` slot is ready for a host to plug an engine into (see docs). `computer`, `browser` and online folders come next.
 
 License: MIT.

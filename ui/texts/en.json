@@ -25,6 +25,7 @@
   "kind-ssh": "SSH terminal",
   "kind-browser": "Browser",
   "kind-files": "Online folder",
+  "kind-screen": "Screen (plug in an engine)",
   "ask-terminal.run": "Run a command on {target}?",
   "ask-terminal.type": "Type in {target}?",
   "ask-terminal.open": "Open a terminal on {target}?",

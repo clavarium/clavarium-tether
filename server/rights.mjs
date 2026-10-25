@@ -135,6 +135,7 @@ export function ruleFrom(verb, a = {}) {
             return { kind: 'path', value: top };
         }
         case 'terminal.open': return { kind: 'verb', value: verb };
+        case 'screen.move': case 'screen.click': case 'screen.drag': case 'screen.scroll': case 'screen.type': case 'screen.key': return { kind: 'verb', value: verb };
         case 'browser.open': { const h = hostOf(a.url); return h ? { kind: 'site', value: h } : null; }
         default: return null;
     }

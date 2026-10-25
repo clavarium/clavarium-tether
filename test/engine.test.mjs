@@ -411,3 +411,29 @@ test('the MCP server over standard input: initialize, the tools, a call through 
         assert.equal(by[4].result.content[0].text, 'did files.read');
     } finally { clearInterval(timer); rl.close(); }
 });
+
+test('a screen target: a slot with no built-in engine; a plugged engine runs, and Always allows the whole verb', async () => {
+    /* No engine plugged in: a screen target says its connector is off. */
+    const bare = keeper(tmp(), {});
+    bare.store.putTarget({ id: 'desk', title: 'Desktop', kind: 'screen', connector: 'screen' });
+    bare.store.grant('desk', BOT.id, 'free');
+    assert.match((await bare.act('screen.shot', { target: 'desk' }, BOT)).text, /connector is off/);
+    bare.close();
+
+    /* An engine plugged in under the name screen: the keeper runs it, with rights and approval. */
+    const engine = fake();
+    const k = keeper(tmp(), { connectors: { screen: engine }, ask: (r) => r.verb === 'screen.click' ? 'always' : undefined });
+    k.store.putTarget({ id: 'desk', title: 'Desktop', kind: 'screen', connector: 'screen' });
+    k.store.grant('desk', BOT.id, 'watch');
+    /* screen.shot reads: at watch, it goes; an action does not. */
+    assert.equal((await k.act('screen.shot', { target: 'desk' }, BOT)).ok, true);
+    assert.match((await k.act('screen.click', { target: 'desk', x: 10, y: 20 }, BOT)).text, /level watch: read only/);
+    /* At propose, the action is asked; "Always" allows that verb and moves to frame. */
+    k.store.grant('desk', BOT.id, 'propose');
+    assert.equal((await k.act('screen.click', { target: 'desk', x: 10, y: 20 }, BOT)).ok, true);
+    assert.equal(k.store.grantOf('desk', BOT.id).level, 'frame');
+    /* A second click now goes without asking (the verb is allowed), but a different verb still asks. */
+    assert.equal((await k.act('screen.click', { target: 'desk', x: 1, y: 2 }, BOT)).ok, true);
+    assert.equal(engine.calls.filter((c) => c.verb === 'screen.click').length, 2);
+    k.close();
+});

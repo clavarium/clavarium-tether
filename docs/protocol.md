@@ -185,3 +185,49 @@ And the screen: `mount(element, { call, words, lang, agent })` from
 `clavarium-tether/ui`, with `ui/ui.css` and `ui/texts/*.json`. `agent` shows
 one agent (a page per conversation); without it, a choice of all. It gives
 back `refresh()` and `destroy()`.
+
+## Plug in a screen engine
+
+A `screen` target lets an agent see a machine's screen and move its mouse and
+keyboard. Tether settles the verbs and their rights, but writes no engine for
+them: a host plugs one in. Without one, a `screen` target says its connector is
+off, like any kind with no connector.
+
+The engine is an ordinary connector under the name `screen`:
+
+    keeper(storeDir, { connectors: { screen: myEngine }, /* ... */ });
+
+It answers these verbs (rights, approval, journal and stop already wrap every
+call, so the engine only does the work):
+
+| verb | args | does |
+|---|---|---|
+| `screen.shot` | — | returns the screen; `{ text, size }` — `text` a `data:` image URL, or a note with it saved |
+| `screen.move` | `x`, `y` | moves the pointer |
+| `screen.click` | `x?`, `y?`, `button?` | clicks |
+| `screen.drag` | `from`, `to` | drags (points like `"12,40"`) |
+| `screen.scroll` | `dx?`, `dy?` | scrolls |
+| `screen.type` | `text` | types text |
+| `screen.key` | `key` | a key or chord (`"Enter"`, `"ctrl+c"`) |
+
+`screen.shot` reads; the rest act and are proposed for approval (and a person's
+"Always" allows that whole verb on the target). The engine reaches the machine
+however it likes; the simple, firewall-friendly way is **RFB (VNC) over a
+WebSocket**: put `websockify`/noVNC in front of a standard VNC server
+(TigerVNC, x11vnc, wayvnc), or use a VNC server with native WebSocket
+(KasmVNC), and have the engine speak RFB to it. The password or key stays a
+Tether secret the target names (`ctx.secret('password')`); it never reaches the
+agent. A `Refused` thrown is told to the agent as is.
+
+    const myEngine = {
+        async run(verb, target, args, ctx) {
+            // connect once to target.config.url (e.g. a ws:// of websockify),
+            // using await ctx.secret('password'); then:
+            //   screen.shot  -> { text: `data:image/png;base64,...`, size }
+            //   screen.move/click/drag/scroll/type/key -> do it, { text: 'Done.', size: 0 }
+        },
+        close(agent) { /* drop that agent's connection */ },
+    };
+
+Nothing else changes: the target is given to a conversation, its level set, its
+calls approved and journalled, and Stop cuts it, like every other target.
