@@ -1,0 +1,95 @@
+/* How the screen looks. Every colour is a variable: a page sets them, or keeps these. */
+.tether {
+  --tether-bg: #faf9f6; --tether-panel: #ffffff; --tether-text: #1f2328; --tether-dim: #5b6270; --tether-line: #d5d9e0;
+  --tether-code: #eef0f4; --tether-gold: #c99a3a; --tether-on-gold: #1f1a10; --tether-soft: #e6e9ef;
+  --tether-wait: #f7efea; --tether-wait-line: #a0522d; --tether-pick: #f6e8c9;
+  --tether-ok: #1f7a4d; --tether-no: #b3261e;
+  --tether-radius: 12px; --tether-gap: .8rem;
+  color: var(--tether-text); background: var(--tether-bg); line-height: 1.4; min-width: 0;
+  display: flex; flex-direction: column; gap: var(--tether-gap);
+}
+@media (prefers-color-scheme: dark) {
+  .tether:not([data-theme="light"]) {
+    --tether-bg: #121418; --tether-panel: #1b1e24; --tether-text: #e7e9ee; --tether-dim: #a3aab6; --tether-line: #353b46;
+    --tether-code: #262a32; --tether-gold: #d9ad55; --tether-on-gold: #1a1408; --tether-soft: #2c313a;
+    --tether-wait: #2a211c; --tether-wait-line: #c9824f; --tether-pick: #3a3020;
+    --tether-ok: #6fd39a; --tether-no: #ff8a80;
+  }
+}
+.tether[data-theme="dark"] {
+  --tether-bg: #121418; --tether-panel: #1b1e24; --tether-text: #e7e9ee; --tether-dim: #a3aab6; --tether-line: #353b46;
+  --tether-code: #262a32; --tether-gold: #d9ad55; --tether-on-gold: #1a1408; --tether-soft: #2c313a;
+  --tether-wait: #2a211c; --tether-wait-line: #c9824f; --tether-pick: #3a3020;
+  --tether-ok: #6fd39a; --tether-no: #ff8a80;
+}
+.tether *, .tether *::before, .tether *::after { box-sizing: border-box; }
+.tether h2, .tether h3, .tether p, .tether pre { margin: 0; }
+.tether button, .tether input, .tether select { font: inherit; color: inherit; }
+.tether button { cursor: pointer; }
+.tether button:disabled { cursor: default; opacity: .6; }
+.tether input, .tether select { background: var(--tether-panel); border: 1px solid var(--tether-line); border-radius: 8px; padding: .45em .6em; min-width: 0; }
+.tether-dim { color: var(--tether-dim); }
+.tether-error { border-left: 3px solid var(--tether-no); padding: .5em .8em; background: color-mix(in srgb, var(--tether-no) 10%, transparent); border-radius: 4px; overflow-wrap: anywhere; }
+
+/* Two columns where they fit, one on a phone; the journal under both. */
+.tether-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 24rem), 1fr)); gap: 1.6rem 2.6rem; align-items: start; }
+.tether-col { display: flex; flex-direction: column; gap: var(--tether-gap); min-width: 0; }
+.tether-wide { grid-column: 1 / -1; }
+.tether-col > h2 { font-size: .72rem; letter-spacing: .1em; text-transform: uppercase; color: var(--tether-dim); font-weight: 700; }
+.tether-empty { color: var(--tether-dim); }
+
+/* A call waiting, and a call ended. */
+.tether-card { background: var(--tether-panel); border: 1px solid var(--tether-line); border-radius: var(--tether-radius); padding: .8rem .9rem; display: flex; flex-direction: column; gap: .65rem; min-width: 0; }
+.tether-card h3 { font-size: 1.05rem; display: flex; gap: .5rem; align-items: baseline; overflow-wrap: anywhere; }
+.tether-dot { width: .55rem; height: .55rem; border-radius: 50%; background: currentColor; flex: none; transform: translateY(-.05rem); }
+.tether-wait { background: var(--tether-wait); border-color: var(--tether-wait-line); }
+.tether-wait .tether-dot { color: var(--tether-wait-line); }
+.tether-ended.tether-ok h3 { color: var(--tether-ok); }
+.tether-ended.tether-no h3 { color: var(--tether-no); }
+.tether-code { background: var(--tether-code); border-radius: 8px; padding: .55rem .7rem; font: .92rem/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+.tether-why { color: var(--tether-dim); overflow-wrap: anywhere; }
+.tether-foot { font-size: .82rem; color: var(--tether-dim); overflow-wrap: anywhere; }
+.tether-buttons { display: flex; gap: .5rem; flex-wrap: wrap; }
+.tether-buttons button, .tether-addrule button, .tether-stopped button { border-radius: 8px; padding: .6em 1em; font-weight: 700; min-height: 2.6rem; max-width: 100%; overflow-wrap: anywhere; }
+.tether-accept { background: var(--tether-gold); color: var(--tether-on-gold) !important; border: 1px solid var(--tether-gold); }
+.tether-plain { background: var(--tether-panel); border: 1px solid var(--tether-line); }
+.tether-soft { background: var(--tether-soft); border: 1px solid var(--tether-line); }
+
+/* The targets, each with its level and its rules. */
+.tether-panel { background: var(--tether-panel); border: 1px solid var(--tether-line); border-radius: var(--tether-radius); padding: .9rem 1rem; display: flex; flex-direction: column; gap: .9rem; min-width: 0; }
+.tether-pick { display: flex; gap: .6rem; align-items: center; flex-wrap: wrap; }
+.tether-pick select { flex: 1; min-width: 10rem; }
+.tether-target { display: flex; flex-direction: column; gap: .5rem; padding-bottom: .9rem; border-bottom: 1px solid var(--tether-line); min-width: 0; }
+.tether-head { display: flex; gap: .6rem 1rem; align-items: center; justify-content: space-between; flex-wrap: wrap; }
+.tether-name { display: flex; flex-direction: column; min-width: 0; overflow-wrap: anywhere; }
+.tether-name b { font-size: 1.05rem; }
+.tether-name .tether-dim { font-size: .88rem; }
+.tether-seg { display: inline-flex; border: 1px solid var(--tether-line); border-radius: 8px; overflow: hidden; max-width: 100%; }
+.tether-seg button { border: 0; background: transparent; padding: .45em .75em; color: var(--tether-dim); min-height: 2.4rem; white-space: nowrap; }
+.tether-seg button + button { border-left: 1px solid transparent; }
+.tether-seg button[aria-pressed="true"] { background: var(--tether-pick); color: var(--tether-text); font-weight: 700; box-shadow: inset 0 0 0 1px var(--tether-gold); border-radius: 7px; }
+.tether-rules { font-size: .9rem; overflow-wrap: anywhere; }
+.tether-rule { white-space: nowrap; }
+.tether-x { border: 0; background: transparent; color: var(--tether-dim); padding: 0 .3em; font-size: 1.05em; line-height: 1; min-width: 1.6rem; min-height: 1.6rem; }
+.tether-link { border: 0; background: transparent; color: var(--tether-dim); padding: .2em .4em; text-decoration: underline; text-underline-offset: 2px; min-height: 1.8rem; }
+.tether-addrule { display: flex; gap: .5rem; flex-wrap: wrap; margin-top: .5rem; }
+.tether-addrule input { flex: 1 1 10rem; }
+.tether-stop { align-self: flex-start; max-width: 100%; background: transparent; color: var(--tether-no) !important; border: 1px solid var(--tether-no); border-radius: 8px; padding: .65em 1.1em; font-weight: 700; min-height: 2.6rem; }
+.tether-stopped { display: flex; gap: .8rem; align-items: center; flex-wrap: wrap; color: var(--tether-no); }
+
+/* The journal: one line per call. */
+.tether-journal { list-style: none; margin: 0; padding: 0; border: 1px solid var(--tether-line); border-radius: var(--tether-radius); background: var(--tether-panel); overflow: hidden; }
+.tether-journal li { display: grid; grid-template-columns: auto minmax(6rem, 12rem) minmax(0, 1fr) auto; gap: .4rem .9rem; align-items: baseline; padding: .55rem .9rem; font-size: .9rem; }
+.tether-journal li + li { border-top: 1px solid var(--tether-line); }
+.tether-journal time { color: var(--tether-dim); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.tether-where { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tether-journal code { font: .86rem/1.35 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; overflow-wrap: anywhere; min-width: 0; }
+.tether-pill { font-size: .78rem; border: 1px solid var(--tether-line); border-radius: 999px; padding: .1em .65em; color: var(--tether-dim); white-space: nowrap; justify-self: end; }
+.tether-pill.tether-ok { color: var(--tether-ok); border-color: var(--tether-ok); }
+.tether-pill.tether-no { color: var(--tether-no); border-color: var(--tether-no); }
+@media (max-width: 640px) {
+  .tether-journal li { grid-template-columns: auto minmax(0, 1fr) auto; }
+  .tether-journal code { grid-column: 1 / -1; grid-row: 2; }
+  .tether-seg { width: 100%; }
+  .tether-seg button { flex: 1; padding: .45em .4em; }
+}
