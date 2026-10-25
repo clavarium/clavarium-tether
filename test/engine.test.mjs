@@ -385,3 +385,29 @@ test('the local connector: a clean environment, a folder it does not leave, outp
         await assert.rejects(c.run('terminal.read', t, {}, ctx), /no terminal open/);
     } finally { delete process.env.TETHER_TEST_SECRET; await c.shutdown(); }
 });
+
+test('the MCP server over standard input: initialize, the tools, a call through the folder', async () => {
+    const { PassThrough } = await import('node:stream');
+    const { serve } = await import('../server/mcp.mjs');
+    const side = tmp();
+    const k = keeper(tmp(), { sides: () => [{ dir: side, who: BOT }], connectors: { fake: fake() } });
+    k.store.putTarget({ id: 'web', title: 'Web', kind: 'ssh', connector: 'fake' });
+    k.store.grant('web', BOT.id, 'watch');
+    const input = new PassThrough(); const output = new PassThrough();
+    const got = []; output.on('data', (d) => got.push(...String(d).trim().split('\n').map((l) => JSON.parse(l))));
+    const rl = serve(side, { input, output, wait: 2000 });
+    const timer = setInterval(() => k.pump(), 10);
+    try {
+        input.write(`${JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} })}\n`);
+        input.write(`${JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list' })}\n`);
+        input.write(`${JSON.stringify({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'terminal-run', arguments: { target: 'web', command: 'ls' } } })}\n`);
+        input.write(`${JSON.stringify({ jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'files-read', arguments: { target: 'web', path: 'a' } } })}\n`);
+        for (let i = 0; i < 200 && got.length < 4; i++) await new Promise((r) => setTimeout(r, 10));
+        const by = Object.fromEntries(got.map((m) => [m.id, m]));
+        assert.equal(by[1].result.serverInfo.name, NAME);
+        assert.equal(by[2].result.tools.length, TOOLS.length);
+        assert.equal(by[3].result.isError, true);
+        assert.match(by[3].result.content[0].text, /^Not done: Web is at level watch/);
+        assert.equal(by[4].result.content[0].text, 'did files.read');
+    } finally { clearInterval(timer); rl.close(); }
+});
