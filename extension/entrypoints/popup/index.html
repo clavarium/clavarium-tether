@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>Tether</title>
+    <style>
+        :root { color-scheme: light dark; }
+        body { font: 13px/1.4 system-ui, sans-serif; width: 320px; margin: 0; padding: 12px 14px; }
+        h1 { font-size: 14px; margin: 0 0 8px; }
+        .status { font-size: 12px; opacity: .8; margin-bottom: 10px; }
+        .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #999; margin-right: 5px; vertical-align: middle; }
+        .dot.ready, .dot.connected { background: #2a2; }
+        .dot.pairing, .dot.connecting { background: #d90; }
+        .dot.disconnected, .dot.idle { background: #d33; }
+        .code { font-size: 20px; letter-spacing: 3px; font-weight: 600; text-align: center; padding: 6px; border: 1px dashed currentColor; border-radius: 8px; margin: 8px 0; }
+        .tab { display: flex; align-items: center; gap: 8px; padding: 4px 0; border-top: 1px solid #8884; }
+        .tab .t { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .site { font-size: 11px; opacity: .7; }
+        button, input { font: inherit; }
+        .row { display: flex; gap: 6px; margin: 6px 0; }
+        .row input { flex: 1; }
+        .mini { font-size: 11px; opacity: .7; }
+    </style>
+</head>
+<body>
+    <h1>Clavarium Tether</h1>
+    <div class="status"><span class="dot" id="dot"></span><span id="statusText">…</span></div>
+    <div id="pairBox" hidden>
+        <div class="mini">Enter this code in the keeper page to pair:</div>
+        <div class="code" id="code">------</div>
+    </div>
+    <div class="row">
+        <input id="keeper" placeholder="ws://127.0.0.1:8787/browser">
+        <button id="saveKeeper">Set</button>
+    </div>
+    <div class="mini">Grant the agent a tab (it can see and act only in granted tabs):</div>
+    <div id="tabs"></div>
+    <div class="row"><button id="repair">Re-pair</button></div>
+    <script type="module" src="./main.ts"></script>
+</body>
+</html>

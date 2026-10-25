@@ -1,0 +1,21 @@
+{
+  "name": "clavarium-tether-extension",
+  "private": true,
+  "version": "0.1.0-next.1",
+  "description": "Clavarium Tether browser extension (Chrome and Firefox): give an AI agent, on a tether, access to the tabs you grant it.",
+  "type": "module",
+  "scripts": {
+    "dev": "wxt",
+    "build": "wxt build",
+    "build:firefox": "wxt build -b firefox",
+    "zip": "wxt zip",
+    "zip:firefox": "wxt zip -b firefox",
+    "prepare": "wxt prepare",
+    "test": "node --test \"../test/extension.test.mjs\""
+  },
+  "devDependencies": {
+    "typescript": "5.9.2",
+    "vite": "7.3.7",
+    "wxt": "0.21.4"
+  }
+}
