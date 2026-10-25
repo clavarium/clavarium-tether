@@ -7,8 +7,10 @@
  * host key pinned so the real host-key check runs too. The server is stopped
  * by its pid and the temp dir removed.
  *
- * Where no sshd (or ssh-keygen) is found, the test skips itself and says so:
- * the fake-client tests in test/ssh.test.mjs are what the connector is held to.
+ * Where no sshd, ssh-keygen, or the ssh2 package is found (a clean checkout
+ * with no node_modules, as an automatic check runs it), the test skips itself
+ * and says so: the fake-client tests in test/ssh.test.mjs are what the
+ * connector is held to.
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -20,11 +22,15 @@ import { ssh } from '../host/connectors/ssh.mjs';
 
 const sshdPath = ['/usr/sbin/sshd', '/usr/bin/sshd', '/usr/local/sbin/sshd'].find((p) => existsSync(p));
 const keygen = (() => { try { return execFileSync('sh', ['-c', 'command -v ssh-keygen'], { encoding: 'utf8' }).trim(); } catch { return ''; } })();
-const canRun = !!(sshdPath && keygen);
+/* ssh2 is a dependency, not a dev one, so it is there wherever the package is
+   installed; but an automatic check runs the suite from a bare checkout with
+   no node_modules, and this is the only test that reaches the real client. */
+const hasSsh2 = await (async () => { try { await import('ssh2'); return true; } catch { return false; } })();
+const canRun = !!(sshdPath && keygen && hasSsh2);
 
 const waitFor = async (fn, ms = 4000, step = 50) => { const until = Date.now() + ms; while (Date.now() < until) { if (await fn()) return true; await new Promise((r) => setTimeout(r, step)); } return false; };
 
-test('ssh end to end against a throwaway sshd', { skip: canRun ? false : 'no sshd/ssh-keygen on this machine' }, async (t) => {
+test('ssh end to end against a throwaway sshd', { skip: canRun ? false : 'no sshd/ssh-keygen/ssh2 on this machine' }, async (t) => {
     const dir = mkdtempSync(join(tmpdir(), 'tether-sshd-'));
     let sshd;
     try {
