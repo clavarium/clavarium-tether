@@ -65,10 +65,18 @@ export function contacts({ fetch: fetchImpl = globalThis.fetch } = {}) {
 
     async function googleList(target, ctx) {
         const base = CARDDAV(userOf(target));
+        const basePath = (() => { try { return new URL(base).pathname.replace(/\/+$/, ''); } catch { return ''; } })();
         const listed = await req(target, ctx, 'PROPFIND', base, { headers: { Depth: '1', 'Content-Type': 'application/xml; charset=utf-8' }, body: PROPFIND });
         if (!listed.ok) no(`${target.title}: the address book could not be read (${listed.status})`);
-        /* The collection lists itself and its contacts; keep the vCard entries. */
-        const hrefs = hrefsIn(await listed.text()).filter((h) => /\.vcf(\?|$)/i.test(h)).slice(0, LIST_MAX);
+        /* The collection lists itself and its contacts; keep the entries, whatever
+           they are named (Google uses an id, not a .vcf suffix). A contact is any
+           href under the collection that is not the collection itself. */
+        const hrefs = hrefsIn(await listed.text()).filter((h) => {
+            const clean = h.replace(/[?#].*$/, '');
+            if (!clean || clean.endsWith('/')) return false;
+            let p; try { p = new URL(h, base).pathname.replace(/\/+$/, ''); } catch { p = clean.replace(/\/+$/, ''); }
+            return p !== basePath;
+        }).slice(0, LIST_MAX);
         if (!hrefs.length) return [];
         const body = `<?xml version="1.0" encoding="utf-8"?><C:addressbook-multiget xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:carddav"><D:prop><D:getetag/><C:address-data/></D:prop>${hrefs.map((h) => `<D:href>${h.replace(/&/g, '&amp;').replace(/</g, '&lt;')}</D:href>`).join('')}</C:addressbook-multiget>`;
         const res = await req(target, ctx, 'REPORT', base, { headers: { Depth: '1', 'Content-Type': 'application/xml; charset=utf-8' }, body });

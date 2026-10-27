@@ -6,7 +6,7 @@
 export const NAME = 'tether';
 export const PRODUCT = 'Clavarium Tether';
 export const PACKAGE = `clavarium-${NAME}`;
-export const VERSION = '0.1.0-next.13';
+export const VERSION = '0.1.0-next.14';
 /* The agent's folder: where its asks and the keeper's answers are written. */
 export const FOLDER = `.${NAME}`;
 /* $TETHER_DIR: the agent's folder; $TETHER_STORE: the keeper's store (serve). */
