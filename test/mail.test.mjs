@@ -96,6 +96,27 @@ test('renderMessage: decodes the text, prefers plain, strips HTML, lists attachm
     assert.ok(renderMessage('Subject: H\r\nContent-Type: text/html\r\n\r\n<h1>Hi</h1><p>x &amp; y</p>').includes('x & y'), 'html stripped to text');
 });
 
+test('a warm connection is reused across verbs: one sign-in, not one per verb', async () => {
+    const s = imapServer(STORE);
+    let connects = 0;
+    const m = mail({ fetch: okToken, connect: (...args) => { connects++; return s.connect(...args); } });
+    await m.run('mail.list', TARGET, {}, ctx());
+    await m.run('mail.read', TARGET, { uid: '6' }, ctx());
+    assert.equal(connects, 1, 'the second verb reused the open connection');
+    assert.equal(s.commands.filter((x) => x.startsWith('AUTHENTICATE XOAUTH2')).length, 1, 'signed in once, not twice');
+    m.shutdown();
+});
+
+test('two verbs at once are serialized on the one connection, not interleaved', async () => {
+    const s = imapServer(STORE);
+    let connects = 0;
+    const m = mail({ fetch: okToken, connect: (...args) => { connects++; return s.connect(...args); } });
+    const [a, b] = await Promise.all([m.run('mail.list', TARGET, {}, ctx()), m.run('mail.read', TARGET, { uid: '5' }, ctx())]);
+    assert.ok(a.text.includes('Alice') && b.text.includes('Alice'), 'both verbs got their answer');
+    assert.equal(connects, 1, 'one connection served both');
+    m.shutdown();
+});
+
 test('mail.search runs a text search and briefs the hits', async () => {
     const s = imapServer(STORE);
     const r = await mail({ fetch: okToken, connect: s.connect }).run('mail.search', TARGET, { text: 'report' }, ctx());

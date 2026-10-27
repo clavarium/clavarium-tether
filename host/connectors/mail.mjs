@@ -152,7 +152,36 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
         } catch (e) { try { socket.destroy(); } catch { /* closing */ } if (e instanceof Refused) throw e; no(`${target.title}: ${e?.message ?? 'the mailbox could not be opened'}`); }
         return { imap, socket, user };
     }
-    const close = async (s) => { try { await s.imap.command('LOGOUT', 'x'); } catch { /* done */ } try { s.socket.destroy(); } catch { /* closed */ } };
+    /* ---------- a warm, reused connection ----------
+       Signing in to a mailbox over IMAP is many slow round-trips (TCP, TLS, the
+       token exchange), and doing it for every verb made a single read take ~20s
+       against a far server. So the authenticated connection is KEPT OPEN and
+       reused, one verb at a time (serialized per target -- never two verbs on the
+       same socket at once), and closed only after it has sat idle. A connection
+       that died between verbs is dropped and reopened once. */
+    const sessions = new Map();   // target.id -> { imap, socket, timer }
+    const queues = new Map();     // target.id -> the tail of its turn-taking
+    const IDLE_MS = 90_000;
+    function drop(id) { const s = sessions.get(id); if (!s) return; sessions.delete(id); clearTimeout(s.timer); try { s.socket.destroy(); } catch { /* closed */ } }
+    function warm(id, s) { clearTimeout(s.timer); s.timer = setTimeout(() => drop(id), IDLE_MS); s.timer.unref?.(); }
+    async function runOnce(target, ctx, fn) {
+        const id = target.id;
+        let s = sessions.get(id);
+        if (s) clearTimeout(s.timer); else { const o = await open(target, ctx); s = { imap: o.imap, socket: o.socket }; sessions.set(id, s); }
+        try { const r = await fn(s.imap); warm(id, s); return r; }
+        catch (e) { if (e instanceof Refused) { warm(id, s); } else { drop(id); } throw e; }
+    }
+    async function withImap(target, ctx, fn) {
+        const id = target.id;
+        const prev = queues.get(id) ?? Promise.resolve();
+        let release; const mine = new Promise((r) => { release = r; });
+        queues.set(id, prev.then(() => mine, () => mine));
+        await prev.catch(() => { /* a prior verb's failure is its own */ });
+        try {
+            try { return await runOnce(target, ctx, fn); }
+            catch (e) { if (e instanceof Refused) throw e; return await runOnce(target, ctx, fn); /* dead connection: reopen once */ }
+        } finally { release(); }
+    }
 
     const searchUids = (lines) => (lines.find((l) => /^\* SEARCH/i.test(l)) ?? '').split(' ').slice(2).map(Number).filter((n) => Number.isInteger(n) && n > 0);
 
@@ -178,65 +207,60 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
     const verbs = {
         /* The recent messages of a mailbox: who, subject, when -- newest first. */
         async 'mail.list'(target, a, ctx) {
-            const s = await open(target, ctx);
-            try {
-                await s.imap.command(`EXAMINE ${quoted(boxOf(target, a.mailbox))}`, 'that mailbox could not be opened');
+            return withImap(target, ctx, async (imap) => {
+                await imap.command(`EXAMINE ${quoted(boxOf(target, a.mailbox))}`, 'that mailbox could not be opened');
                 const since = new Date(Date.now() - SINCE_DAYS * 86_400_000);
-                const found = await s.imap.command(`UID SEARCH SINCE ${imapDate(since)}`, 'the mailbox could not be searched');
+                const found = await imap.command(`UID SEARCH SINCE ${imapDate(since)}`, 'the mailbox could not be searched');
                 const uids = searchUids(found).slice(-LIST_MAX).reverse();
-                const items = await brief(s.imap, uids);
+                const items = await brief(imap, uids);
                 const text = items.length ? items.join('\n') : 'No message in the last 30 days.';
                 return { text, size: Buffer.byteLength(text) };
-            } finally { await close(s); }
+            });
         },
         /* One message in full (headers and body), by its uid. */
         async 'mail.read'(target, a, ctx) {
             const uid = Number(a.uid);
             if (!Number.isInteger(uid) || uid <= 0) no('read needs the message number (uid)');
-            const s = await open(target, ctx);
-            try {
-                await s.imap.command(`EXAMINE ${quoted(boxOf(target, a.mailbox))}`, 'that mailbox could not be opened');
-                const lines = await s.imap.command(`UID FETCH ${uid} (BODY.PEEK[]<0.${READ_MAX}>)`, 'that message could not be read');
+            return withImap(target, ctx, async (imap) => {
+                await imap.command(`EXAMINE ${quoted(boxOf(target, a.mailbox))}`, 'that mailbox could not be opened');
+                const lines = await imap.command(`UID FETCH ${uid} (BODY.PEEK[]<0.${READ_MAX}>)`, 'that message could not be read');
                 const fetched = lines.find((l) => /^\* \d+ FETCH/i.test(l)) ?? '';
                 const cut = fetched.indexOf('\n');
                 if (cut < 0) no('no such message');
                 const raw = fetched.slice(cut + 1).replace(/\)\s*$/, '');
                 const text = renderMessage(raw);
                 return { text, size: Buffer.byteLength(text) };
-            } finally { await close(s); }
+            });
         },
         /* The messages whose text matches, briefly. */
         async 'mail.search'(target, a, ctx) {
-            const s = await open(target, ctx);
-            try {
-                await s.imap.command(`EXAMINE ${quoted(boxOf(target, a.mailbox))}`, 'that mailbox could not be opened');
-                const found = await s.imap.command(`UID SEARCH TEXT ${quoted(a.text)}`, 'the mailbox could not be searched');
+            return withImap(target, ctx, async (imap) => {
+                await imap.command(`EXAMINE ${quoted(boxOf(target, a.mailbox))}`, 'that mailbox could not be opened');
+                const found = await imap.command(`UID SEARCH TEXT ${quoted(a.text)}`, 'the mailbox could not be searched');
                 const uids = searchUids(found).slice(-LIST_MAX).reverse();
-                const items = await brief(s.imap, uids);
+                const items = await brief(imap, uids);
                 const text = items.length ? items.join('\n') : 'Nothing found.';
                 return { text, size: Buffer.byteLength(text) };
-            } finally { await close(s); }
+            });
         },
         /* Move a message to another folder. An act: the mailbox is opened read-write. */
         async 'mail.move'(target, a, ctx) {
             const uid = numUid(a.uid);
-            const s = await open(target, ctx);
-            try {
-                await s.imap.command(`SELECT ${quoted(boxOf(target))}`, 'that mailbox could not be opened');
-                await s.imap.command(`UID MOVE ${uid} ${quoted(String(a.mailbox))}`, 'that message could not be moved (the destination folder may not exist)');
+            return withImap(target, ctx, async (imap) => {
+                await imap.command(`SELECT ${quoted(boxOf(target))}`, 'that mailbox could not be opened');
+                await imap.command(`UID MOVE ${uid} ${quoted(String(a.mailbox))}`, 'that message could not be moved (the destination folder may not exist)');
                 return { text: `Moved #${uid} to ${a.mailbox}.`, size: 0 };
-            } finally { await close(s); }
+            });
         },
         /* Mark a message read/unread or flagged/unflagged. */
         async 'mail.flag'(target, a, ctx) {
             const uid = numUid(a.uid);
             const { op, flag } = flagOf(a.flag);
-            const s = await open(target, ctx);
-            try {
-                await s.imap.command(`SELECT ${quoted(boxOf(target))}`, 'that mailbox could not be opened');
-                await s.imap.command(`UID STORE ${uid} ${op}FLAGS (${flag})`, 'that message could not be marked');
+            return withImap(target, ctx, async (imap) => {
+                await imap.command(`SELECT ${quoted(boxOf(target))}`, 'that mailbox could not be opened');
+                await imap.command(`UID STORE ${uid} ${op}FLAGS (${flag})`, 'that message could not be marked');
                 return { text: `Marked #${uid} ${String(a.flag).toLowerCase().trim()}.`, size: 0 };
-            } finally { await close(s); }
+            });
         },
         /* Send a message. A provider signs in to SMTP with XOAUTH2; a classic box with
            LOGIN on its SMTP server. The message is built from the fields -- nothing an
@@ -273,7 +297,7 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
             if (!verbs[verb]) no(`${verb} is not done by this connector`);
             return verbs[verb](target, a, ctx);
         },
-        close() { tokens.clear(); },
-        shutdown() { tokens.clear(); },
+        close() { tokens.clear(); for (const id of [...sessions.keys()]) drop(id); },
+        shutdown() { tokens.clear(); for (const id of [...sessions.keys()]) drop(id); },
     };
 }
