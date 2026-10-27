@@ -76,9 +76,33 @@ test('mail.search runs a text search and briefs the hits', async () => {
     assert.ok(r.text.includes('Bob') || r.text.includes('Alice'), 'briefs results');
 });
 
-test('mail refuses a target with no provider, and an unknown verb', async () => {
+test('a classic IMAP box (host + password) signs in with LOGIN, not a token', async () => {
+    const s = imapServer(STORE);
+    const classic = { id: 'c1', title: 'Box', config: { host: 'imap.example.com', user: 'alice' }, secrets: { password: 'mail-pw' } };
+    const pwCtx = { secret: async (k) => (k === 'password' ? 'SECRET-PW' : undefined) };
+    const r = await mail({ fetch: okToken, connect: s.connect }).run('mail.list', classic, {}, pwCtx);
+    assert.ok(r.text.includes('Alice'), 'it reads the box');
+    assert.ok(s.commands.some((x) => /^LOGIN "alice" "SECRET-PW"/.test(x)), 'LOGIN with the password');
+    assert.ok(!s.commands.some((x) => x.startsWith('AUTHENTICATE')), 'no token auth for a classic box');
+});
+
+test('mail.move opens read-write and UID MOVEs; mail.flag UID STOREs the system flag', async () => {
     const s = imapServer(STORE);
     const c = mail({ fetch: okToken, connect: s.connect });
-    await assert.rejects(c.run('mail.list', { id: 'x', title: 'X', config: {}, secrets: { refresh: 'r' } }, {}, ctx()), /google or microsoft/);
+    const moved = await c.run('mail.move', TARGET, { uid: '6', mailbox: 'Archive' }, ctx());
+    assert.ok(moved.text.includes('Moved #6 to Archive'), 'confirms the move');
+    assert.ok(s.commands.some((x) => x.startsWith('SELECT')), 'opened read-write (SELECT, not EXAMINE)');
+    assert.ok(s.commands.some((x) => /^UID MOVE 6 "Archive"/.test(x)), 'UID MOVE to the folder');
+    const s2 = imapServer(STORE);
+    const flagged = await mail({ fetch: okToken, connect: s2.connect }).run('mail.flag', TARGET, { uid: '5', flag: 'read' }, ctx());
+    assert.ok(flagged.text.includes('Marked #5 read'), 'confirms the mark');
+    assert.ok(s2.commands.some((x) => /^UID STORE 5 \+FLAGS \(\\Seen\)/.test(x)), 'marks \\Seen');
+    await assert.rejects(c.run('mail.flag', TARGET, { uid: '5', flag: 'bogus' }, ctx()), /read, unread, flagged/);
+});
+
+test('mail refuses a target with no provider and no host, and an unknown verb', async () => {
+    const s = imapServer(STORE);
+    const c = mail({ fetch: okToken, connect: s.connect });
+    await assert.rejects(c.run('mail.list', { id: 'x', title: 'X', config: { user: 'u' }, secrets: { password: 'p' } }, {}, ctx()), /mail server \(host\), or a google\/microsoft/);
     await assert.rejects(async () => c.run('mail.delete', TARGET, {}, ctx()), /not done by this connector/);
 });

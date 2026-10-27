@@ -10,9 +10,12 @@
  *   target.config.clientId   optional: an own OAuth app instead of Thunderbird's
  *   target.secrets.refresh   the NAME of the refresh token in the host's secret store
  *   target.secrets.secret    optional: the NAME of an own client secret
+ *   -- OR, a classic IMAP box (no provider): the same verbs, LOGIN instead of a token --
+ *   target.config.host       the IMAP server, e.g. imap.example.com (config.port: 993)
+ *   target.secrets.password  the NAME of the password in the host's secret store
  *
  * Reads (level watch): mail.list, mail.read, mail.search. Acts (above watch):
- * mail.send, mail.move, mail.flag -- added next. `fetch` and `connect` are injected
+ * mail.move, mail.flag; mail.send (SMTP) follows. `fetch` and `connect` are injected
  * for tests. Inspired by the open-source Google/Microsoft MCP servers (all MIT), the
  * verbs reimplemented here so the token stays host-side and the levels gate them.
  */
@@ -35,6 +38,12 @@ function headerOf(block, name) {
     return m ? m[1].replace(/\r?\n[ \t]+/g, ' ').trim() : '';
 }
 
+const numUid = (u) => { const n = Number(u); if (!Number.isInteger(n) || n <= 0) no('that needs the message number (uid)'); return n; };
+/* The marks a person may set, named by a plain word -- never a raw IMAP flag from
+   the agent. Each maps to an add/remove and a system flag. */
+const FLAGS = { read: ['+', '\\Seen'], seen: ['+', '\\Seen'], unread: ['-', '\\Seen'], unseen: ['-', '\\Seen'], flagged: ['+', '\\Flagged'], starred: ['+', '\\Flagged'], unflagged: ['-', '\\Flagged'] };
+const flagOf = (f) => { const e = FLAGS[String(f ?? '').toLowerCase().trim()]; if (!e) no('flag is one of: read, unread, flagged, unflagged'); return { op: e[0], flag: e[1] }; };
+
 export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect } = {}) {
     const tokens = new Map(); // target.id -> { value, exp }
 
@@ -45,6 +54,16 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
         if (/[\r\n\0]/.test(name)) no('a mailbox name cannot contain a line break');
         return name;
     };
+    /* A target is OAuth when it names a provider; otherwise a classic IMAP box, with
+       its own server and a password. The IMAP verbs are the same for both. */
+    const isOAuth = (target) => Boolean(String(target.config?.provider ?? '').trim());
+    const hostOf = (target) => {
+        if (isOAuth(target)) return IMAP_HOST[providerOf(target)];
+        const h = String(target.config?.host ?? '').trim().toLowerCase();
+        if (!h || !h.includes('.') || /[\s/]/.test(h)) no(`${target.title}: set its mail server (host), or a google/microsoft provider`);
+        return h;
+    };
+    const portOf = (target) => { const p = Number(target.config?.port); return Number.isInteger(p) && p > 0 && p < 65536 ? p : PORT; };
 
     async function access(target, ctx) {
         const provider = providerOf(target);
@@ -61,18 +80,25 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
         return t.accessToken;
     }
 
-    /* Open an authenticated IMAP session; the caller closes it in a finally. */
+    /* Open an authenticated IMAP session; the caller closes it in a finally. OAuth
+       (a provider) signs in with XOAUTH2 from the minted token; a classic box signs
+       in with LOGIN and its password. Either secret is the host's, never the agent's. */
     async function open(target, ctx) {
-        const provider = providerOf(target);
         const user = userOf(target);
-        const token = await access(target, ctx);
+        const host = hostOf(target);
         let socket;
-        try { socket = connect({ host: IMAP_HOST[provider], port: PORT, servername: IMAP_HOST[provider] }); }
+        try { socket = connect({ host, port: portOf(target), servername: host }); }
         catch (e) { if (e instanceof Refused) throw e; no(`${target.title}: cannot reach the mail server`); }
         const imap = new Exchange(socket, SESSION_MAX);
         try {
             await imap.greeting();
-            await imap.authenticateXoauth2(xoauth2(user, token), `${target.title}: the mailbox refused the token -- reconnect the account`);
+            if (isOAuth(target)) {
+                await imap.authenticateXoauth2(xoauth2(user, await access(target, ctx)), `${target.title}: the mailbox refused the token -- reconnect the account`);
+            } else {
+                const password = await ctx.secret('password');
+                if (!password) no(`${target.title}: its password is empty`);
+                await imap.command(`LOGIN ${quoted(user)} ${quoted(password)}`, `${target.title}: the mailbox refused the user or the password`);
+            }
         } catch (e) { try { socket.destroy(); } catch { /* closing */ } if (e instanceof Refused) throw e; no(`${target.title}: ${e?.message ?? 'the mailbox could not be opened'}`); }
         return { imap, socket, user };
     }
@@ -132,6 +158,27 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
                 const items = await brief(s.imap, uids);
                 const text = items.length ? items.join('\n') : 'Nothing found.';
                 return { text, size: Buffer.byteLength(text) };
+            } finally { await close(s); }
+        },
+        /* Move a message to another folder. An act: the mailbox is opened read-write. */
+        async 'mail.move'(target, a, ctx) {
+            const uid = numUid(a.uid);
+            const s = await open(target, ctx);
+            try {
+                await s.imap.command(`SELECT ${quoted(boxOf(target))}`, 'that mailbox could not be opened');
+                await s.imap.command(`UID MOVE ${uid} ${quoted(String(a.mailbox))}`, 'that message could not be moved (the destination folder may not exist)');
+                return { text: `Moved #${uid} to ${a.mailbox}.`, size: 0 };
+            } finally { await close(s); }
+        },
+        /* Mark a message read/unread or flagged/unflagged. */
+        async 'mail.flag'(target, a, ctx) {
+            const uid = numUid(a.uid);
+            const { op, flag } = flagOf(a.flag);
+            const s = await open(target, ctx);
+            try {
+                await s.imap.command(`SELECT ${quoted(boxOf(target))}`, 'that mailbox could not be opened');
+                await s.imap.command(`UID STORE ${uid} ${op}FLAGS (${flag})`, 'that message could not be marked');
+                return { text: `Marked #${uid} ${String(a.flag).toLowerCase().trim()}.`, size: 0 };
             } finally { await close(s); }
         },
     };
