@@ -4,7 +4,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { mail } from '../host/connectors/mail.mjs';
+import { mail, renderMessage } from '../host/connectors/mail.mjs';
 
 const okToken = async () => new Response(JSON.stringify({ access_token: 'ACCESS-Tok', expires_in: 3600 }), { status: 200, headers: { 'content-type': 'application/json' } });
 const HEADERS = (from, subj) => `From: ${from}\r\nSubject: ${subj}\r\nDate: Wed, 01 Jan 2030 09:00:00 +0000\r\n\r\n`;
@@ -67,6 +67,23 @@ test('mail.read returns a message in full by its uid', async () => {
     const s = imapServer(STORE);
     const r = await mail({ fetch: okToken, connect: s.connect }).run('mail.read', TARGET, { uid: '6' }, ctx());
     assert.ok(r.text.includes('The report') && r.text.includes('It is attached.'), 'headers and body');
+});
+
+test('renderMessage: decodes the text, prefers plain, strips HTML, lists attachments', () => {
+    /* quoted-printable with an accent, soft line break */
+    const qp = 'Subject: QP\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: quoted-printable\r\n\r\nCaf=C3=A9 =\r\nchaud';
+    assert.ok(renderMessage(qp).includes('Café chaud'), 'quoted-printable decoded');
+    /* multipart/alternative: the plain part is chosen, not the HTML */
+    const alt = 'Subject: Alt\r\nContent-Type: multipart/alternative; boundary="B"\r\n\r\n--B\r\nContent-Type: text/plain\r\n\r\nplain wins\r\n--B\r\nContent-Type: text/html\r\n\r\n<p>html</p>\r\n--B--';
+    const a = renderMessage(alt);
+    assert.ok(a.includes('plain wins') && !a.includes('<p>'), 'plain chosen, no html tags');
+    /* an attachment is listed by name and type, never its bytes */
+    const mixed = 'Subject: Att\r\nContent-Type: multipart/mixed; boundary="X"\r\n\r\n--X\r\nContent-Type: text/plain\r\n\r\nbody text\r\n--X\r\nContent-Type: application/pdf; name="r.pdf"\r\nContent-Disposition: attachment; filename="r.pdf"\r\nContent-Transfer-Encoding: base64\r\n\r\nQUJDREVG\r\n--X--';
+    const m = renderMessage(mixed);
+    assert.ok(m.includes('body text') && /Attachments \(1\)/.test(m) && m.includes('r.pdf') && m.includes('application/pdf'), 'body plus an attachment line');
+    assert.ok(!m.includes('QUJDREVG'), 'the attachment bytes are never printed');
+    /* HTML-only falls back to stripped text */
+    assert.ok(renderMessage('Subject: H\r\nContent-Type: text/html\r\n\r\n<h1>Hi</h1><p>x &amp; y</p>').includes('x & y'), 'html stripped to text');
 });
 
 test('mail.search runs a text search and briefs the hits', async () => {

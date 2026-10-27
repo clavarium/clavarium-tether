@@ -40,6 +40,54 @@ function headerOf(block, name) {
     return m ? m[1].replace(/\r?\n[ \t]+/g, ' ').trim() : '';
 }
 
+/* ---------- a message, made readable ----------
+   The agent reads text, not raw MIME. renderMessage walks the parts, decodes the
+   best text (plain preferred, else HTML stripped to text) and lists attachments
+   by name, type and size -- never their bytes. Any surprise falls back to raw. */
+function splitHead(part) { const m = /\r?\n\r?\n/.exec(part); return m ? [part.slice(0, m.index), part.slice(m.index + m[0].length)] : [part, '']; }
+function param(headers, name) { const m = new RegExp(`${name}\\s*=\\s*(?:"([^"]*)"|([^;\\r\\n]*))`, 'i').exec(headers); return m ? (m[1] ?? m[2] ?? '').trim() : ''; }
+function decodeBody(headers, body) {
+    const enc = headerOf(headers, 'Content-Transfer-Encoding').toLowerCase();
+    const charset = param(headers, 'charset') || 'utf-8';
+    let buf;
+    if (enc === 'base64') buf = Buffer.from(body.replace(/[^A-Za-z0-9+/=]/g, ''), 'base64');
+    else if (enc === 'quoted-printable') buf = Buffer.from(body.replace(/=\r?\n/g, '').replace(/=([0-9A-Fa-f]{2})/g, (_, h) => String.fromCharCode(parseInt(h, 16))), 'binary');
+    else buf = Buffer.from(body, 'binary');
+    try { return new TextDecoder(charset).decode(buf); } catch { return buf.toString('utf8'); }
+}
+const stripHtml = (html) => html
+    .replace(/<(script|style)[^>]*>[\s\S]*?<\/\1>/gi, '').replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/(p|div|tr|li|h[1-6]|table)>/gi, '\n').replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#3[49];/g, "'")
+    .replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+function walk(part, out, depth = 0) {
+    if (depth > 20) return;
+    const [headers, body] = splitHead(part);
+    const type = (headerOf(headers, 'Content-Type') || 'text/plain').toLowerCase();
+    const filename = param(headers, 'filename') || param(headers, 'name');
+    if (type.startsWith('multipart/')) {
+        const boundary = param(headers, 'boundary');
+        if (!boundary) return;
+        for (const p of body.split(new RegExp(`\\r?\\n?--${boundary.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\$&')}(?:--)?[ \\t]*\\r?\\n?`))) if (p.trim()) walk(p, out, depth + 1);
+        return;
+    }
+    if (filename || headerOf(headers, 'Content-Disposition').toLowerCase().startsWith('attachment')) {
+        out.attachments.push({ name: filename || '(unnamed)', type: type.split(';')[0].trim(), kb: Math.max(1, Math.round(body.replace(/\s/g, '').length * 3 / 4 / 1024)) });
+    } else if (type.startsWith('text/plain') && !out.text) out.text = decodeBody(headers, body);
+    else if (type.startsWith('text/html') && !out.html) out.html = decodeBody(headers, body);
+}
+export function renderMessage(raw) {
+    try {
+        const out = { text: '', html: '', attachments: [] };
+        walk(raw, out);
+        const head = ['From', 'To', 'Cc', 'Date', 'Subject'].map((h) => { const v = headerOf(raw, h); return v ? `${h}: ${v}` : null; }).filter(Boolean).join('\n');
+        let body = out.text || (out.html ? stripHtml(out.html) : '');
+        if (!body.trim()) body = splitHead(raw)[1];
+        const attach = out.attachments.length ? `\n\n--- Attachments (${out.attachments.length}) ---\n${out.attachments.map((a) => `  ${a.name} (${a.type}, ~${a.kb} KB)`).join('\n')}` : '';
+        return `${head}\n\n${body.trim()}${attach}`.trim();
+    } catch { return raw; }
+}
+
 const numUid = (u) => { const n = Number(u); if (!Number.isInteger(n) || n <= 0) no('that needs the message number (uid)'); return n; };
 /* The marks a person may set, named by a plain word -- never a raw IMAP flag from
    the agent. Each maps to an add/remove and a system flag. */
@@ -147,7 +195,8 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
                 const cut = fetched.indexOf('\n');
                 if (cut < 0) no('no such message');
                 const raw = fetched.slice(cut + 1).replace(/\)\s*$/, '');
-                return { text: raw, size: Buffer.byteLength(raw) };
+                const text = renderMessage(raw);
+                return { text, size: Buffer.byteLength(text) };
             } finally { await close(s); }
         },
         /* The messages whose text matches, briefly. */
