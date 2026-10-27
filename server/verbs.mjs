@@ -10,7 +10,7 @@
  * nothing. Everything else ACTS.
  */
 
-export const KINDS = ['computer', 'ssh', 'browser', 'files', 'screen', 'mail'];
+export const KINDS = ['computer', 'ssh', 'browser', 'files', 'screen', 'mail', 'calendar'];
 const SHELLS = ['computer', 'ssh'];
 const FOLDERS = ['computer', 'ssh', 'files'];
 
@@ -65,6 +65,9 @@ export const VERBS = Object.freeze({
     'mail.move': { reads: false, kinds: ['mail'], needs: ['uid', 'mailbox'] },
     'mail.flag': { reads: false, kinds: ['mail'], needs: ['uid', 'flag'] },
     'mail.send': { reads: false, kinds: ['mail'], needs: ['to', 'subject', 'body'] },
+    'calendar.list': { reads: true, kinds: ['calendar'], needs: [] },
+    'calendar.read': { reads: true, kinds: ['calendar'], needs: ['id'] },
+    'calendar.create': { reads: false, kinds: ['calendar'], needs: ['title', 'start', 'end'] },
 });
 
 export class Refused extends Error {}
@@ -134,6 +137,8 @@ export function check(verb, a = {}) {
         case 'mail.move': str('uid', 40); str('mailbox', 200); break;
         case 'mail.flag': str('uid', 40); str('flag', 40); break;
         case 'mail.send': str('to', 1000); str('subject', 400); str('body', TEXT_MAX, true); break;
+        case 'calendar.read': str('id', 1024); break;
+        case 'calendar.create': str('title', 400); str('start', 64); str('end', 64); str('where', 400); break;
         default: for (const k of v.needs) str(k, COMMAND_MAX, true);
     }
     for (const k of v.needs) if (out[k] === undefined || out[k] === '') no(`${verb} needs ${k}`);
@@ -170,6 +175,8 @@ export function detail(verb, a = {}) {
         case 'mail.move': return `#${a.uid} → ${a.mailbox}`;
         case 'mail.flag': return `#${a.uid} ${a.flag}`;
         case 'mail.send': return `to ${a.to}: ${a.subject ?? ''}`;
+        case 'calendar.read': return a.id;
+        case 'calendar.create': return `${a.title} (${a.start})`;
         default: return '';
     }
 }

@@ -39,6 +39,7 @@ import { ssh as sshConnector } from './connectors/ssh.mjs';
 import { webdav as webdavConnector } from './connectors/webdav.mjs';
 import { graph as graphConnector } from './connectors/graph.mjs';
 import { mail as mailConnector } from './connectors/mail.mjs';
+import { calendar as calendarConnector } from './connectors/calendar.mjs';
 
 export { openStore, Refused, LEVELS };
 /* Older than this when first seen, an ask is not done: its command stopped waiting a while ago. */
@@ -88,6 +89,7 @@ export function keeper(dir, { sides = () => [], ask, secrets = async () => { thr
        until a target asks it to connect, and caches only a token it minted from the
        stored refresh token. A host that does not want it passes `{ mail: null }`. */
     if (!('mail' in conns)) conns.mail = mailConnector();
+    if (!('calendar' in conns)) conns.calendar = calendarConnector();
     store.onChange((w) => changed({ store: w }));
     journal.onAppend((l) => changed({ journal: l }));
 
