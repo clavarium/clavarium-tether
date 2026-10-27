@@ -5,6 +5,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { mail, renderMessage } from '../host/connectors/mail.mjs';
+import { Exchange } from '../host/imap.mjs';
 
 const okToken = async () => new Response(JSON.stringify({ access_token: 'ACCESS-Tok', expires_in: 3600 }), { status: 200, headers: { 'content-type': 'application/json' } });
 const HEADERS = (from, subj) => `From: ${from}\r\nSubject: ${subj}\r\nDate: Wed, 01 Jan 2030 09:00:00 +0000\r\n\r\n`;
@@ -67,6 +68,12 @@ test('mail.read returns a message in full by its uid', async () => {
     const s = imapServer(STORE);
     const r = await mail({ fetch: okToken, connect: s.connect }).run('mail.read', TARGET, { uid: '6' }, ctx());
     assert.ok(r.text.includes('The report') && r.text.includes('It is attached.'), 'headers and body');
+});
+
+test('a server that connects but never answers fails in time, it does not hang', async () => {
+    const socket = Object.assign(new EventEmitter(), { write() {} });
+    const imap = new Exchange(socket, 1_000_000, 40); /* 40ms idle for the test */
+    await assert.rejects(imap.greeting(), /did not answer in time/);
 });
 
 test('renderMessage: decodes the text, prefers plain, strips HTML, lists attachments', () => {

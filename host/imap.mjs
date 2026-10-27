@@ -17,10 +17,14 @@ export function quoted(text) {
 export const imapDate = (d) => `${d.getUTCDate()}-${MONTHS[d.getUTCMonth()]}-${d.getUTCFullYear()}`;
 
 export class Exchange {
-    #socket; #buffer = Buffer.alloc(0); #received = 0; #wake = null; #failure = null; #n = 0; #max;
-    /* `bytesMax`: what the whole conversation may receive, and no more. */
-    constructor(socket, bytesMax) {
+    #socket; #buffer = Buffer.alloc(0); #received = 0; #wake = null; #failure = null; #n = 0; #max; #idleMs;
+    /* `bytesMax`: what the whole conversation may receive, and no more. `idleMs`: how
+       long to wait for the next bytes before giving up -- so a server that connects
+       but never answers (a dropped route, a stuck TLS) fails cleanly instead of
+       hanging the keeper forever. */
+    constructor(socket, bytesMax, idleMs = 20_000) {
         this.#max = bytesMax;
+        this.#idleMs = idleMs;
         this.#socket = socket;
         socket.on('data', (bytes) => {
             this.#received += bytes.length;
@@ -56,7 +60,11 @@ export class Exchange {
                 current = '';
             }
             if (this.#failure) throw this.#failure;
-            await new Promise((resolve) => { this.#wake = () => { this.#wake = null; resolve(); }; });
+            await new Promise((resolve) => {
+                const timer = setTimeout(() => { this.#wake = null; this.#fail(new Error('the mailbox did not answer in time')); resolve(); }, this.#idleMs);
+                timer.unref?.();
+                this.#wake = () => { this.#wake = null; clearTimeout(timer); resolve(); };
+            });
         }
     }
     async greeting() {
