@@ -24,8 +24,11 @@ import { createInterface } from 'node:readline';
 import { NAME, VERSION, FOLDER, ENV_DIR } from './name.mjs';
 
 export { VERSION, FOLDER };
-/* How long an ask waits for the keeper to take it. It answers, or says it holds it for a person, within a second or two. */
-export const WAIT_MS = 20_000;
+/* How long an ask waits for the keeper's answer. Most verbs answer in a second or
+   two, but a real action can take longer -- a mailbox opened over IMAP and read can
+   be ~20s -- so the wait is generous; a stuck connection still fails fast, because
+   the connector's own idle timeout turns it into a refusal the keeper sends back. */
+export const WAIT_MS = 60_000;
 /* Past the time a person had, how long more to wait for the keeper's word. */
 export const GRACE_MS = 30_000;
 export const NO_KEEPER = `No answer: nobody keeps these targets right now (their application, or "${NAME} serve", is not running). Nothing was done.`;
