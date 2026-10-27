@@ -64,6 +64,7 @@ export const VERBS = Object.freeze({
     'mail.search': { reads: true, kinds: ['mail'], needs: ['text'] },
     'mail.move': { reads: false, kinds: ['mail'], needs: ['uid', 'mailbox'] },
     'mail.flag': { reads: false, kinds: ['mail'], needs: ['uid', 'flag'] },
+    'mail.send': { reads: false, kinds: ['mail'], needs: ['to', 'subject', 'body'] },
 });
 
 export class Refused extends Error {}
@@ -132,6 +133,7 @@ export function check(verb, a = {}) {
         case 'mail.search': str('text', 400); str('mailbox', 200); break;
         case 'mail.move': str('uid', 40); str('mailbox', 200); break;
         case 'mail.flag': str('uid', 40); str('flag', 40); break;
+        case 'mail.send': str('to', 1000); str('subject', 400); str('body', TEXT_MAX, true); break;
         default: for (const k of v.needs) str(k, COMMAND_MAX, true);
     }
     for (const k of v.needs) if (out[k] === undefined || out[k] === '') no(`${verb} needs ${k}`);
@@ -167,6 +169,7 @@ export function detail(verb, a = {}) {
         case 'mail.search': return a.text;
         case 'mail.move': return `#${a.uid} → ${a.mailbox}`;
         case 'mail.flag': return `#${a.uid} ${a.flag}`;
+        case 'mail.send': return `to ${a.to}: ${a.subject ?? ''}`;
         default: return '';
     }
 }

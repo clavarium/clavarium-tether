@@ -23,8 +23,10 @@ import { connect as tlsConnect } from 'node:tls';
 import { no, Refused } from '../../server/verbs.mjs';
 import { refreshAccess, thunderbird, xoauth2, PROVIDERS } from '../oauth.mjs';
 import { Exchange, quoted, imapDate } from '../imap.mjs';
+import { send as smtpSend } from '../smtp.mjs';
 
 const IMAP_HOST = { google: 'imap.gmail.com', microsoft: 'outlook.office365.com' };
+const SMTP_HOST = { google: 'smtp.gmail.com', microsoft: 'smtp.office365.com' };
 const PORT = 993;
 const LIST_MAX = 30;            /* messages a list returns at most */
 const READ_MAX = 512 * 1024;    /* bytes of one message read at once */
@@ -44,7 +46,7 @@ const numUid = (u) => { const n = Number(u); if (!Number.isInteger(n) || n <= 0)
 const FLAGS = { read: ['+', '\\Seen'], seen: ['+', '\\Seen'], unread: ['-', '\\Seen'], unseen: ['-', '\\Seen'], flagged: ['+', '\\Flagged'], starred: ['+', '\\Flagged'], unflagged: ['-', '\\Flagged'] };
 const flagOf = (f) => { const e = FLAGS[String(f ?? '').toLowerCase().trim()]; if (!e) no('flag is one of: read, unread, flagged, unflagged'); return { op: e[0], flag: e[1] }; };
 
-export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect } = {}) {
+export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect, smtpConnect, smtpSecure } = {}) {
     const tokens = new Map(); // target.id -> { value, exp }
 
     const providerOf = (target) => { const p = String(target.config?.provider ?? ''); if (!IMAP_HOST[p] || !PROVIDERS[p]) no(`${target.title}: set its provider to google or microsoft`); return p; };
@@ -180,6 +182,32 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
                 await s.imap.command(`UID STORE ${uid} ${op}FLAGS (${flag})`, 'that message could not be marked');
                 return { text: `Marked #${uid} ${String(a.flag).toLowerCase().trim()}.`, size: 0 };
             } finally { await close(s); }
+        },
+        /* Send a message. A provider signs in to SMTP with XOAUTH2; a classic box with
+           LOGIN on its SMTP server. The message is built from the fields -- nothing an
+           agent wrote becomes a header or a command. */
+        async 'mail.send'(target, a, ctx) {
+            const user = userOf(target);
+            const to = String(a.to ?? '').split(',').map((x) => x.trim()).filter(Boolean);
+            if (!to.length) no('send needs a recipient (to)');
+            let host; let port = 587; let auth;
+            if (isOAuth(target)) {
+                host = SMTP_HOST[providerOf(target)];
+                auth = { xoauth2: xoauth2(user, await access(target, ctx)) };
+            } else {
+                host = String(target.config?.smtpHost ?? '').trim().toLowerCase();
+                if (!host || !host.includes('.')) no(`${target.title}: set its SMTP server (smtpHost) to send`);
+                const password = await ctx.secret('password');
+                if (!password) no(`${target.title}: its password is empty`);
+                auth = { user, password };
+            }
+            if (Number(target.config?.smtpPort) > 0) port = Number(target.config.smtpPort);
+            let sent;
+            try {
+                sent = await smtpSend({ host, port, auth, from: user, to, subject: a.subject, body: a.body,
+                    ...(smtpConnect ? { connect: smtpConnect } : {}), ...(smtpSecure ? { secure: smtpSecure } : {}) });
+            } catch (e) { if (e instanceof Refused) throw e; no(`${target.title}: ${e?.message ?? 'the message could not be sent'}`); }
+            return { text: `Sent to ${sent.join(', ')}.`, size: 0 };
         },
     };
 

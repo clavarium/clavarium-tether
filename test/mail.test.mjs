@@ -76,6 +76,57 @@ test('mail.search runs a text search and briefs the hits', async () => {
     assert.ok(r.text.includes('Bob') || r.text.includes('Alice'), 'briefs results');
 });
 
+/* A scripted SMTP server: a plain socket (greeting, EHLO, STARTTLS), then `secure`
+   returns a fresh socket for the TLS phase (EHLO, AUTH, MAIL/RCPT/DATA). */
+function smtpServer() {
+    const commands = [];
+    const reply = (s, text) => setImmediate(() => s.emit('data', Buffer.from(text)));
+    const make = () => {
+        const s = new EventEmitter(); s.destroy = () => {}; s._auth = 0;
+        s.write = (text) => {
+            if (/\r\n\.\r\n$/.test(text)) { commands.push('<message>'); return reply(s, '250 queued\r\n'); }
+            const cmd = text.replace(/\r\n$/, '');
+            commands.push(cmd.length > 70 ? `${cmd.slice(0, 70)}…` : cmd);
+            if (s._auth === 1) { s._auth = 2; return reply(s, '334 UGFzc3dvcmQ6\r\n'); }
+            if (s._auth === 2) { s._auth = 0; return reply(s, '235 ok\r\n'); }
+            if (/^EHLO/.test(cmd)) return reply(s, '250-hi\r\n250-STARTTLS\r\n250 AUTH XOAUTH2 LOGIN\r\n');
+            if (cmd === 'STARTTLS') return reply(s, '220 go ahead\r\n');
+            if (/^AUTH XOAUTH2/.test(cmd)) return reply(s, '235 accepted\r\n');
+            if (cmd === 'AUTH LOGIN') { s._auth = 1; return reply(s, '334 VXNlcm5hbWU6\r\n'); }
+            if (cmd === 'DATA') return reply(s, '354 go ahead\r\n');
+            if (cmd === 'QUIT') return reply(s, '221 bye\r\n');
+            return reply(s, '250 ok\r\n');
+        };
+        return s;
+    };
+    return { commands, connect: () => { const s = make(); reply(s, '220 smtp ready\r\n'); return s; }, secure: () => make() };
+}
+
+test('mail.send (provider): STARTTLS, XOAUTH2, and the message is accepted', async () => {
+    const m = smtpServer();
+    const r = await mail({ fetch: okToken, smtpConnect: m.connect, smtpSecure: m.secure }).run('mail.send', TARGET, { to: 'bob@example.com', subject: 'Hi', body: 'Hello there.' }, ctx());
+    assert.ok(r.text.includes('Sent to bob@example.com'), 'confirms the send');
+    assert.ok(m.commands.includes('STARTTLS'), 'upgraded to TLS first');
+    assert.ok(m.commands.some((x) => x.startsWith('AUTH XOAUTH2')), 'XOAUTH2, not a password');
+    assert.ok(m.commands.some((x) => x.startsWith('MAIL FROM:<me@example.com>')), 'from the mailbox itself');
+    assert.ok(m.commands.some((x) => x.startsWith('RCPT TO:<bob@example.com>')), 'to the recipient');
+    assert.ok(m.commands.includes('<message>'), 'the message body went out');
+});
+
+test('mail.send (classic): AUTH LOGIN on the SMTP server', async () => {
+    const m = smtpServer();
+    const classic = { id: 'c2', title: 'Box', config: { host: 'imap.example.com', smtpHost: 'smtp.example.com', user: 'alice@example.com' }, secrets: { password: 'pw' } };
+    const r = await mail({ fetch: okToken, smtpConnect: m.connect, smtpSecure: m.secure }).run('mail.send', classic, { to: 'bob@example.com', subject: 'Hi', body: 'yo' }, { secret: async (k) => (k === 'password' ? 'PW' : undefined) });
+    assert.ok(r.text.includes('Sent to bob@example.com'));
+    assert.ok(m.commands.includes('AUTH LOGIN'), 'password auth for a classic box');
+    assert.ok(!m.commands.some((x) => x.startsWith('AUTH XOAUTH2')), 'no token auth');
+});
+
+test('mail.send refuses a bad recipient address', async () => {
+    const m = smtpServer();
+    await assert.rejects(mail({ fetch: okToken, smtpConnect: m.connect, smtpSecure: m.secure }).run('mail.send', TARGET, { to: 'not an address', subject: 'x', body: 'y' }, ctx()), /not a usable address/);
+});
+
 test('a classic IMAP box (host + password) signs in with LOGIN, not a token', async () => {
     const s = imapServer(STORE);
     const classic = { id: 'c1', title: 'Box', config: { host: 'imap.example.com', user: 'alice' }, secrets: { password: 'mail-pw' } };
