@@ -1,0 +1,120 @@
+/* THE CONTACTS CONNECTOR: a person's address book (Google or Microsoft) reached by
+ * the keeper with a token the host holds and the agent never sees. Microsoft is a
+ * REST read over Graph; Google is CardDAV (the scope the Thunderbird client carries),
+ * so the host speaks a small REPORT and parses the returned vCards. Read only for now
+ * (list, read) -- looking someone up is the common need; writing contacts comes later.
+ * Inspired by the MIT Google/Microsoft MCP servers, reimplemented host-side.
+ *
+ *   target.config.provider   'google' or 'microsoft'
+ *   target.config.user       the email address (Google CardDAV needs it in the URL)
+ *   target.secrets.refresh   the NAME of the refresh token in the host's secret store
+ */
+import { no, Refused } from '../../server/verbs.mjs';
+import { refreshAccess, thunderbird, PROVIDERS } from '../oauth.mjs';
+
+const LIST_MAX = 50;
+
+/* A vCard's useful fields. Lines fold with a leading space; unfold first. */
+function fromVcard(text) {
+    const v = String(text).replace(/\r?\n[ \t]/g, '');
+    const one = (re) => { const m = re.exec(v); return m ? m[1].trim() : ''; };
+    const many = (re) => [...v.matchAll(re)].map((m) => m[1].trim()).filter(Boolean);
+    return { name: one(/^FN[^:\r\n]*:(.+)$/im), emails: many(/^EMAIL[^:\r\n]*:(.+)$/gim), tels: many(/^TEL[^:\r\n]*:(.+)$/gim) };
+}
+const brief = (id, c) => `${id}\n  ${c.name || '(no name)'}${c.emails.length ? `  <${c.emails.join(', ')}>` : ''}${c.tels.length ? `  tel ${c.tels.join(' ')}` : ''}`;
+const decodeXml = (s) => s.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, '&');
+
+/* Microsoft returns JSON: normalise one contact to the same shape. */
+const fromMs = (c) => ({ name: c.displayName || [c.givenName, c.surname].filter(Boolean).join(' '), emails: (c.emailAddresses ?? []).map((e) => e.address).filter(Boolean), tels: [c.mobilePhone, ...(c.businessPhones ?? []), ...(c.homePhones ?? [])].filter(Boolean) });
+
+export function contacts({ fetch: fetchImpl = globalThis.fetch } = {}) {
+    const tokens = new Map();
+    const providerOf = (target) => { const p = String(target.config?.provider ?? ''); if (!PROVIDERS[p] || !(p === 'google' || p === 'microsoft')) no(`${target.title}: set its provider to google or microsoft`); return p; };
+    const userOf = (target) => { const u = String(target.config?.user ?? '').trim(); if (!u) no(`${target.title}: set its email address`); return u; };
+
+    async function access(target, ctx) {
+        const provider = providerOf(target);
+        const cached = tokens.get(target.id);
+        if (cached && cached.exp > Date.now() + 60_000) return cached.value;
+        const refresh = await ctx.secret('refresh');
+        if (!refresh) no(`${target.title}: its refresh token is empty -- reconnect the account`);
+        const clientId = target.config?.clientId || thunderbird(provider).clientId;
+        const clientSecret = target.secrets?.secret ? await ctx.secret('secret') : thunderbird(provider).clientSecret;
+        let t;
+        try { t = await refreshAccess(provider, { clientId, clientSecret, refreshToken: refresh, fetch: fetchImpl }); }
+        catch (e) { if (e instanceof Refused) throw e; no(`${target.title}: the contacts must be reconnected (its authorisation was refused)`); }
+        tokens.set(target.id, { value: t.accessToken, exp: t.expiresAt });
+        return t.accessToken;
+    }
+    async function req(target, ctx, method, url, { headers = {}, body } = {}) {
+        const token = await access(target, ctx);
+        let res;
+        try { res = await fetchImpl(url, { method, headers: { Authorization: `Bearer ${token}`, ...headers }, ...(body !== undefined ? { body } : {}) }); }
+        catch (e) { if (e instanceof Refused) throw e; no(`${target.title}: cannot reach the address book`); }
+        if (res.status === 401 || res.status === 403) no(`${target.title}: not authorized -- reconnect the account (the contacts scope may be missing)`);
+        return res;
+    }
+
+    const CARDDAV = (user) => `https://www.googleapis.com/carddav/v1/principals/${encodeURIComponent(user)}/lists/default/`;
+    const QUERY = '<?xml version="1.0" encoding="utf-8"?><C:addressbook-query xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:carddav"><D:prop><D:getetag/><C:address-data/></D:prop></C:addressbook-query>';
+
+    async function googleList(target, ctx) {
+        const res = await req(target, ctx, 'REPORT', CARDDAV(userOf(target)), { headers: { Depth: '1', 'Content-Type': 'application/xml; charset=utf-8' }, body: QUERY });
+        if (!res.ok) no(`${target.title}: the address book could not be read (${res.status})`);
+        const xml = await res.text();
+        const out = [];
+        const blocks = xml.split(/<[A-Za-z0-9]*:?response[\s>]/i).slice(1);
+        for (const block of blocks) {
+            const href = /<[^>]*?:?href[^>]*>([\s\S]*?)<\/[^>]*?:?href>/i.exec(block)?.[1]?.trim();
+            const data = /<[^>]*?:?address-data[^>]*>([\s\S]*?)<\/[^>]*?:?address-data>/i.exec(block)?.[1];
+            if (!data) continue;
+            const card = fromVcard(decodeXml(data));
+            if (card.name || card.emails.length) out.push(brief(href || '(no id)', card));
+            if (out.length >= LIST_MAX) break;
+        }
+        return out;
+    }
+
+    const verbs = {
+        /* The address book, briefly: name, emails, phones. */
+        async 'contacts.list'(target, a, ctx) {
+            const provider = providerOf(target);
+            if (provider === 'google') { const items = await googleList(target, ctx); const text = items.length ? items.join('\n') : 'No contact.'; return { text, size: Buffer.byteLength(text) }; }
+            const res = await req(target, ctx, 'GET', 'https://graph.microsoft.com/v1.0/me/contacts?$top=50&$select=id,displayName,givenName,surname,emailAddresses,mobilePhone,businessPhones,homePhones');
+            if (!res.ok) no(`${target.title}: the address book could not be read (${res.status})`);
+            const items = ((await res.json()).value ?? []).map((c) => brief(c.id, fromMs(c)));
+            const text = items.length ? items.join('\n') : 'No contact.';
+            return { text, size: Buffer.byteLength(text) };
+        },
+        /* One contact in full, by its id (the Microsoft id, or the Google CardDAV href). */
+        async 'contacts.read'(target, a, ctx) {
+            const provider = providerOf(target);
+            const id = String(a.id ?? '').trim();
+            if (!id) no('read needs the contact id');
+            if (provider === 'google') {
+                const url = /^https?:\/\//.test(id) ? id : `https://www.googleapis.com${id.startsWith('/') ? '' : '/'}${id}`;
+                const res = await req(target, ctx, 'GET', url, { headers: { 'Content-Type': 'text/vcard' } });
+                if (res.status === 404) no('no such contact');
+                if (!res.ok) no(`${target.title}: that contact could not be read (${res.status})`);
+                const text = (await res.text()).slice(0, 64 * 1024);
+                return { text, size: Buffer.byteLength(text) };
+            }
+            const res = await req(target, ctx, 'GET', `https://graph.microsoft.com/v1.0/me/contacts/${encodeURIComponent(id)}`);
+            if (res.status === 404) no('no such contact');
+            if (!res.ok) no(`${target.title}: that contact could not be read (${res.status})`);
+            const text = JSON.stringify(await res.json(), null, 1).slice(0, 64 * 1024);
+            return { text, size: Buffer.byteLength(text) };
+        },
+    };
+
+    return {
+        name: 'contacts',
+        verbs: Object.keys(verbs),
+        run(verb, target, a, ctx) {
+            if (!verbs[verb]) no(`${verb} is not done by this connector`);
+            return verbs[verb](target, a, ctx);
+        },
+        close() { tokens.clear(); },
+        shutdown() { tokens.clear(); },
+    };
+}
