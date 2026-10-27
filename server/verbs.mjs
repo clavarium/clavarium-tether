@@ -10,7 +10,7 @@
  * nothing. Everything else ACTS.
  */
 
-export const KINDS = ['computer', 'ssh', 'browser', 'files', 'screen'];
+export const KINDS = ['computer', 'ssh', 'browser', 'files', 'screen', 'mail'];
 const SHELLS = ['computer', 'ssh'];
 const FOLDERS = ['computer', 'ssh', 'files'];
 
@@ -57,6 +57,11 @@ export const VERBS = Object.freeze({
     'screen.scroll': { reads: false, kinds: ['screen'], needs: [] },
     'screen.type': { reads: false, kinds: ['screen'], needs: ['text'] },
     'screen.key': { reads: false, kinds: ['screen'], needs: ['key'] },
+    /* MAIL (and later agenda, contacts): a mailbox reached by the keeper over IMAP
+       with a token the agent never holds. Reads at level watch; send/move/flag act. */
+    'mail.list': { reads: true, kinds: ['mail'], needs: [] },
+    'mail.read': { reads: true, kinds: ['mail'], needs: ['uid'] },
+    'mail.search': { reads: true, kinds: ['mail'], needs: ['text'] },
 });
 
 export class Refused extends Error {}
@@ -120,6 +125,9 @@ export function check(verb, a = {}) {
         case 'screen.scroll': num('dx'); num('dy'); break;
         case 'screen.type': str('text', COMMAND_MAX, true); break;
         case 'screen.key': str('key', 60); break;
+        case 'mail.list': str('mailbox', 200); break;
+        case 'mail.read': str('uid', 40); str('mailbox', 200); break;
+        case 'mail.search': str('text', 400); str('mailbox', 200); break;
         default: for (const k of v.needs) str(k, COMMAND_MAX, true);
     }
     for (const k of v.needs) if (out[k] === undefined || out[k] === '') no(`${verb} needs ${k}`);
@@ -150,6 +158,9 @@ export function detail(verb, a = {}) {
         case 'screen.drag': return `${a.from} → ${a.to}`;
         case 'screen.type': return a.text;
         case 'screen.key': return a.key;
+        case 'mail.list': return a.mailbox ?? '';
+        case 'mail.read': return `#${a.uid}`;
+        case 'mail.search': return a.text;
         default: return '';
     }
 }
