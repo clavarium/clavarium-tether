@@ -56,10 +56,22 @@ export function contacts({ fetch: fetchImpl = globalThis.fetch } = {}) {
     }
 
     const CARDDAV = (user) => `https://www.googleapis.com/carddav/v1/principals/${encodeURIComponent(user)}/lists/default/`;
-    const QUERY = '<?xml version="1.0" encoding="utf-8"?><C:addressbook-query xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:carddav"><D:prop><D:getetag/><C:address-data/></D:prop></C:addressbook-query>';
+    /* Listing all of a Google address book over CardDAV: an addressbook-query
+       needs a CARDDAV:filter (RFC 6352), and a match-all filter is awkward, so
+       enumerate the entries with a PROPFIND, then fetch their vCards with an
+       addressbook-multiget (both standard, and what Google accepts). */
+    const PROPFIND = '<?xml version="1.0" encoding="utf-8"?><D:propfind xmlns:D="DAV:"><D:prop><D:getetag/></D:prop></D:propfind>';
+    const hrefsIn = (xml) => [...xml.matchAll(/<[^>]*?:?href[^>]*>([\s\S]*?)<\/[^>]*?:?href>/gi)].map((m) => decodeXml(m[1].trim()));
 
     async function googleList(target, ctx) {
-        const res = await req(target, ctx, 'REPORT', CARDDAV(userOf(target)), { headers: { Depth: '1', 'Content-Type': 'application/xml; charset=utf-8' }, body: QUERY });
+        const base = CARDDAV(userOf(target));
+        const listed = await req(target, ctx, 'PROPFIND', base, { headers: { Depth: '1', 'Content-Type': 'application/xml; charset=utf-8' }, body: PROPFIND });
+        if (!listed.ok) no(`${target.title}: the address book could not be read (${listed.status})`);
+        /* The collection lists itself and its contacts; keep the vCard entries. */
+        const hrefs = hrefsIn(await listed.text()).filter((h) => /\.vcf(\?|$)/i.test(h)).slice(0, LIST_MAX);
+        if (!hrefs.length) return [];
+        const body = `<?xml version="1.0" encoding="utf-8"?><C:addressbook-multiget xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:carddav"><D:prop><D:getetag/><C:address-data/></D:prop>${hrefs.map((h) => `<D:href>${h.replace(/&/g, '&amp;').replace(/</g, '&lt;')}</D:href>`).join('')}</C:addressbook-multiget>`;
+        const res = await req(target, ctx, 'REPORT', base, { headers: { Depth: '1', 'Content-Type': 'application/xml; charset=utf-8' }, body });
         if (!res.ok) no(`${target.title}: the address book could not be read (${res.status})`);
         const xml = await res.text();
         const out = [];

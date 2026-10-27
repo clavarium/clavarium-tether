@@ -24,13 +24,22 @@ const MULTISTATUS = `<?xml version="1.0"?>
  </D:response>
 </D:multistatus>`;
 
+/* A PROPFIND lists the collection and its entries (hrefs + etags, no data). */
+const LISTING = `<?xml version="1.0"?>
+<D:multistatus xmlns:D="DAV:">
+ <D:response><D:href>/carddav/v1/principals/me/lists/default/</D:href><D:propstat><D:prop><D:getetag>"c"</D:getetag></D:prop></D:propstat></D:response>
+ <D:response><D:href>/carddav/v1/principals/me/lists/default/alice.vcf</D:href><D:propstat><D:prop><D:getetag>"1"</D:getetag></D:prop></D:propstat></D:response>
+ <D:response><D:href>/carddav/v1/principals/me/lists/default/bob.vcf</D:href><D:propstat><D:prop><D:getetag>"2"</D:getetag></D:prop></D:propstat></D:response>
+</D:multistatus>`;
+
 function server() {
     const calls = [];
     const fetch = async (url, opts = {}) => {
         const method = opts.method || 'GET';
-        calls.push({ url, method, auth: opts.headers?.Authorization });
+        calls.push({ url, method, auth: opts.headers?.Authorization, body: opts.body });
         if (url.includes('oauth2.googleapis.com/token') || url.includes('login.microsoftonline.com')) return json({ access_token: 'CON-Tok', expires_in: 3600 });
         if (url.includes('googleapis.com/carddav')) {
+            if (method === 'PROPFIND') return xml(LISTING);
             if (method === 'REPORT') return xml(MULTISTATUS);
             if (url.endsWith('alice.vcf')) return new Response('BEGIN:VCARD\r\nFN:Alice Smith\r\nEMAIL:alice@example.com\r\nEND:VCARD\r\n', { status: 200 });
             return new Response('not found', { status: 404 });
@@ -55,6 +64,8 @@ test('contacts.list (Google CardDAV): parses the vCards from the multistatus', a
     assert.ok(r.text.includes('+1 555 0001'), 'and the phone');
     const report = s.calls.find((c) => c.method === 'REPORT');
     assert.equal(report.auth, 'Bearer CON-Tok', 'Bearer the minted token');
+    assert.ok(s.calls.some((c) => c.method === 'PROPFIND'), 'enumerated the entries with a PROPFIND first (no filter-less query)');
+    assert.ok(report.body.includes('addressbook-multiget') && report.body.includes('alice.vcf') && report.body.includes('bob.vcf'), 'then an addressbook-multiget for the enumerated vCards');
 });
 
 test('contacts.read (Google) fetches the vCard by its href', async () => {
