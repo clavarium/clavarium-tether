@@ -73,15 +73,74 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
     }
     const bodyError = async (res) => { try { const j = await res.json(); return j?.error?.message || ''; } catch { return ''; } };
 
+    /* GOOGLE CALENDAR OVER CalDAV. The REST Calendar API needs that API turned on
+       in the OAuth client's own Google project; the borrowed Thunderbird client is
+       a CalDAV client (that is how it reads Google calendars), not a REST one, so
+       REST is refused. CalDAV uses the same calendar scope the client carries (as
+       its contacts do over CardDAV), so the host speaks a small calendar-query and
+       parses the returned iCalendar. The collection URL needs the account address. */
+    const decodeXml = (s) => s.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, '&');
+    const userOf = (target) => { const u = String(target.config?.user ?? '').trim(); if (!u) no(`${target.title}: reconnect the account so it carries its address (the Google calendar needs it)`); return u; };
+    const CALDAV = (user) => `https://apidata.googleusercontent.com/caldav/v2/${encodeURIComponent(user)}/events/`;
+    const icalUTC = (iso) => new Date(iso).toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
+    const fmtICal = (dt) => { const m = /^(\d{4})(\d{2})(\d{2})(?:T(\d{2})(\d{2}))?/.exec(dt || ''); return m ? (m[4] ? `${m[1]}-${m[2]}-${m[3]} ${m[4]}:${m[5]}` : `${m[1]}-${m[2]}-${m[3]}`) : (dt || '?'); };
+    const veventField = (v, re) => { const m = re.exec(v); return m ? m[1].trim() : ''; };
+    function fromVevent(text) {
+        const v = String(text).replace(/\r?\n[ \t]/g, '');
+        return { summary: veventField(v, /^SUMMARY[^:\r\n]*:(.+)$/im), start: veventField(v, /^DTSTART[^:\r\n]*:(.+)$/im), location: veventField(v, /^LOCATION[^:\r\n]*:(.+)$/im) };
+    }
+    async function dav(target, ctx, method, url, { headers = {}, body } = {}) {
+        const token = await access(target, ctx);
+        let res;
+        try { res = await fetchImpl(url, { method, headers: { Authorization: `Bearer ${token}`, ...headers }, ...(body !== undefined ? { body } : {}) }); }
+        catch (e) { if (e instanceof Refused) throw e; no(`${target.title}: cannot reach the calendar`); }
+        if (res.status === 401 || res.status === 403) no(`${target.title}: not authorized -- reconnect the account (the calendar scope may be missing)`);
+        return res;
+    }
+    /* The events in a window, each expanded to its occurrences, briefed one per line. */
+    async function googleList(target, ctx, { from, to }) {
+        const s = icalUTC(from); const e = icalUTC(to);
+        const body = `<?xml version="1.0" encoding="utf-8"?><C:calendar-query xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav"><D:prop><D:getetag/><C:calendar-data><C:expand start="${s}" end="${e}"/></C:calendar-data></D:prop><C:filter><C:comp-filter name="VCALENDAR"><C:comp-filter name="VEVENT"><C:time-range start="${s}" end="${e}"/></C:comp-filter></C:comp-filter></C:filter></C:calendar-query>`;
+        const res = await dav(target, ctx, 'REPORT', CALDAV(userOf(target)), { headers: { Depth: '1', 'Content-Type': 'application/xml; charset=utf-8' }, body });
+        if (!res.ok) no(`${target.title}: the calendar could not be read (${res.status})`);
+        const xml = await res.text();
+        const out = [];
+        for (const block of xml.split(/<[A-Za-z0-9]*:?response[\s>]/i).slice(1)) {
+            const href = /<[^>]*?:?href[^>]*>([\s\S]*?)<\/[^>]*?:?href>/i.exec(block)?.[1]?.trim();
+            const data = /<[^>]*?:?calendar-data[^>]*>([\s\S]*?)<\/[^>]*?:?calendar-data>/i.exec(block)?.[1];
+            if (!data) continue;
+            for (const piece of decodeXml(data).split(/BEGIN:VEVENT/i).slice(1)) {
+                const ev = fromVevent(piece);
+                if (ev.summary || ev.start) out.push({ id: href, ...ev });
+            }
+        }
+        out.sort((x, y) => String(x.start).localeCompare(String(y.start)));
+        return out.slice(0, LIST_MAX).map((ev) => `${ev.id || '(no id)'}\n  ${fmtICal(ev.start)} — ${ev.summary || '(no title)'}${ev.location ? `  @ ${ev.location}` : ''}`);
+    }
+    async function googleRead(target, ctx, id) {
+        const url = /^https?:\/\//.test(id) ? id : new URL(id, CALDAV(userOf(target))).href;
+        const res = await dav(target, ctx, 'GET', url, { headers: { 'Content-Type': 'text/calendar' } });
+        if (res.status === 404) no('no such event');
+        if (!res.ok) no(`${target.title}: that event could not be read (${res.status})`);
+        return (await res.text()).slice(0, READ_MAX);
+    }
+
     const verbs = {
         /* Events in a window, soonest first. By default from now on (the next
            events); `from`/`to` (ISO dates or datetimes) move it into the past or
            future, so the agent can look at any week or month, not only what's next. */
         async 'calendar.list'(target, a, ctx) {
-            const api = API[providerOf(target)];
+            const provider = providerOf(target);
             const when = (s) => { const d = s ? new Date(s) : null; return d && !Number.isNaN(d.getTime()) ? d.toISOString() : null; };
             const from = when(a.from) ?? new Date().toISOString();
             const to = when(a.to) ?? new Date(new Date(from).getTime() + 365 * 86_400_000).toISOString();
+            /* Google over CalDAV (the REST API its client cannot use); Microsoft over Graph. */
+            if (provider === 'google') {
+                const items = await googleList(target, ctx, { from, to });
+                const text = items.length ? items.join('\n') : 'No event in that range.';
+                return { text, size: Buffer.byteLength(text) };
+            }
+            const api = API[provider];
             const res = await call(target, ctx, 'GET', api.list(LIST_MAX, { from, to }));
             if (!res.ok) no(`${target.title}: ${res.status} ${await bodyError(res)}`.trim());
             const items = api.items(await res.json());
@@ -90,7 +149,9 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
         },
         /* One event in full, by its id. */
         async 'calendar.read'(target, a, ctx) {
-            const api = API[providerOf(target)];
+            const provider = providerOf(target);
+            if (provider === 'google') { const text = await googleRead(target, ctx, String(a.id)); return { text, size: Buffer.byteLength(text) }; }
+            const api = API[provider];
             const res = await call(target, ctx, 'GET', api.event(String(a.id)));
             if (res.status === 404) no('no such event');
             if (!res.ok) no(`${target.title}: ${res.status} ${await bodyError(res)}`.trim());

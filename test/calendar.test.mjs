@@ -1,22 +1,27 @@
 /* THE CALENDAR CONNECTOR, with no network: `fetch` is injected and stands in for
  * the token endpoint and the provider's calendar API. No real account; the token is
- * a placeholder. */
+ * a placeholder. Google reads over CalDAV (the REST API its borrowed client cannot
+ * use), Microsoft over Graph. */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { calendar } from '../host/connectors/calendar.mjs';
 
 const json = (obj, status = 200) => new Response(JSON.stringify(obj), { status, headers: { 'content-type': 'application/json' } });
+const xml = (text, status = 207) => new Response(text, { status, headers: { 'content-type': 'application/xml' } });
+const ICS = `BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:g1\r\nSUMMARY:Standup\r\nDTSTART:20300102T090000Z\r\nLOCATION:Room 1\r\nEND:VEVENT\r\nEND:VCALENDAR`;
+const MULTISTATUS = `<?xml version="1.0"?><D:multistatus xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav"><D:response><D:href>/caldav/v2/me%40example.com/events/g1.ics</D:href><D:propstat><D:prop><D:getetag>"1"</D:getetag><C:calendar-data>${ICS.replace(/&/g, '&amp;').replace(/</g, '&lt;')}</C:calendar-data></D:prop></D:propstat></D:response></D:multistatus>`;
+
 function server() {
     const calls = [];
     const fetch = async (url, opts = {}) => {
         const method = opts.method || 'GET';
         calls.push({ url, method, auth: opts.headers?.Authorization, body: opts.body });
         if (url.includes('oauth2.googleapis.com/token') || url.includes('login.microsoftonline.com')) return json({ access_token: 'CAL-Tok', expires_in: 3600 });
-        if (url.includes('googleapis.com/calendar')) {
-            if (method === 'POST') return json({ id: 'g-new' });
-            if (url.includes('/events/g1')) return json({ id: 'g1', summary: 'Standup', start: { dateTime: '2030-01-02T09:00:00Z' } });
-            return json({ items: [{ id: 'g1', summary: 'Standup', start: { dateTime: '2030-01-02T09:00:00Z' }, location: 'Room 1' }] });
+        if (url.includes('apidata.googleusercontent.com/caldav')) {
+            if (method === 'REPORT') return xml(MULTISTATUS);
+            return new Response(ICS, { status: 200, headers: { 'content-type': 'text/calendar' } }); // GET one event
         }
+        if (url.includes('googleapis.com/calendar')) return method === 'POST' ? json({ id: 'g-new' }) : json({ items: [] }); // create only (REST)
         if (url.includes('graph.microsoft.com')) {
             if (method === 'POST') return json({ id: 'm-new' });
             return json({ value: [{ id: 'm1', subject: 'Review', start: { dateTime: '2030-01-02T10:00:00' }, location: { displayName: 'Teams' } }] });
@@ -25,26 +30,34 @@ function server() {
     };
     return { fetch, calls };
 }
-const G = { id: 'c1', title: 'Cal', config: { provider: 'google' }, secrets: { refresh: 'cal-refresh' } };
+const G = { id: 'c1', title: 'Cal', config: { provider: 'google', user: 'me@example.com' }, secrets: { refresh: 'cal-refresh' } };
 const M = { id: 'c2', title: 'Cal', config: { provider: 'microsoft' }, secrets: { refresh: 'cal-refresh' } };
 const ctx = () => ({ secret: async (k) => (k === 'refresh' ? 'REFRESH' : undefined) });
 
-test('calendar.list (Google): minted token as Bearer, briefs the upcoming events', async () => {
+test('calendar.list (Google) over CalDAV: minted token as Bearer, briefs the events', async () => {
     const s = server();
     const r = await calendar({ fetch: s.fetch }).run('calendar.list', G, {}, ctx());
     assert.ok(r.text.includes('Standup'), 'shows the event');
-    const listCall = s.calls.find((c) => c.url.includes('/events') && c.method === 'GET');
-    assert.equal(listCall.auth, 'Bearer CAL-Tok', 'Bearer the minted token, never a password');
-    assert.ok(listCall.url.includes('singleEvents=true'), 'upcoming, expanded');
+    assert.ok(r.text.includes('2030-01-02 09:00'), 'with its start, readable');
+    const rep = s.calls.find((c) => c.method === 'REPORT');
+    assert.ok(rep.url.includes('apidata.googleusercontent.com/caldav/v2/me%40example.com/events/'), 'the CalDAV collection for the account');
+    assert.equal(rep.auth, 'Bearer CAL-Tok', 'Bearer the minted token, never a password');
+    assert.ok(rep.body.includes('calendar-query') && rep.body.includes('time-range'), 'a calendar-query with a window');
 });
 
-test('calendar.read (Google) returns the event', async () => {
+test('calendar.list (Google) without the account address asks to reconnect', async () => {
     const s = server();
-    const r = await calendar({ fetch: s.fetch }).run('calendar.read', G, { id: 'g1' }, ctx());
+    const noUser = { id: 'c1', title: 'Cal', config: { provider: 'google' }, secrets: { refresh: 'r' } };
+    await assert.rejects(calendar({ fetch: s.fetch }).run('calendar.list', noUser, {}, ctx()), /reconnect the account/);
+});
+
+test('calendar.read (Google) GETs the event over CalDAV', async () => {
+    const s = server();
+    const r = await calendar({ fetch: s.fetch }).run('calendar.read', G, { id: 'https://apidata.googleusercontent.com/caldav/v2/me%40example.com/events/g1.ics' }, ctx());
     assert.ok(r.text.includes('Standup'));
 });
 
-test('calendar.create posts the event body', async () => {
+test('calendar.create posts the event body (REST)', async () => {
     const s = server();
     const r = await calendar({ fetch: s.fetch }).run('calendar.create', G, { title: 'Lunch', start: '2030-01-02T12:00:00Z', end: '2030-01-02T13:00:00Z' }, ctx());
     assert.ok(r.text.includes('Created: Lunch'), 'confirms creation');
@@ -65,9 +78,8 @@ test('calendar.list (Microsoft) via Graph briefs events', async () => {
 test('calendar.list takes a date window (from/to), for the past or the future', async () => {
     const g = server();
     await calendar({ fetch: g.fetch }).run('calendar.list', G, { from: '2026-03-01', to: '2026-03-31' }, ctx());
-    const gc = g.calls.find((c) => c.url.includes('googleapis.com/calendar') && c.method === 'GET');
-    assert.ok(gc.url.includes('timeMin=') && gc.url.includes('2026-03-01'), 'Google window start');
-    assert.ok(gc.url.includes('timeMax=') && gc.url.includes('2026-03-31'), 'Google window end');
+    const rep = g.calls.find((c) => c.method === 'REPORT');
+    assert.ok(rep.body.includes('20260301') && rep.body.includes('20260331'), 'Google CalDAV window (iCal UTC)');
     const m = server();
     await calendar({ fetch: m.fetch }).run('calendar.list', M, { from: '2026-03-01', to: '2026-03-31' }, ctx());
     const mc = m.calls.find((c) => c.url.includes('graph.microsoft.com') && c.method === 'GET');
