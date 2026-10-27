@@ -38,12 +38,14 @@ export const HELP = `${NAME}: act on the targets you were given (machines, folde
   ${NAME} mail TARGET search "text" [--mailbox NAME]
   ${NAME} mail TARGET move UID MAILBOX                 move a message to a folder
   ${NAME} mail TARGET flag UID read|unread|flagged|unflagged
-  ${NAME} mail TARGET send --to "a@b,c@d" --subject "..." --body "..."
+  ${NAME} mail TARGET send --to "a@b,c@d" --subject "..." --body "..." [--cc "..."] [--attach FILE]
   ${NAME} calendar TARGET list [--from DATE] [--to DATE]   events in a window (default: from now on)
   ${NAME} calendar TARGET read ID
   ${NAME} calendar TARGET create --title "..." --start ISO --end ISO [--where "..."]
+  ${NAME} calendar TARGET attach EVENT_ID FILE             join a file to an event (Microsoft)
   ${NAME} contacts TARGET list                          name, emails, phones
   ${NAME} contacts TARGET read ID
+  ${NAME} contacts TARGET attach CONTACT_ID FILE           set a contact's photo (Microsoft)
   ${NAME} serve [--store DIR] [--port N] [--side FOLDER=NAME] [--local FOLDER[=TITLE]]
                                        keep targets yourself, with their page (no application)
 
@@ -56,8 +58,10 @@ ${NAME} ${VERSION}`;
 const FILE_VERBS = ['list', 'read', 'search', 'write', 'move', 'delete'];
 const BROWSER_VERBS = ['tabs', 'open', 'shot', 'html', 'console', 'eval', 'click', 'type', 'key', 'scroll', 'drag'];
 const MAIL_VERBS = ['list', 'read', 'search', 'move', 'flag', 'send'];
-const CAL_VERBS = ['list', 'read', 'create'];
-const CONTACT_VERBS = ['list', 'read'];
+const CAL_VERBS = ['list', 'read', 'create', 'attach'];
+const CONTACT_VERBS = ['list', 'read', 'attach'];
+const baseName = (p) => String(p).split('/').pop();
+const readB64 = (p) => { try { return readFileSync(p).toString('base64'); } catch { return null; } };
 
 /* A command line, read: [verb, args] or { refused }. A --from file is read by run(). */
 export function read(argv) {
@@ -121,7 +125,13 @@ export function read(argv) {
                 case 'search': return need(p.length, 'mail TARGET search "text" [--mailbox NAME]') ?? ['mail.search', { target, text: p.join(' '), ...box }];
                 case 'move': return need(p.length === 2, 'mail TARGET move UID MAILBOX') ?? ['mail.move', { target, uid: p[0], mailbox: p[1], ...why }];
                 case 'flag': return need(p.length === 2, 'mail TARGET flag UID FLAG') ?? ['mail.flag', { target, uid: p[0], flag: p[1], ...why }];
-                default: return need(flags.to !== undefined && flags.subject !== undefined && flags.body !== undefined, 'mail TARGET send --to "a@b" --subject "..." --body "..."') ?? ['mail.send', { target, to: flags.to, subject: flags.subject, body: flags.body, ...why }];
+                default: {
+                    const bad = need(flags.to !== undefined && flags.subject !== undefined && flags.body !== undefined, 'mail TARGET send --to "a@b" --subject "..." --body "..." [--cc "..."] [--attach FILE]');
+                    if (bad) return bad;
+                    let att = {};
+                    if (flags.attach !== undefined) { const b = readB64(flags.attach); if (b === null) return { refused: `cannot read the file to attach: ${flags.attach}` }; att = { attach: b, attachName: flags['attach-name'] || baseName(flags.attach) }; }
+                    return ['mail.send', { target, to: flags.to, subject: flags.subject, body: flags.body, ...(flags.cc !== undefined ? { cc: flags.cc } : {}), ...att, ...why }];
+                }
             }
         }
         case 'calendar': {
@@ -130,6 +140,11 @@ export function read(argv) {
             switch (what) {
                 case 'list': return ['calendar.list', { target, ...(flags.from !== undefined ? { from: flags.from } : {}), ...(flags.to !== undefined ? { to: flags.to } : {}) }];
                 case 'read': return need(p[0], 'calendar TARGET read ID') ?? ['calendar.read', { target, id: p[0] }];
+                case 'attach': {
+                    if (p.length < 2) return { refused: 'calendar TARGET attach EVENT_ID FILE' };
+                    const b = readB64(p[1]); if (b === null) return { refused: `cannot read the file to attach: ${p[1]}` };
+                    return ['calendar.attach', { target, id: p[0], attach: b, attachName: flags['attach-name'] || baseName(p[1]), ...why }];
+                }
                 default: return need(flags.title !== undefined && flags.start !== undefined && flags.end !== undefined, 'calendar TARGET create --title "..." --start ISO --end ISO [--where "..."]') ?? ['calendar.create', { target, title: flags.title, start: flags.start, end: flags.end, ...(flags.where !== undefined ? { where: flags.where } : {}), ...why }];
             }
         }
@@ -137,6 +152,11 @@ export function read(argv) {
             const [what, ...p] = rest;
             if (!target || !CONTACT_VERBS.includes(what)) return { refused: `${NAME} contacts TARGET ${CONTACT_VERBS.join('|')} ...` };
             if (what === 'list') return ['contacts.list', { target }];
+            if (what === 'attach') {
+                if (p.length < 2) return { refused: 'contacts TARGET attach CONTACT_ID FILE (a photo)' };
+                const b = readB64(p[1]); if (b === null) return { refused: `cannot read the file to attach: ${p[1]}` };
+                return ['contacts.attach', { target, id: p[0], attach: b, attachName: flags['attach-name'] || baseName(p[1]), ...why }];
+            }
             return need(p[0], 'contacts TARGET read ID') ?? ['contacts.read', { target, id: p[0] }];
         }
         default: return { refused: `Unknown: ${verb}. Run "${NAME} --help".` };

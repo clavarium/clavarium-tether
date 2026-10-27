@@ -109,12 +109,14 @@ export const TOOLS = [
     tool('mail-search', 'Messages whose text matches, briefly.', { target: TARGET, text: { type: 'string' }, mailbox: S('a folder; INBOX by default') }, ['target', 'text']),
     tool('mail-move', 'Move a message to another folder. A person may approve: say why.', { target: TARGET, uid: S('the message id from a list'), mailbox: S('the destination folder'), why: WHY }, ['target', 'uid', 'mailbox']),
     tool('mail-flag', 'Mark a message read/unread or flagged/unflagged. A person may approve: say why.', { target: TARGET, uid: S('the message id from a list'), flag: S('read, unread, flagged or unflagged'), why: WHY }, ['target', 'uid', 'flag']),
-    tool('mail-send', 'Send a message from the mailbox. A person may approve: say why.', { target: TARGET, to: S('recipients, comma-separated'), subject: { type: 'string' }, body: { type: 'string' }, why: WHY }, ['target', 'to', 'subject', 'body']),
+    tool('mail-send', 'Send a message from the mailbox, optionally with one file joined. A person may approve: say why.', { target: TARGET, to: S('recipients, comma-separated'), subject: { type: 'string' }, body: { type: 'string' }, cc: S('cc recipients, comma-separated, optional'), attach: S("a file to join, as base64 bytes (<=~750KB); read a file in your machine and base64 it"), attachName: S('the file name for the attachment'), why: WHY }, ['target', 'to', 'subject', 'body']),
     tool('calendar-list', 'Events of a calendar target, soonest first. By default from now on; give from and/or to (ISO date or date-time) to look at any past or future window, e.g. a given week or month.', { target: TARGET, from: S('start of the window, ISO date or date-time; now by default'), to: S('end of the window, ISO; a year after "from" by default') }, ['target']),
     tool('calendar-read', 'One event in full by its id.', { target: TARGET, id: { type: 'string' } }, ['target', 'id']),
     tool('calendar-create', 'Create an event. A person may approve: say why.', { target: TARGET, title: { type: 'string' }, start: S('ISO date-time, or a date for all-day'), end: S('ISO date-time, or a date'), where: S('a place, optional'), why: WHY }, ['target', 'title', 'start', 'end']),
+    tool('calendar-attach', 'Join a file to an event (Microsoft). A person may approve: say why.', { target: TARGET, id: S('the event id from a list'), attach: S('the file as base64 bytes'), attachName: S('the file name'), why: WHY }, ['target', 'id', 'attach']),
     tool('contacts-list', 'The contacts of an address-book target: name, emails, phones.', { target: TARGET }, ['target']),
     tool('contacts-read', 'One contact in full by its id.', { target: TARGET, id: { type: 'string' } }, ['target', 'id']),
+    tool('contacts-attach', "Set a contact's photo (Microsoft). A person may approve: say why.", { target: TARGET, id: S('the contact id from a list'), attach: S('the photo as base64 bytes'), attachName: S('the file name, optional'), why: WHY }, ['target', 'id', 'attach']),
 ];
 /* A tool's arguments as the keeper reads them: [verb, args], or null. */
 export function asked(name, a = {}) {

@@ -87,3 +87,17 @@ test('contacts.read (Microsoft) returns one contact; unknown provider refused', 
     assert.ok(r.text.includes('Carol'));
     await assert.rejects(contacts({ fetch: s.fetch }).run('contacts.list', { id: 'x', title: 'X', config: { user: 'u' }, secrets: { refresh: 'r' } }, {}, ctx()), /google or microsoft/);
 });
+
+test('contacts.attach (Microsoft) PUTs the photo bytes to the contact', async () => {
+    const s = server();
+    const r = await contacts({ fetch: s.fetch }).run('contacts.attach', M, { id: 'm1', attach: Buffer.from('img').toString('base64') }, ctx());
+    assert.ok(r.text.includes('Set the photo'));
+    const put = s.calls.find((c) => c.method === 'PUT' && c.url.includes('/contacts/m1/photo/$value'));
+    assert.ok(put, 'PUT to the photo endpoint');
+    assert.ok(Buffer.isBuffer(put.body) || put.body, 'sends the decoded bytes');
+});
+
+test('contacts.attach is Microsoft-only for now', async () => {
+    const s = server();
+    await assert.rejects(contacts({ fetch: s.fetch }).run('contacts.attach', G, { id: 'x', attach: 'SGk=' }, ctx()), /Microsoft-only/);
+});

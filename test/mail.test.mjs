@@ -6,6 +6,22 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { mail, renderMessage } from '../host/connectors/mail.mjs';
 import { Exchange } from '../host/imap.mjs';
+import { buildMessage } from '../host/smtp.mjs';
+
+test('buildMessage joins a file as a multipart/mixed message', () => {
+    const msg = buildMessage({ from: 'me@example.com', to: ['bob@example.com'], subject: 'Hi', body: 'see attached', attach: 'QUJDREVG', attachName: 'r.txt' });
+    assert.match(msg, /Content-Type: multipart\/mixed; boundary="/);
+    assert.match(msg, /Content-Disposition: attachment; filename="r\.txt"/);
+    assert.match(msg, /Content-Transfer-Encoding: base64/);
+    assert.ok(msg.includes('QUJDREVG'), 'the base64 bytes are in the file part');
+    assert.match(msg, /see attached/, 'the text is still there');
+});
+
+test('buildMessage without a file stays plain text', () => {
+    const msg = buildMessage({ from: 'me@example.com', to: ['bob@example.com'], subject: 'Hi', body: 'hello' });
+    assert.match(msg, /Content-Type: text\/plain/);
+    assert.doesNotMatch(msg, /multipart/);
+});
 
 const okToken = async () => new Response(JSON.stringify({ access_token: 'ACCESS-Tok', expires_in: 3600 }), { status: 200, headers: { 'content-type': 'application/json' } });
 const HEADERS = (from, subj) => `From: ${from}\r\nSubject: ${subj}\r\nDate: Wed, 01 Jan 2030 09:00:00 +0000\r\n\r\n`;

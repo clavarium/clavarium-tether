@@ -87,6 +87,22 @@ test('calendar.list takes a date window (from/to), for the past or the future', 
     assert.ok(mc.url.includes('2026-03-01') && mc.url.includes('2026-03-31'), 'MS window dates');
 });
 
+test('calendar.attach (Microsoft) posts a fileAttachment to the event', async () => {
+    const s = server();
+    const r = await calendar({ fetch: s.fetch }).run('calendar.attach', M, { id: 'm1', attach: 'SGk=', attachName: 'f.txt' }, ctx());
+    assert.ok(r.text.includes('Attached'));
+    const post = s.calls.find((c) => c.method === 'POST' && c.url.includes('/me/events/m1/attachments'));
+    assert.ok(post, 'POST to the event attachments');
+    const body = JSON.parse(post.body);
+    assert.equal(body['@odata.type'], '#microsoft.graph.fileAttachment');
+    assert.equal(body.contentBytes, 'SGk=');
+});
+
+test('calendar.attach is Microsoft-only for now (Google uses Drive links)', async () => {
+    const s = server();
+    await assert.rejects(calendar({ fetch: s.fetch }).run('calendar.attach', G, { id: 'g1', attach: 'SGk=' }, ctx()), /Microsoft-only/);
+});
+
 test('calendar refuses a target with no provider, and create without times', async () => {
     const s = server();
     const c = calendar({ fetch: s.fetch });

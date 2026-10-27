@@ -97,14 +97,18 @@ export function graphMail({ fetch: fetchImpl = globalThis.fetch, token }) {
             const to = String(a.to ?? '').split(',').map((x) => x.trim()).filter(Boolean);
             if (!to.length) no('send needs a recipient (to)');
             const cc = String(a.cc ?? '').split(',').map((x) => x.trim()).filter(Boolean);
+            /* A file joined to the message: its bytes, already base64 (what Graph
+               wants), and a name. One attachment for now (the common need). */
+            const attach = String(a.attach ?? '');
             const message = {
                 subject: String(a.subject ?? ''),
                 body: { contentType: 'text', content: String(a.body ?? '') },
                 toRecipients: to.map((address) => ({ emailAddress: { address } })),
                 ...(cc.length ? { ccRecipients: cc.map((address) => ({ emailAddress: { address } })) } : {}),
+                ...(attach ? { attachments: [{ '@odata.type': '#microsoft.graph.fileAttachment', name: String(a.attachName || 'attachment'), contentBytes: attach }] } : {}),
             };
             await call(target, ctx, 'POST', '/me/sendMail', { message, saveToSentItems: true });
-            return { text: `Sent to ${to.join(', ')}.`, size: 0 };
+            return { text: `Sent to ${to.join(', ')}${attach ? ` with ${a.attachName || 'an attachment'}` : ''}.`, size: 0 };
         },
     };
 }

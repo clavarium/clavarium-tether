@@ -168,6 +168,19 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
             const made = await res.json().catch(() => ({}));
             return { text: `Created: ${a.title} (${a.start}). Its id is ${made.id ?? '(unknown)'}.`, size: 0 };
         },
+        /* Join a file to an event. An act. Microsoft takes the bytes inline (Graph
+           fileAttachment); a Google calendar attach is a Drive link, added once the
+           files connector is in -- for now it is Microsoft only. */
+        async 'calendar.attach'(target, a, ctx) {
+            const provider = providerOf(target);
+            if (provider !== 'microsoft') no(`${target.title}: joining a file to an event is Microsoft-only for now`);
+            if (!a.id) no('attach needs the event id (from the list)');
+            if (!a.attach) no('attach needs the file (its base64 bytes)');
+            const att = { '@odata.type': '#microsoft.graph.fileAttachment', name: String(a.attachName || 'attachment'), contentBytes: String(a.attach) };
+            const res = await call(target, ctx, 'POST', `https://graph.microsoft.com/v1.0/me/events/${encodeURIComponent(String(a.id))}/attachments`, att);
+            if (!res.ok) no(`${target.title}: the file was not attached (${res.status} ${await bodyError(res)})`.trim());
+            return { text: `Attached ${a.attachName || 'the file'} to the event.`, size: 0 };
+        },
     };
 
     return {

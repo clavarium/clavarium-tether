@@ -52,6 +52,18 @@ test('send posts a well-formed Graph message from the fields', async () => {
     assert.equal(sent.method, 'POST');
     assert.deepEqual(sent.body.message.toRecipients.map((r) => r.emailAddress.address), ['c@example.com', 'e@example.org']);
     assert.equal(sent.body.message.body.content, 'text');
+    assert.equal(sent.body.message.attachments, undefined, 'no attachments key without a file');
+});
+
+test('send joins a file as a Graph fileAttachment when given one', async () => {
+    const { fetch, calls } = fakeGraph({ 'POST /me/sendMail': { _status: 202 } });
+    const g = graphMail({ fetch, token: mint });
+    await g.send(target, { to: 'c@example.com', subject: 'Yo', body: 'text', attach: 'SGVsbG8=', attachName: 'note.txt' }, ctx);
+    const att = calls[0].body.message.attachments;
+    assert.equal(att.length, 1);
+    assert.equal(att[0]['@odata.type'], '#microsoft.graph.fileAttachment');
+    assert.equal(att[0].name, 'note.txt');
+    assert.equal(att[0].contentBytes, 'SGVsbG8=', 'the base64 is passed straight through (what Graph wants)');
 });
 
 test('move and flag hit the right Graph endpoints (acts)', async () => {

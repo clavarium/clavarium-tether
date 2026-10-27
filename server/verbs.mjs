@@ -68,8 +68,10 @@ export const VERBS = Object.freeze({
     'calendar.list': { reads: true, kinds: ['calendar'], needs: [] },
     'calendar.read': { reads: true, kinds: ['calendar'], needs: ['id'] },
     'calendar.create': { reads: false, kinds: ['calendar'], needs: ['title', 'start', 'end'] },
+    'calendar.attach': { reads: false, kinds: ['calendar'], needs: ['id', 'attach'] },
     'contacts.list': { reads: true, kinds: ['contacts'], needs: [] },
     'contacts.read': { reads: true, kinds: ['contacts'], needs: ['id'] },
+    'contacts.attach': { reads: false, kinds: ['contacts'], needs: ['id', 'attach'] },
 });
 
 export class Refused extends Error {}
@@ -138,10 +140,12 @@ export function check(verb, a = {}) {
         case 'mail.search': str('text', 400); str('mailbox', 200); break;
         case 'mail.move': str('uid', 1024); str('mailbox', 200); break;
         case 'mail.flag': str('uid', 1024); str('flag', 40); break;
-        case 'mail.send': str('to', 1000); str('subject', 400); str('body', TEXT_MAX, true); break;
+        case 'mail.send': str('to', 1000); str('subject', 400); str('body', TEXT_MAX, true); str('cc', 1000); str('attach', TEXT_MAX, true); str('attachName', 200); break;
         case 'calendar.list': str('from', 64); str('to', 64); break;
         case 'calendar.read': str('id', 1024); break;
         case 'calendar.create': str('title', 400); str('start', 64); str('end', 64); str('where', 400); break;
+        case 'calendar.attach': str('id', 1024); str('attach', TEXT_MAX, true); str('attachName', 200); break;
+        case 'contacts.attach': str('id', 1024); str('attach', TEXT_MAX, true); str('attachName', 200); break;
         case 'contacts.read': str('id', 1024); break;
         default: for (const k of v.needs) str(k, COMMAND_MAX, true);
     }

@@ -295,10 +295,10 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
             if (Number(target.config?.smtpPort) > 0) port = Number(target.config.smtpPort);
             let sent;
             try {
-                sent = await smtpSend({ host, port, auth, from: user, to, subject: a.subject, body: a.body,
+                sent = await smtpSend({ host, port, auth, from: user, to, subject: a.subject, body: a.body, attach: a.attach, attachName: a.attachName,
                     ...(smtpConnect ? { connect: smtpConnect } : {}), ...(smtpSecure ? { secure: smtpSecure } : {}) });
             } catch (e) { if (e instanceof Refused) throw e; no(`${target.title}: ${e?.message ?? 'the message could not be sent'}`); }
-            return { text: `Sent to ${sent.join(', ')}.`, size: 0 };
+            return { text: `Sent to ${sent.join(', ')}${a.attach ? ` with ${a.attachName || 'an attachment'}` : ''}.`, size: 0 };
         },
     };
 

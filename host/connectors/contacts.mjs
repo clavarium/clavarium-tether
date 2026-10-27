@@ -125,6 +125,20 @@ export function contacts({ fetch: fetchImpl = globalThis.fetch } = {}) {
             const text = JSON.stringify(await res.json(), null, 1).slice(0, 64 * 1024);
             return { text, size: Buffer.byteLength(text) };
         },
+        /* Set a contact's photo. An act. Microsoft takes the image bytes (Graph);
+           a Google photo means editing the vCard (coming with contacts writing) --
+           Microsoft only for now. */
+        async 'contacts.attach'(target, a, ctx) {
+            const provider = providerOf(target);
+            if (provider !== 'microsoft') no(`${target.title}: setting a contact photo is Microsoft-only for now`);
+            const id = String(a.id ?? '').trim();
+            if (!id) no('attach needs the contact id');
+            if (!a.attach) no('attach needs the photo (its base64 bytes)');
+            const res = await req(target, ctx, 'PUT', `https://graph.microsoft.com/v1.0/me/contacts/${encodeURIComponent(id)}/photo/$value`, { headers: { 'Content-Type': 'image/jpeg' }, body: Buffer.from(String(a.attach), 'base64') });
+            if (res.status === 404) no('no such contact');
+            if (!res.ok) no(`${target.title}: the photo was not set (${res.status})`);
+            return { text: `Set the photo on ${id}.`, size: 0 };
+        },
     };
 
     return {
