@@ -22,7 +22,7 @@ const dateField = (s) => (/^\d{4}-\d{2}-\d{2}$/.test(s) ? { date: s } : { dateTi
 
 const API = {
     google: {
-        list: (n) => `https://www.googleapis.com/calendar/v3/calendars/primary/events?maxResults=${n}&singleEvents=true&orderBy=startTime&timeMin=${encodeURIComponent(new Date().toISOString())}`,
+        list: (n, { from, to } = {}) => `https://www.googleapis.com/calendar/v3/calendars/primary/events?maxResults=${n}&singleEvents=true&orderBy=startTime&timeMin=${encodeURIComponent(from)}${to ? `&timeMax=${encodeURIComponent(to)}` : ''}`,
         event: (id) => `https://www.googleapis.com/calendar/v3/calendars/primary/events/${encodeURIComponent(id)}`,
         create: 'https://www.googleapis.com/calendar/v3/calendars/primary/events',
         items: (j) => j.items ?? [],
@@ -30,7 +30,10 @@ const API = {
         body: ({ title, start, end, where }) => ({ summary: title, start: dateField(start), end: dateField(end), ...(where ? { location: where } : {}) }),
     },
     microsoft: {
-        list: (n) => `https://graph.microsoft.com/v1.0/me/events?$top=${n}&$orderby=start/dateTime&$select=id,subject,start,end,location`,
+        /* calendarView, not /events: /events orders over the WHOLE calendar, so it
+           returns the oldest events, not the next ones. calendarView takes a window
+           (from now on) and expands recurrences, so "list" means what is coming. */
+        list: (n, { from, to } = {}) => `https://graph.microsoft.com/v1.0/me/calendarView?startDateTime=${encodeURIComponent(from)}&endDateTime=${encodeURIComponent(to)}&$top=${n}&$orderby=start/dateTime&$select=id,subject,start,end,location`,
         event: (id) => `https://graph.microsoft.com/v1.0/me/events/${encodeURIComponent(id)}`,
         create: 'https://graph.microsoft.com/v1.0/me/events',
         items: (j) => j.value ?? [],
@@ -71,13 +74,18 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
     const bodyError = async (res) => { try { const j = await res.json(); return j?.error?.message || ''; } catch { return ''; } };
 
     const verbs = {
-        /* The next events, soonest first. */
+        /* Events in a window, soonest first. By default from now on (the next
+           events); `from`/`to` (ISO dates or datetimes) move it into the past or
+           future, so the agent can look at any week or month, not only what's next. */
         async 'calendar.list'(target, a, ctx) {
             const api = API[providerOf(target)];
-            const res = await call(target, ctx, 'GET', api.list(LIST_MAX));
+            const when = (s) => { const d = s ? new Date(s) : null; return d && !Number.isNaN(d.getTime()) ? d.toISOString() : null; };
+            const from = when(a.from) ?? new Date().toISOString();
+            const to = when(a.to) ?? new Date(new Date(from).getTime() + 365 * 86_400_000).toISOString();
+            const res = await call(target, ctx, 'GET', api.list(LIST_MAX, { from, to }));
             if (!res.ok) no(`${target.title}: ${res.status} ${await bodyError(res)}`.trim());
             const items = api.items(await res.json());
-            const text = items.length ? items.map(api.brief).join('\n') : 'No upcoming event.';
+            const text = items.length ? items.map(api.brief).join('\n') : 'No event in that range.';
             return { text, size: Buffer.byteLength(text) };
         },
         /* One event in full, by its id. */

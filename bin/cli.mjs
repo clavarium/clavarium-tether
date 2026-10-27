@@ -39,7 +39,7 @@ export const HELP = `${NAME}: act on the targets you were given (machines, folde
   ${NAME} mail TARGET move UID MAILBOX                 move a message to a folder
   ${NAME} mail TARGET flag UID read|unread|flagged|unflagged
   ${NAME} mail TARGET send --to "a@b,c@d" --subject "..." --body "..."
-  ${NAME} calendar TARGET list                         upcoming events
+  ${NAME} calendar TARGET list [--from DATE] [--to DATE]   events in a window (default: from now on)
   ${NAME} calendar TARGET read ID
   ${NAME} calendar TARGET create --title "..." --start ISO --end ISO [--where "..."]
   ${NAME} contacts TARGET list                          name, emails, phones
@@ -128,7 +128,7 @@ export function read(argv) {
             const [what, ...p] = rest;
             if (!target || !CAL_VERBS.includes(what)) return { refused: `${NAME} calendar TARGET ${CAL_VERBS.join('|')} ...` };
             switch (what) {
-                case 'list': return ['calendar.list', { target }];
+                case 'list': return ['calendar.list', { target, ...(flags.from !== undefined ? { from: flags.from } : {}), ...(flags.to !== undefined ? { to: flags.to } : {}) }];
                 case 'read': return need(p[0], 'calendar TARGET read ID') ?? ['calendar.read', { target, id: p[0] }];
                 default: return need(flags.title !== undefined && flags.start !== undefined && flags.end !== undefined, 'calendar TARGET create --title "..." --start ISO --end ISO [--where "..."]') ?? ['calendar.create', { target, title: flags.title, start: flags.start, end: flags.end, ...(flags.where !== undefined ? { where: flags.where } : {}), ...why }];
             }

@@ -134,11 +134,12 @@ export function check(verb, a = {}) {
         case 'screen.type': str('text', COMMAND_MAX, true); break;
         case 'screen.key': str('key', 60); break;
         case 'mail.list': str('mailbox', 200); break;
-        case 'mail.read': str('uid', 40); str('mailbox', 200); break;
+        case 'mail.read': str('uid', 1024); str('mailbox', 200); break;
         case 'mail.search': str('text', 400); str('mailbox', 200); break;
-        case 'mail.move': str('uid', 40); str('mailbox', 200); break;
-        case 'mail.flag': str('uid', 40); str('flag', 40); break;
+        case 'mail.move': str('uid', 1024); str('mailbox', 200); break;
+        case 'mail.flag': str('uid', 1024); str('flag', 40); break;
         case 'mail.send': str('to', 1000); str('subject', 400); str('body', TEXT_MAX, true); break;
+        case 'calendar.list': str('from', 64); str('to', 64); break;
         case 'calendar.read': str('id', 1024); break;
         case 'calendar.create': str('title', 400); str('start', 64); str('end', 64); str('where', 400); break;
         case 'contacts.read': str('id', 1024); break;

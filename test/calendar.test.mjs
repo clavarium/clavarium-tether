@@ -58,7 +58,21 @@ test('calendar.list (Microsoft) via Graph briefs events', async () => {
     const s = server();
     const r = await calendar({ fetch: s.fetch }).run('calendar.list', M, {}, ctx());
     assert.ok(r.text.includes('Review'), 'shows the event');
-    assert.ok(s.calls.some((c) => c.url.includes('graph.microsoft.com/v1.0/me/events')), 'the Graph endpoint');
+    /* calendarView from now on -- the next events, not the oldest of the whole calendar. */
+    assert.ok(s.calls.some((c) => c.url.includes('graph.microsoft.com/v1.0/me/calendarView') && c.url.includes('startDateTime=')), 'the upcoming-window Graph endpoint');
+});
+
+test('calendar.list takes a date window (from/to), for the past or the future', async () => {
+    const g = server();
+    await calendar({ fetch: g.fetch }).run('calendar.list', G, { from: '2026-03-01', to: '2026-03-31' }, ctx());
+    const gc = g.calls.find((c) => c.url.includes('googleapis.com/calendar') && c.method === 'GET');
+    assert.ok(gc.url.includes('timeMin=') && gc.url.includes('2026-03-01'), 'Google window start');
+    assert.ok(gc.url.includes('timeMax=') && gc.url.includes('2026-03-31'), 'Google window end');
+    const m = server();
+    await calendar({ fetch: m.fetch }).run('calendar.list', M, { from: '2026-03-01', to: '2026-03-31' }, ctx());
+    const mc = m.calls.find((c) => c.url.includes('graph.microsoft.com') && c.method === 'GET');
+    assert.ok(mc.url.includes('calendarView') && mc.url.includes('startDateTime=') && mc.url.includes('endDateTime='), 'MS calendarView window');
+    assert.ok(mc.url.includes('2026-03-01') && mc.url.includes('2026-03-31'), 'MS window dates');
 });
 
 test('calendar refuses a target with no provider, and create without times', async () => {
