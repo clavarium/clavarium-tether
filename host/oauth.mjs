@@ -30,10 +30,16 @@ import { createHash, randomBytes } from 'node:crypto';
 
 const b64url = (buf) => Buffer.from(buf).toString('base64url');
 
-/* Per-provider endpoints, the scopes we may ask for by kind, and Thunderbird's
-   built-in client as the default. `consentExtra` is what a provider needs on the
-   consent URL to return a refresh token; `offlineScope` is the same thing when it
-   is a scope rather than a parameter (Microsoft). */
+/* Per-provider endpoints, the scopes we may ask for by kind, and a built-in,
+   already-verified open-source desktop client as the default (the `thunderbird`
+   field, kept by that name for its callers). WHICH client matters: a client is
+   only granted the scopes its app was verified for. For GOOGLE we borrow GNOME
+   Online Accounts' client, verified for mail AND calendar AND contacts, so one
+   consent gives all three. For MICROSOFT we use Thunderbird's client, verified
+   for mail (IMAP) only; Microsoft calendar/contacts go over Graph and need a
+   Graph-verified client. `consentExtra` is what a provider needs on the consent
+   URL to return a refresh token; `offlineScope` is the same thing when it is a
+   scope rather than a parameter (Microsoft). */
 export const PROVIDERS = {
     google: {
         label: 'Google',
@@ -47,9 +53,12 @@ export const PROVIDERS = {
             calendar: 'https://www.googleapis.com/auth/calendar',
             contacts: 'https://www.googleapis.com/auth/carddav',
         },
+        /* GNOME Online Accounts' built-in client (open source, embedded secret
+           sanctioned by Google for an installed app). Verified for mail,
+           calendar and contacts -- unlike Thunderbird's, which carries mail only. */
         thunderbird: {
-            clientId: '406964657835-aq8lmia8j95dhl1a2bvharmfk3t1hgqj.apps.googleusercontent.com',
-            clientSecret: 'kSmqreRr0qwBWJgbf5Y-PjSU',
+            clientId: '44438659992-7kgjeitenc16ssihbtdjbgguch7ju55s.apps.googleusercontent.com',
+            clientSecret: '-gMLuQyDiI0XrQS_vx_mhuYF',
         },
     },
     microsoft: {
