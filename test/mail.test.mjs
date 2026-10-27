@@ -27,12 +27,13 @@ function imapServer(store) {
             else if (cmd.startsWith('EXAMINE')) reply = `${tag} OK [READ-ONLY] done\r\n`;
             else if (cmd.startsWith('UID SEARCH')) reply = `* SEARCH ${store.map((m) => m.uid).join(' ')}\r\n${tag} OK\r\n`;
             else if (cmd.startsWith('UID FETCH')) {
-                const uid = Number(cmd.split(' ')[2]);
-                const m = store.find((x) => x.uid === uid) ?? store[0];
+                const set = cmd.split(' ')[2].split(',').map(Number);
+                const wanted = store.filter((x) => set.includes(x.uid));
+                const picked = wanted.length ? wanted : [store[0]];
                 if (cmd.includes('HEADER.FIELDS')) {
-                    const hdr = HEADERS(m.from, m.subject);
-                    reply = `* 1 FETCH (UID ${m.uid} INTERNALDATE "01-Jan-2030 09:00:00 +0000" BODY[HEADER.FIELDS (FROM SUBJECT DATE)] {${Buffer.byteLength(hdr)}}\r\n${hdr})\r\n${tag} OK\r\n`;
+                    reply = picked.map((m, i) => { const hdr = HEADERS(m.from, m.subject); return `* ${i + 1} FETCH (UID ${m.uid} INTERNALDATE "01-Jan-2030 09:00:00 +0000" BODY[HEADER.FIELDS (FROM SUBJECT DATE)] {${Buffer.byteLength(hdr)}}\r\n${hdr})\r\n`; }).join('') + `${tag} OK\r\n`;
                 } else {
+                    const m = picked[0];
                     const body = `${HEADERS(m.from, m.subject)}${m.body}`;
                     reply = `* 1 FETCH (UID ${m.uid} BODY[] {${Buffer.byteLength(body)}}\r\n${body})\r\n${tag} OK\r\n`;
                 }
@@ -57,6 +58,8 @@ test('mail.list: authenticates with XOAUTH2 (token minted from the refresh), rea
     const s = imapServer(STORE);
     const r = await mail({ fetch: okToken, connect: s.connect }).run('mail.list', TARGET, {}, ctx());
     assert.ok(r.text.includes('Alice') && r.text.includes('Lunch?'), 'shows sender and subject');
+    assert.ok(r.text.includes('Bob') && r.text.includes('The report'), 'every message, not just one');
+    assert.equal(s.commands.filter((x) => x.startsWith('UID FETCH')).length, 1, 'one fetch for all the briefs, not one per message');
     const auth = s.commands.find((x) => x.startsWith('AUTHENTICATE XOAUTH2'));
     assert.ok(auth, 'used XOAUTH2, not LOGIN');
     assert.equal(Buffer.from(auth.split(' ')[2], 'base64').toString('utf8'), 'user=me@example.com\x01auth=Bearer ACCESS-Tok\x01\x01', 'the minted access token, never a password');

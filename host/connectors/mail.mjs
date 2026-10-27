@@ -156,17 +156,23 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
 
     const searchUids = (lines) => (lines.find((l) => /^\* SEARCH/i.test(l)) ?? '').split(' ').slice(2).map(Number).filter((n) => Number.isInteger(n) && n > 0);
 
+    /* The briefs of many messages in ONE fetch, not one round-trip each: fetching
+       them one by one made a list of 30 take minutes. The blocks come back in the
+       server's order, so they are mapped by uid and returned in the caller's. */
     async function brief(imap, uids) {
-        const out = [];
-        for (const uid of uids) {
-            const lines = await imap.command(`UID FETCH ${uid} (INTERNALDATE BODY.PEEK[HEADER.FIELDS (FROM SUBJECT DATE)])`, 'a message could not be read');
-            const fetched = lines.find((l) => /^\* \d+ FETCH/i.test(l)) ?? '';
-            const cut = fetched.indexOf('\n');
-            const block = cut >= 0 ? fetched.slice(cut + 1) : '';
-            const when = /INTERNALDATE "([^"]+)"/i.exec(fetched)?.[1] ?? headerOf(block, 'Date');
-            out.push(`#${uid}  ${when}\n  From: ${headerOf(block, 'From')}\n  Subject: ${headerOf(block, 'Subject')}`);
+        if (!uids.length) return [];
+        const lines = await imap.command(`UID FETCH ${uids.join(',')} (UID INTERNALDATE BODY.PEEK[HEADER.FIELDS (FROM SUBJECT DATE)])`, 'the messages could not be read');
+        const byUid = new Map();
+        for (const l of lines) {
+            if (!/^\* \d+ FETCH/i.test(l)) continue;
+            const uid = Number(/UID (\d+)/i.exec(l)?.[1]);
+            if (!Number.isInteger(uid)) continue;
+            const cut = l.indexOf('\n');
+            const block = cut >= 0 ? l.slice(cut + 1) : '';
+            const when = /INTERNALDATE "([^"]+)"/i.exec(l)?.[1] ?? headerOf(block, 'Date');
+            byUid.set(uid, `#${uid}  ${when}\n  From: ${headerOf(block, 'From')}\n  Subject: ${headerOf(block, 'Subject')}`);
         }
-        return out;
+        return uids.map((u) => byUid.get(u)).filter(Boolean);
     }
 
     const verbs = {
