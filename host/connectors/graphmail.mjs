@@ -1,8 +1,8 @@
 /* MICROSOFT MAIL OVER GRAPH, for the mail connector's Microsoft path.
  *
- * Microsoft's own client (GNOME Online Accounts', which we borrow) is a
- * Microsoft Graph client: its token reads mail, calendar and contacts over
- * graph.microsoft.com, and it has no IMAP scope. So a Microsoft mailbox is
+ * The borrowed Microsoft client (Thunderbird's) takes Graph scopes: its token
+ * reads mail, calendar and contacts over graph.microsoft.com. So a Microsoft
+ * mailbox is
  * reached here over Graph REST, not IMAP -- the same six verbs the IMAP path
  * gives (list, read, search, move, flag, send), reimplemented host-side so the
  * token never leaves this process and the Tether levels gate the acts.
