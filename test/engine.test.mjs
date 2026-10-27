@@ -335,6 +335,24 @@ test('the command line is read as the help says', () => {
     assert.deepEqual(read(['files', 'web', 'delete', 'a']), ['files.delete', { target: 'web', path: 'a' }]);
     assert.ok(read(['files', 'web', 'write', 'a.txt']).refused, 'write needs --text or --from');
     assert.ok(read(['files', 'web', 'write', 'a.txt', '--text', 'x', '--from', 'y']).refused);
+    /* mail / calendar / contacts, as the help says */
+    assert.deepEqual(read(['mail', 'box', 'list']), ['mail.list', { target: 'box' }]);
+    assert.deepEqual(read(['mail', 'box', 'list', '--mailbox', 'Sent']), ['mail.list', { target: 'box', mailbox: 'Sent' }]);
+    assert.deepEqual(read(['mail', 'box', 'read', '42']), ['mail.read', { target: 'box', uid: '42' }]);
+    assert.deepEqual(read(['mail', 'box', 'search', 'invoice march']), ['mail.search', { target: 'box', text: 'invoice march' }]);
+    assert.deepEqual(read(['mail', 'box', 'move', '42', 'Archive', '--why', 'done']), ['mail.move', { target: 'box', uid: '42', mailbox: 'Archive', why: 'done' }]);
+    assert.deepEqual(read(['mail', 'box', 'flag', '42', 'read']), ['mail.flag', { target: 'box', uid: '42', flag: 'read' }]);
+    assert.deepEqual(read(['mail', 'box', 'send', '--to', 'a@example.com', '--subject', 'Hi', '--body', 'there']), ['mail.send', { target: 'box', to: 'a@example.com', subject: 'Hi', body: 'there' }]);
+    assert.ok(read(['mail', 'box', 'send', '--to', 'a@example.com']).refused, 'send needs subject and body');
+    assert.ok(read(['mail', 'box', 'move', '42']).refused, 'move needs a destination');
+    assert.ok(read(['mail', 'box', 'nope']).refused);
+    assert.deepEqual(read(['calendar', 'cal', 'list']), ['calendar.list', { target: 'cal' }]);
+    assert.deepEqual(read(['calendar', 'cal', 'read', 'ev1']), ['calendar.read', { target: 'cal', id: 'ev1' }]);
+    assert.deepEqual(read(['calendar', 'cal', 'create', '--title', 'Lunch', '--start', '2026-01-01T12:00:00Z', '--end', '2026-01-01T13:00:00Z', '--where', 'Paris']), ['calendar.create', { target: 'cal', title: 'Lunch', start: '2026-01-01T12:00:00Z', end: '2026-01-01T13:00:00Z', where: 'Paris' }]);
+    assert.ok(read(['calendar', 'cal', 'create', '--title', 'X']).refused, 'create needs start and end');
+    assert.deepEqual(read(['contacts', 'ab', 'list']), ['contacts.list', { target: 'ab' }]);
+    assert.deepEqual(read(['contacts', 'ab', 'read', 'c7']), ['contacts.read', { target: 'ab', id: 'c7' }]);
+    assert.ok(read(['contacts', 'ab', 'read']).refused);
     assert.ok(read(['run', 'web']).refused);
     assert.ok(read(['fly']).refused);
     assert.ok(read(['run', 'web', 'ls', '--why']).refused);

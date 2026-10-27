@@ -1,6 +1,6 @@
 {
   "name": "clavarium-tether",
-  "version": "0.1.0-next.5",
+  "version": "0.1.0-next.6",
   "description": "Clavarium Tether: an AI agent acts outside its own machine on a tether: levels per target, a person's approval, a journal and a stop (a command and an MCP server for agents, a keeper and a screen for the application). One dependency: ssh2, for the SSH connector.",
   "license": "MIT",
   "homepage": "https://github.com/clavarium/clavarium-tether#readme",

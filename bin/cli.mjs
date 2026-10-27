@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { ask, findFolder } from '../server/mcp.mjs';
 import { NAME, VERSION, FOLDER, ENV_DIR } from '../server/name.mjs';
 
-export const HELP = `${NAME}: act on the targets you were given (machines, folders, browsers).
+export const HELP = `${NAME}: act on the targets you were given (machines, folders, browsers, mailboxes, calendars, address books).
 
   ${NAME}                                  your targets, your level on each, its rules
   ${NAME} run TARGET "command" [--timeout S]   run a command: its output and exit code
@@ -33,6 +33,17 @@ export const HELP = `${NAME}: act on the targets you were given (machines, folde
   ${NAME} browser TARGET key KEY [--selector S] [--tab N]
   ${NAME} browser TARGET scroll [--dx N] [--dy N] [--selector S] [--tab N]
   ${NAME} browser TARGET drag FROM TO [--tab N]
+  ${NAME} mail TARGET list [--mailbox NAME]            recent messages: who, subject, when
+  ${NAME} mail TARGET read UID [--mailbox NAME]        one message in full
+  ${NAME} mail TARGET search "text" [--mailbox NAME]
+  ${NAME} mail TARGET move UID MAILBOX                 move a message to a folder
+  ${NAME} mail TARGET flag UID read|unread|flagged|unflagged
+  ${NAME} mail TARGET send --to "a@b,c@d" --subject "..." --body "..."
+  ${NAME} calendar TARGET list                         upcoming events
+  ${NAME} calendar TARGET read ID
+  ${NAME} calendar TARGET create --title "..." --start ISO --end ISO [--where "..."]
+  ${NAME} contacts TARGET list                          name, emails, phones
+  ${NAME} contacts TARGET read ID
   ${NAME} serve [--store DIR] [--port N] [--side FOLDER=NAME] [--local FOLDER[=TITLE]]
                                        keep targets yourself, with their page (no application)
 
@@ -44,6 +55,9 @@ ${NAME} ${VERSION}`;
 
 const FILE_VERBS = ['list', 'read', 'search', 'write', 'move', 'delete'];
 const BROWSER_VERBS = ['tabs', 'open', 'shot', 'html', 'console', 'eval', 'click', 'type', 'key', 'scroll', 'drag'];
+const MAIL_VERBS = ['list', 'read', 'search', 'move', 'flag', 'send'];
+const CAL_VERBS = ['list', 'read', 'create'];
+const CONTACT_VERBS = ['list', 'read'];
 
 /* A command line, read: [verb, args] or { refused }. A --from file is read by run(). */
 export function read(argv) {
@@ -96,6 +110,34 @@ export function read(argv) {
                 case 'scroll': return ['browser.scroll', { target, ...tab, ...sel, ...(flags.dx !== undefined ? { dx: Number(flags.dx) } : {}), ...(flags.dy !== undefined ? { dy: Number(flags.dy) } : {}), ...why }];
                 default: return need(p.length === 2, 'browser TARGET drag FROM TO') ?? ['browser.drag', { target, from: p[0], to: p[1], ...tab, ...why }];
             }
+        }
+        case 'mail': {
+            const [what, ...p] = rest;
+            if (!target || !MAIL_VERBS.includes(what)) return { refused: `${NAME} mail TARGET ${MAIL_VERBS.join('|')} ...` };
+            const box = flags.mailbox !== undefined ? { mailbox: flags.mailbox } : {};
+            switch (what) {
+                case 'list': return ['mail.list', { target, ...box }];
+                case 'read': return need(p[0], 'mail TARGET read UID [--mailbox NAME]') ?? ['mail.read', { target, uid: p[0], ...box }];
+                case 'search': return need(p.length, 'mail TARGET search "text" [--mailbox NAME]') ?? ['mail.search', { target, text: p.join(' '), ...box }];
+                case 'move': return need(p.length === 2, 'mail TARGET move UID MAILBOX') ?? ['mail.move', { target, uid: p[0], mailbox: p[1], ...why }];
+                case 'flag': return need(p.length === 2, 'mail TARGET flag UID FLAG') ?? ['mail.flag', { target, uid: p[0], flag: p[1], ...why }];
+                default: return need(flags.to !== undefined && flags.subject !== undefined && flags.body !== undefined, 'mail TARGET send --to "a@b" --subject "..." --body "..."') ?? ['mail.send', { target, to: flags.to, subject: flags.subject, body: flags.body, ...why }];
+            }
+        }
+        case 'calendar': {
+            const [what, ...p] = rest;
+            if (!target || !CAL_VERBS.includes(what)) return { refused: `${NAME} calendar TARGET ${CAL_VERBS.join('|')} ...` };
+            switch (what) {
+                case 'list': return ['calendar.list', { target }];
+                case 'read': return need(p[0], 'calendar TARGET read ID') ?? ['calendar.read', { target, id: p[0] }];
+                default: return need(flags.title !== undefined && flags.start !== undefined && flags.end !== undefined, 'calendar TARGET create --title "..." --start ISO --end ISO [--where "..."]') ?? ['calendar.create', { target, title: flags.title, start: flags.start, end: flags.end, ...(flags.where !== undefined ? { where: flags.where } : {}), ...why }];
+            }
+        }
+        case 'contacts': {
+            const [what, ...p] = rest;
+            if (!target || !CONTACT_VERBS.includes(what)) return { refused: `${NAME} contacts TARGET ${CONTACT_VERBS.join('|')} ...` };
+            if (what === 'list') return ['contacts.list', { target }];
+            return need(p[0], 'contacts TARGET read ID') ?? ['contacts.read', { target, id: p[0] }];
         }
         default: return { refused: `Unknown: ${verb}. Run "${NAME} --help".` };
     }
