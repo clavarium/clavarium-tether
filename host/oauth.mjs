@@ -68,15 +68,17 @@ export const PROVIDERS = {
         pkce: true,
         consentExtra: {},
         offlineScope: 'offline_access',
-        /* Mail (and SMTP) are outlook.office.com resources; calendar/files over
-           Graph are a different resource and a separate token -- added when those
-           connectors arrive, not mixed into one mail request. */
+        /* Microsoft over Graph: GNOME Online Accounts' client is a Graph client,
+           so mail, calendar and contacts all go through graph.microsoft.com (the
+           mail connector uses its Graph path for Microsoft). mail.send is needed
+           to send. GOA's client is verified for all of these. */
         scopes: {
-            mail: 'https://outlook.office.com/IMAP.AccessAsUser.All',
-            smtp: 'https://outlook.office.com/SMTP.Send',
+            mail: 'mail.readwrite mail.send',
+            calendar: 'calendars.readwrite',
+            contacts: 'contacts.readwrite',
         },
         thunderbird: {
-            clientId: '9e5f94bc-e8a4-4e73-b8be-63364c29d753',
+            clientId: 'b155a604-3c31-4079-93b0-6bb6aa9d5464',
             clientSecret: null,
         },
     },

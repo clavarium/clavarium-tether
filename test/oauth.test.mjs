@@ -58,8 +58,9 @@ test('scopeFor picks the kinds and appends the offline scope only where it is on
     assert.equal(scopeFor('google'), 'https://mail.google.com/', 'mail by default');
     const gBoth = scopeFor('google', ['mail', 'calendar']);
     assert.ok(gBoth.includes('https://mail.google.com/') && gBoth.includes('auth/calendar'));
-    const m = scopeFor('microsoft', ['mail']);
-    assert.ok(m.includes('IMAP.AccessAsUser.All'));
+    const m = scopeFor('microsoft', ['mail', 'calendar', 'contacts']);
+    assert.ok(m.includes('mail.readwrite') && m.includes('mail.send'), 'Microsoft mail over Graph');
+    assert.ok(m.includes('calendars.readwrite') && m.includes('contacts.readwrite'));
     assert.ok(m.split(' ').includes('offline_access'), 'Microsoft gets offline access as a scope');
     assert.throws(() => scopeFor('google', ['sms']), /no sms scope/);
 });

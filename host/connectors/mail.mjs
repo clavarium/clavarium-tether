@@ -24,6 +24,7 @@ import { no, Refused } from '../../server/verbs.mjs';
 import { refreshAccess, thunderbird, xoauth2, PROVIDERS } from '../oauth.mjs';
 import { Exchange, quoted, imapDate } from '../imap.mjs';
 import { send as smtpSend } from '../smtp.mjs';
+import { graphMail } from './graphmail.mjs';
 
 const IMAP_HOST = { google: 'imap.gmail.com', microsoft: 'outlook.office365.com' };
 const SMTP_HOST = { google: 'smtp.gmail.com', microsoft: 'smtp.office365.com' };
@@ -130,6 +131,11 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
         return t.accessToken;
     }
 
+    /* Microsoft is reached over Graph (its borrowed client is a Graph client with
+       no IMAP scope); Google and classic boxes over IMAP. Same six verbs either way. */
+    const isGraph = (target) => isOAuth(target) && providerOf(target) === 'microsoft';
+    const gmail = graphMail({ fetch: fetchImpl, token: access });
+
     /* Open an authenticated IMAP session; the caller closes it in a finally. OAuth
        (a provider) signs in with XOAUTH2 from the minted token; a classic box signs
        in with LOGIN and its password. Either secret is the host's, never the agent's. */
@@ -207,6 +213,7 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
     const verbs = {
         /* The recent messages of a mailbox: who, subject, when -- newest first. */
         async 'mail.list'(target, a, ctx) {
+            if (isGraph(target)) return gmail.list(target, a, ctx);
             return withImap(target, ctx, async (imap) => {
                 await imap.command(`EXAMINE ${quoted(boxOf(target, a.mailbox))}`, 'that mailbox could not be opened');
                 const since = new Date(Date.now() - SINCE_DAYS * 86_400_000);
@@ -219,6 +226,7 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
         },
         /* One message in full (headers and body), by its uid. */
         async 'mail.read'(target, a, ctx) {
+            if (isGraph(target)) return gmail.read(target, a, ctx);
             const uid = Number(a.uid);
             if (!Number.isInteger(uid) || uid <= 0) no('read needs the message number (uid)');
             return withImap(target, ctx, async (imap) => {
@@ -234,6 +242,7 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
         },
         /* The messages whose text matches, briefly. */
         async 'mail.search'(target, a, ctx) {
+            if (isGraph(target)) return gmail.search(target, a, ctx);
             return withImap(target, ctx, async (imap) => {
                 await imap.command(`EXAMINE ${quoted(boxOf(target, a.mailbox))}`, 'that mailbox could not be opened');
                 const found = await imap.command(`UID SEARCH TEXT ${quoted(a.text)}`, 'the mailbox could not be searched');
@@ -245,6 +254,7 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
         },
         /* Move a message to another folder. An act: the mailbox is opened read-write. */
         async 'mail.move'(target, a, ctx) {
+            if (isGraph(target)) return gmail.move(target, a, ctx);
             const uid = numUid(a.uid);
             return withImap(target, ctx, async (imap) => {
                 await imap.command(`SELECT ${quoted(boxOf(target))}`, 'that mailbox could not be opened');
@@ -254,6 +264,7 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
         },
         /* Mark a message read/unread or flagged/unflagged. */
         async 'mail.flag'(target, a, ctx) {
+            if (isGraph(target)) return gmail.flag(target, a, ctx);
             const uid = numUid(a.uid);
             const { op, flag } = flagOf(a.flag);
             return withImap(target, ctx, async (imap) => {
@@ -266,6 +277,7 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
            LOGIN on its SMTP server. The message is built from the fields -- nothing an
            agent wrote becomes a header or a command. */
         async 'mail.send'(target, a, ctx) {
+            if (isGraph(target)) return gmail.send(target, a, ctx);
             const user = userOf(target);
             const to = String(a.to ?? '').split(',').map((x) => x.trim()).filter(Boolean);
             if (!to.length) no('send needs a recipient (to)');
