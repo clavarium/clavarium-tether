@@ -167,7 +167,7 @@ export function check(verb, a = {}) {
         case 'calendar.list': str('from', 64); str('to', 64); break;
         case 'calendar.read': str('id', 1024); break;
         case 'calendar.create': str('title', 400); str('start', 64); str('end', 64); str('where', 400); str('notes', TEXT_MAX, true); str('with', 1000); break;
-        case 'calendar.attach': str('id', 1024); str('attach', TEXT_MAX, true); str('attachName', 200); break;
+        case 'calendar.attach': str('id', 1024); str('attach', TEXT_MAX, true); str('attachName', 200); if (a.share === true || a.share === 'true') out.share = true; break;
         case 'calendar.detach': str('id', 1024); str('which', 400); break;
         case 'calendar.delete': str('id', 1024); break;
         case 'calendar.respond': str('id', 1024); str('answer', 40); str('comment', 400); break;

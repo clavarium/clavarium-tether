@@ -143,6 +143,33 @@ test('calendar.update (Microsoft) patches notes and invitees', async () => {
     assert.equal(patch.body.attendees[0].emailAddress.address, 'x@example.com');
 });
 
+test('calendar.attach names who will see the file and refuses externals without share', async () => {
+    const event = { organizer: { emailAddress: { address: 'me@example.com' } }, attendees: [
+        { emailAddress: { address: 'colleague@example.com' } },
+        { emailAddress: { address: 'client@example.org' } },
+    ] };
+    const mk = () => async (url, opts = {}) => {
+        if (url.includes('login.microsoftonline.com')) return json({ access_token: 'T', expires_in: 3600 });
+        if ((opts.method || 'GET') === 'GET' && url.includes('/me/events/') && !url.includes('/attachments')) return json(event);
+        return json({ id: 'att1' });
+    };
+    await assert.rejects(calendar({ fetch: mk() }).run('calendar.attach', M, { id: 'm1', attach: 'SGk=', attachName: 'f.pdf' }, ctx()), /external participant/i);
+    const r = await calendar({ fetch: mk() }).run('calendar.attach', M, { id: 'm1', attach: 'SGk=', attachName: 'f.pdf', share: true }, ctx());
+    assert.match(r.text, /Attached/);
+    assert.match(r.text, /colleague@example\.com \(internal\)/);
+    assert.match(r.text, /client@example\.org \(external\)/);
+});
+
+test('calendar.attach with no participants says visible to you alone', async () => {
+    const fetch = async (url, opts = {}) => {
+        if (url.includes('login.microsoftonline.com')) return json({ access_token: 'T', expires_in: 3600 });
+        if ((opts.method || 'GET') === 'GET' && url.includes('/me/events/') && !url.includes('/attachments')) return json({ organizer: { emailAddress: { address: 'me@example.com' } }, attendees: [] });
+        return json({ id: 'att1' });
+    };
+    const r = await calendar({ fetch }).run('calendar.attach', M, { id: 'm1', attach: 'SGk=' }, ctx());
+    assert.match(r.text, /Visible to you alone/);
+});
+
 test('calendar.detach removes an attachment by name (Microsoft)', async () => {
     const calls = [];
     const fetch = async (url, opts = {}) => {

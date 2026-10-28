@@ -192,10 +192,32 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
             if (provider !== 'microsoft') no(`${target.title}: joining a file to an event is Microsoft-only for now`);
             if (!a.id) no('attach needs the event id (from the list)');
             if (!a.attach) no('attach needs the file (its base64 bytes)');
+            const ev = encodeURIComponent(String(a.id));
+            /* Who would receive the file: an event attachment reaches every participant
+               on the next invitation update or resend. Split internal from external by
+               the organiser's domain, and refuse an external audience unless `share`. */
+            const internals = []; const externals = [];
+            const info = await call(target, ctx, 'GET', `https://graph.microsoft.com/v1.0/me/events/${ev}?$select=attendees,organizer`);
+            if (info.ok) {
+                const j = await info.json().catch(() => ({}));
+                const org = (j.organizer?.emailAddress?.address || target.config?.user || '').toLowerCase();
+                const dom = org.split('@')[1] || '';
+                for (const at of (j.attendees ?? [])) {
+                    const addr = at.emailAddress?.address; if (!addr || addr.toLowerCase() === org) continue;
+                    (dom && addr.toLowerCase().endsWith('@' + dom) ? internals : externals).push(addr);
+                }
+            }
+            if (externals.length && a.share !== true) {
+                no(`${externals.length} external participant(s): ${externals.join(', ')}. The file would reach them on the next invitation update/resend. Add --share (CLI) or share:true (MCP) to attach anyway.`);
+            }
             const att = { '@odata.type': '#microsoft.graph.fileAttachment', name: String(a.attachName || 'attachment'), contentBytes: String(a.attach) };
-            const res = await call(target, ctx, 'POST', `https://graph.microsoft.com/v1.0/me/events/${encodeURIComponent(String(a.id))}/attachments`, att);
+            const res = await call(target, ctx, 'POST', `https://graph.microsoft.com/v1.0/me/events/${ev}/attachments`, att);
             if (!res.ok) no(`${target.title}: the file was not attached (${res.status} ${await bodyError(res)})`.trim());
-            return { text: `Attached ${a.attachName || 'the file'} to the event.`, size: 0 };
+            const all = internals.length + externals.length;
+            const who = all
+                ? ` It will reach ${all} participant(s) on the next invitation update/resend:${internals.length ? ` ${internals.join(', ')} (internal)` : ''}${externals.length ? `${internals.length ? ';' : ''} ${externals.join(', ')} (external)` : ''}.`
+                : ' Visible to you alone (the event has no participants).';
+            return { text: `Attached ${a.attachName || 'the file'} to the event.${who}`, size: 0 };
         },
         /* Remove a file from an event, by its name or 1-based number. An act.
            Microsoft only, like attaching (Graph deletes the attachment by id). */

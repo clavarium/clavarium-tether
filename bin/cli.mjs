@@ -46,7 +46,7 @@ export const HELP = `${NAME}: act on the targets you were given (machines, folde
   ${NAME} calendar TARGET read ID
   ${NAME} calendar TARGET create --title "..." --start ISO --end ISO [--where "..."] [--notes "..."] [--with "a@b,c@d"]
   ${NAME} calendar TARGET update EVENT_ID [--title] [--start] [--end] [--where] [--notes] [--with]  (Microsoft)
-  ${NAME} calendar TARGET attach EVENT_ID FILE             join a file to an event (Microsoft)
+  ${NAME} calendar TARGET attach EVENT_ID FILE [--share]   join a file to an event (Microsoft); --share if a participant is external
   ${NAME} calendar TARGET detach EVENT_ID NAME|N           remove an attachment from an event (Microsoft)
   ${NAME} calendar TARGET delete EVENT_ID                  delete an event
   ${NAME} calendar TARGET respond EVENT_ID accept|decline|tentative   answer an invitation (Microsoft)
@@ -82,6 +82,7 @@ export function read(argv) {
         const a = argv[i];
         if (a === '--enter') { flags.enter = true; continue; }
         if (a === '--readable') { flags.readable = true; continue; }
+        if (a === '--share') { flags.share = true; continue; }
         if (a.startsWith('--')) { if (argv[i + 1] === undefined) return { refused: `${a} needs a value` }; flags[a.slice(2)] = argv[++i]; continue; }
         words.push(a);
     }
@@ -158,7 +159,7 @@ export function read(argv) {
                 case 'attach': {
                     if (p.length < 2) return { refused: 'calendar TARGET attach EVENT_ID FILE' };
                     const b = readB64(p[1]); if (b === null) return { refused: `cannot read the file to attach: ${p[1]}` };
-                    return ['calendar.attach', { target, id: p[0], attach: b, attachName: flags['attach-name'] || baseName(p[1]), ...why }];
+                    return ['calendar.attach', { target, id: p[0], attach: b, attachName: flags['attach-name'] || baseName(p[1]), ...(flags.share !== undefined ? { share: true } : {}), ...why }];
                 }
                 case 'detach': return need(p.length >= 2, 'calendar TARGET detach EVENT_ID NAME|N') ?? ['calendar.detach', { target, id: p[0], which: p.slice(1).join(' '), ...why }];
                 case 'delete': return need(p[0], 'calendar TARGET delete EVENT_ID') ?? ['calendar.delete', { target, id: p[0], ...why }];
