@@ -9,7 +9,7 @@
  *   target.secrets.refresh   the NAME of the refresh token in the host's secret store
  *   target.secrets.secret    optional: the NAME of an own client secret
  *
- * Reads (watch): calendar.list, calendar.read. Acts (above watch): calendar.create.
+ * Reads (watch): calendar.list, calendar.read, calendar.freebusy. Acts (above watch): calendar.create.
  * `fetch` is injected for tests. (Note: the Thunderbird client covers Google calendar
  * cleanly; a Microsoft calendar needs the right Graph scope on the connected account.)
  */
@@ -171,6 +171,43 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
             if (res.status === 404) no('no such event');
             if (!res.ok) no(`${target.title}: ${res.status} ${await bodyError(res)}`.trim());
             const text = JSON.stringify(await res.json(), null, 1).slice(0, READ_MAX);
+            return { text, size: Buffer.byteLength(text) };
+        },
+        /* See when others are busy, to find a time together. A read: it returns
+           only busy/free blocks (and a title only where the person already shares
+           it), never the contents of their calendars. `who` is a comma-separated
+           list of addresses; `from`/`to` bound the window (default: the next 7
+           days). Microsoft over Graph getSchedule; a Google free/busy query comes
+           with parity (its REST path needs the account's own OAuth app). */
+        async 'calendar.freebusy'(target, a, ctx) {
+            const provider = providerOf(target);
+            if (provider !== 'microsoft') no(`${target.title}: reading others' availability is Microsoft-only for now`);
+            const who = String(a.who ?? '').split(',').map((x) => x.trim()).filter(Boolean);
+            if (!who.length) no('freebusy needs at least one address (comma-separated)');
+            if (who.length > 20) no('freebusy looks at up to 20 people at once');
+            /* A window in the person's own wall-clock (Europe/Paris), passed with
+               that timezone so "09:00" means 09:00 there. Default: now → +7 days. */
+            const localISO = (d) => { const p = Object.fromEntries(new Intl.DateTimeFormat('en-CA', { timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).formatToParts(d).filter((x) => x.type !== 'literal').map((x) => [x.type, x.value])); return `${p.year}-${p.month}-${p.day}T${p.hour}:${p.minute}:00`; };
+            const norm = (s) => { const t = String(s).trim(); if (/^\d{4}-\d{2}-\d{2}$/.test(t)) return `${t}T00:00:00`; if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(t)) return `${t}:00`; return t; };
+            const now = new Date();
+            const from = a.from ? norm(a.from) : localISO(now);
+            const to = a.to ? norm(a.to) : localISO(new Date(now.getTime() + 7 * 86_400_000));
+            const res = await call(target, ctx, 'POST', 'https://graph.microsoft.com/v1.0/me/calendar/getSchedule', {
+                schedules: who,
+                startTime: { dateTime: from, timeZone: TZ }, endTime: { dateTime: to, timeZone: TZ },
+                availabilityViewInterval: 60,
+            });
+            if (!res.ok) no(`${target.title}: availability could not be read (${res.status} ${await bodyError(res)})`.trim());
+            const value = (await res.json()).value ?? [];
+            const label = { tentative: 'tentative', busy: 'busy', oof: 'out of office', workingElsewhere: 'working elsewhere' };
+            const blocks = value.map((s) => {
+                const id = s.scheduleId || '(unknown)';
+                if (s.error) return `${id}\n  could not be read (no access, or unknown address)`;
+                const items = (s.scheduleItems ?? []).filter((it) => it.status && it.status !== 'free');
+                if (!items.length) return `${id}\n  free for the whole window`;
+                return `${id}\n` + items.map((it) => `  ${label[it.status] || it.status}  ${shortWhen(it.start?.dateTime)} — ${shortWhen(it.end?.dateTime)}${it.subject ? `  (${it.subject})` : ''}`).join('\n');
+            });
+            const text = value.length ? `Availability ${shortWhen(from)} → ${shortWhen(to)} (${TZ}):\n\n${blocks.join('\n\n')}` : 'No availability returned.';
             return { text, size: Buffer.byteLength(text) };
         },
         /* Create an event. An act: the start and end are ISO times (a bare date is all-day). */

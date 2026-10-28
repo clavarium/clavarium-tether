@@ -70,6 +70,7 @@ export const VERBS = Object.freeze({
     'mail.send': { reads: false, kinds: ['mail'], needs: ['to', 'subject', 'body'] },
     'calendar.list': { reads: true, kinds: ['calendar'], needs: [] },
     'calendar.read': { reads: true, kinds: ['calendar'], needs: ['id'] },
+    'calendar.freebusy': { reads: true, kinds: ['calendar'], needs: ['who'] },
     'calendar.create': { reads: false, kinds: ['calendar'], needs: ['title', 'start', 'end'] },
     'calendar.attach': { reads: false, kinds: ['calendar'], needs: ['id', 'attach'] },
     'calendar.detach': { reads: false, kinds: ['calendar'], needs: ['id', 'which'] },
@@ -166,6 +167,7 @@ export function check(verb, a = {}) {
         case 'mail.send': str('to', 1000); str('subject', 400); str('body', TEXT_MAX, true); str('cc', 1000); str('attach', TEXT_MAX, true); str('attachName', 200); break;
         case 'calendar.list': str('from', 64); str('to', 64); break;
         case 'calendar.read': str('id', 1024); break;
+        case 'calendar.freebusy': str('who', 2000); str('from', 64); str('to', 64); break;
         case 'calendar.create': str('title', 400); str('start', 64); str('end', 64); str('where', 400); str('notes', TEXT_MAX, true); str('with', 1000); break;
         case 'calendar.attach': str('id', 1024); str('attach', TEXT_MAX, true); str('attachName', 200); if (a.share === true || a.share === 'true') out.share = true; break;
         case 'calendar.detach': str('id', 1024); str('which', 400); break;
@@ -218,6 +220,7 @@ export function detail(verb, a = {}) {
         case 'mail.delete': return 'delete a message';
         case 'mail.send': return `to ${a.to}: ${a.subject ?? ''}${a.attach ? ` + ${a.attachName || 'a file'}` : ''}`;
         case 'calendar.read': return a.id;
+        case 'calendar.freebusy': return a.who;
         case 'calendar.create': return `${a.title} (${a.start})`;
         case 'calendar.attach': return `${a.attachName || 'a file'} → an event`;
         case 'calendar.detach': return `remove ${a.which || 'a file'} from an event`;

@@ -238,6 +238,34 @@ test('calendar.delete removes an event (Microsoft)', async () => {
     assert.ok(calls.some((c) => c.method === 'DELETE' && c.url.includes('/me/events/EVID')), 'DELETEs the event');
 });
 
+test('calendar.freebusy (Microsoft) queries getSchedule and briefs each person\'s busy blocks', async () => {
+    const calls = [];
+    const fetch = async (url, opts = {}) => {
+        calls.push({ url, method: opts.method || 'GET', body: opts.body });
+        if (url.includes('login.microsoftonline.com')) return json({ access_token: 'T', expires_in: 3600 });
+        return json({ value: [
+            { scheduleId: 'a@example.com', scheduleItems: [{ status: 'busy', start: { dateTime: '2030-01-02T09:00:00' }, end: { dateTime: '2030-01-02T10:00:00' }, subject: 'Review' }] },
+            { scheduleId: 'b@example.com', scheduleItems: [] },
+            { scheduleId: 'c@example.org', error: { message: 'MailboxNotEnabledForRESTAPI' } },
+        ] });
+    };
+    const r = await calendar({ fetch }).run('calendar.freebusy', M, { who: 'a@example.com, b@example.com, c@example.org' }, ctx());
+    const q = calls.find((c) => c.url.includes('/me/calendar/getSchedule'));
+    assert.ok(q && q.method === 'POST', 'POSTs to getSchedule');
+    const sent = JSON.parse(q.body);
+    assert.deepEqual(sent.schedules, ['a@example.com', 'b@example.com', 'c@example.org'], 'passes all three addresses, trimmed');
+    assert.equal(sent.startTime.timeZone, 'Europe/Paris', 'window is in the person\'s own timezone');
+    assert.match(r.text, /a@example\.com[\s\S]*busy  2030-01-02 09:00 — 2030-01-02 10:00  \(Review\)/, 'a busy block, local time');
+    assert.match(r.text, /b@example\.com\n  free for the whole window/, 'b is free');
+    assert.match(r.text, /c@example\.org\n  could not be read/, 'c could not be read (no access)');
+});
+
+test('calendar.freebusy is Microsoft-only for now, and needs at least one address', async () => {
+    const s = server();
+    await assert.rejects(calendar({ fetch: s.fetch }).run('calendar.freebusy', G, { who: 'a@example.com' }, ctx()), /Microsoft-only/);
+    await assert.rejects(calendar({ fetch: s.fetch }).run('calendar.freebusy', M, { who: '  ' }, ctx()), /at least one address/);
+});
+
 test('calendar refuses a target with no provider, and create without times', async () => {
     const s = server();
     const c = calendar({ fetch: s.fetch });

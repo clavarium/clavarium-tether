@@ -44,6 +44,7 @@ export const HELP = `${NAME}: act on the targets you were given (machines, folde
   ${NAME} mail TARGET send --to "a@b,c@d" --subject "..." --body "..." [--cc "..."] [--attach FILE]
   ${NAME} calendar TARGET list [--from DATE] [--to DATE]   events in a window (default: from now on)
   ${NAME} calendar TARGET read ID
+  ${NAME} calendar TARGET freebusy "a@b,c@d" [--from DATE] [--to DATE]   when others are busy (Microsoft)
   ${NAME} calendar TARGET create --title "..." --start ISO --end ISO [--where "..."] [--notes "..."] [--with "a@b,c@d"]
   ${NAME} calendar TARGET update EVENT_ID [--title] [--start] [--end] [--where] [--notes] [--with]  (Microsoft)
   ${NAME} calendar TARGET attach EVENT_ID FILE [--share]   join a file to an event (Microsoft); --share if a participant is external
@@ -69,7 +70,7 @@ ${NAME} ${VERSION}`;
 const FILE_VERBS = ['list', 'read', 'search', 'write', 'move', 'delete'];
 const BROWSER_VERBS = ['tabs', 'open', 'shot', 'html', 'console', 'eval', 'click', 'type', 'key', 'scroll', 'drag'];
 const MAIL_VERBS = ['list', 'read', 'source', 'attachment', 'search', 'move', 'flag', 'delete', 'send'];
-const CAL_VERBS = ['list', 'read', 'create', 'update', 'attach', 'detach', 'delete', 'respond'];
+const CAL_VERBS = ['list', 'read', 'freebusy', 'create', 'update', 'attach', 'detach', 'delete', 'respond'];
 const CONTACT_VERBS = ['list', 'search', 'read', 'create', 'update', 'delete', 'attach'];
 const baseName = (p) => String(p).split('/').pop();
 const readB64 = (p) => { try { return readFileSync(p).toString('base64'); } catch { return null; } };
@@ -156,6 +157,7 @@ export function read(argv) {
             switch (what) {
                 case 'list': return ['calendar.list', { target, ...(flags.from !== undefined ? { from: flags.from } : {}), ...(flags.to !== undefined ? { to: flags.to } : {}) }];
                 case 'read': return need(p[0], 'calendar TARGET read ID') ?? ['calendar.read', { target, id: p[0] }];
+                case 'freebusy': return need(p[0], 'calendar TARGET freebusy "a@b,c@d" [--from DATE] [--to DATE]') ?? ['calendar.freebusy', { target, who: p.join(','), ...(flags.from !== undefined ? { from: flags.from } : {}), ...(flags.to !== undefined ? { to: flags.to } : {}) }];
                 case 'attach': {
                     if (p.length < 2) return { refused: 'calendar TARGET attach EVENT_ID FILE' };
                     const b = readB64(p[1]); if (b === null) return { refused: `cannot read the file to attach: ${p[1]}` };
