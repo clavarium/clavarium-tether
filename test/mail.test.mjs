@@ -83,6 +83,21 @@ test('mail.list: authenticates with XOAUTH2 (token minted from the refresh), rea
     assert.ok(!s.commands.some((x) => /STORE|APPEND|UID MOVE|DELETE|EXPUNGE/i.test(x)), 'nothing was written');
 });
 
+test('mail.list takes a since/before window over IMAP, else the default lookback', async () => {
+    const s = imapServer(STORE);
+    await mail({ fetch: okToken, connect: s.connect }).run('mail.list', TARGET, { since: '2026-01-01', before: '2026-02-01' }, ctx());
+    assert.ok(s.commands.some((x) => x === 'UID SEARCH SINCE 1-Jan-2026 BEFORE 1-Feb-2026'), 'a dated window search');
+    const s2 = imapServer(STORE);
+    await mail({ fetch: okToken, connect: s2.connect }).run('mail.list', TARGET, {}, ctx());
+    const bare = s2.commands.find((x) => x.startsWith('UID SEARCH'));
+    assert.ok(/^UID SEARCH SINCE /.test(bare) && !/BEFORE/.test(bare), 'a bare list looks back a window, no BEFORE');
+});
+
+test('mail.list rejects a date it cannot read', async () => {
+    const s = imapServer(STORE);
+    await assert.rejects(() => mail({ fetch: okToken, connect: s.connect }).run('mail.list', TARGET, { since: 'whenever' }, ctx()), /since must be a date/);
+});
+
 test('mail.read returns a message in full by its uid', async () => {
     const s = imapServer(STORE);
     const r = await mail({ fetch: okToken, connect: s.connect }).run('mail.read', TARGET, { uid: '6' }, ctx());

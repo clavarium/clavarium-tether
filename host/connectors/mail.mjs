@@ -20,7 +20,7 @@
  * verbs reimplemented here so the token stays host-side and the levels gate them.
  */
 import { connect as tlsConnect } from 'node:tls';
-import { no, Refused } from '../../server/verbs.mjs';
+import { no, Refused, asDate } from '../../server/verbs.mjs';
 import { refreshAccess, thunderbird, xoauth2, PROVIDERS } from '../oauth.mjs';
 import { Exchange, quoted, imapDate } from '../imap.mjs';
 import { send as smtpSend } from '../smtp.mjs';
@@ -214,13 +214,21 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
         /* The recent messages of a mailbox: who, subject, when -- newest first. */
         async 'mail.list'(target, a, ctx) {
             if (isGraph(target)) return gmail.list(target, a, ctx);
+            const since = asDate(a.since, 'since');
+            const before = asDate(a.before, 'before');
             return withImap(target, ctx, async (imap) => {
                 await imap.command(`EXAMINE ${quoted(boxOf(target, a.mailbox))}`, 'that mailbox could not be opened');
-                const since = new Date(Date.now() - SINCE_DAYS * 86_400_000);
-                const found = await imap.command(`UID SEARCH SINCE ${imapDate(since)}`, 'the mailbox could not be searched');
+                /* A date window if asked, else the last 30 days. SINCE is inclusive,
+                   BEFORE is exclusive -- IMAP matches on the message's own date. */
+                const span = [];
+                if (since) span.push(`SINCE ${imapDate(since)}`);
+                if (before) span.push(`BEFORE ${imapDate(before)}`);
+                if (!span.length) span.push(`SINCE ${imapDate(new Date(Date.now() - SINCE_DAYS * 86_400_000))}`);
+                const found = await imap.command(`UID SEARCH ${span.join(' ')}`, 'the mailbox could not be searched');
                 const uids = searchUids(found).slice(-LIST_MAX).reverse();
                 const items = await brief(imap, uids);
-                const text = items.length ? items.join('\n') : 'No message in the last 30 days.';
+                const empty = since || before ? 'No message in that range.' : 'No message in the last 30 days.';
+                const text = items.length ? items.join('\n') : empty;
                 return { text, size: Buffer.byteLength(text) };
             });
         },

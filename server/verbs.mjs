@@ -83,6 +83,15 @@ export const oneLine = (text, max) => String(text ?? '').replace(/\r/g, '').repl
 export const isVerb = (verb) => Object.hasOwn(VERBS, verb);
 export const reads = (verb) => VERBS[verb]?.reads === true;
 
+/* A date argument (mail since/before, calendar from/to) as a Date, or undefined
+   if absent. Accepts a day (2026-01-31) or a full ISO instant. */
+export function asDate(v, name) {
+    if (v === undefined || v === null || v === '') return undefined;
+    const d = new Date(v);
+    if (Number.isNaN(d.getTime())) no(`${name} must be a date like 2026-01-31`);
+    return d;
+}
+
 /* A verb's arguments, checked and cleaned: what the keeper works with. */
 export function check(verb, a = {}) {
     if (!isVerb(verb)) no(`there is no verb ${oneLine(verb, 40)}`);
@@ -135,7 +144,7 @@ export function check(verb, a = {}) {
         case 'screen.scroll': num('dx'); num('dy'); break;
         case 'screen.type': str('text', COMMAND_MAX, true); break;
         case 'screen.key': str('key', 60); break;
-        case 'mail.list': str('mailbox', 200); break;
+        case 'mail.list': str('mailbox', 200); str('since', 64); str('before', 64); break;
         case 'mail.read': str('uid', 1024); str('mailbox', 200); break;
         case 'mail.search': str('text', 400); str('mailbox', 200); break;
         case 'mail.move': str('uid', 1024); str('mailbox', 200); break;

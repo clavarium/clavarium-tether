@@ -33,7 +33,7 @@ export const HELP = `${NAME}: act on the targets you were given (machines, folde
   ${NAME} browser TARGET key KEY [--selector S] [--tab N]
   ${NAME} browser TARGET scroll [--dx N] [--dy N] [--selector S] [--tab N]
   ${NAME} browser TARGET drag FROM TO [--tab N]
-  ${NAME} mail TARGET list [--mailbox NAME]            recent messages: who, subject, when
+  ${NAME} mail TARGET list [--mailbox NAME] [--since DATE] [--before DATE]   recent messages (default: last 30 days)
   ${NAME} mail TARGET read UID [--mailbox NAME]        one message in full
   ${NAME} mail TARGET search "text" [--mailbox NAME]
   ${NAME} mail TARGET move UID MAILBOX                 move a message to a folder
@@ -120,7 +120,7 @@ export function read(argv) {
             if (!target || !MAIL_VERBS.includes(what)) return { refused: `${NAME} mail TARGET ${MAIL_VERBS.join('|')} ...` };
             const box = flags.mailbox !== undefined ? { mailbox: flags.mailbox } : {};
             switch (what) {
-                case 'list': return ['mail.list', { target, ...box }];
+                case 'list': return ['mail.list', { target, ...box, ...(flags.since !== undefined ? { since: flags.since } : {}), ...(flags.before !== undefined ? { before: flags.before } : {}) }];
                 case 'read': return need(p[0], 'mail TARGET read UID [--mailbox NAME]') ?? ['mail.read', { target, uid: p[0], ...box }];
                 case 'search': return need(p.length, 'mail TARGET search "text" [--mailbox NAME]') ?? ['mail.search', { target, text: p.join(' '), ...box }];
                 case 'move': return need(p.length === 2, 'mail TARGET move UID MAILBOX') ?? ['mail.move', { target, uid: p[0], mailbox: p[1], ...why }];

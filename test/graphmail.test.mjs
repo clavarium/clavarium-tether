@@ -33,6 +33,16 @@ test('list reads the inbox, newest first, with a Bearer token (never a password)
     assert.match(calls[0].path, /\$orderby=receivedDateTime/);
 });
 
+test('list filters by a since/before window on the property it orders by', async () => {
+    const { fetch, calls } = fakeGraph({ 'GET /me/mailFolders/inbox/messages': { value: [] } });
+    const g = graphMail({ fetch, token: mint });
+    const r = await g.list(target, { since: '2026-01-01', before: '2026-02-01' }, ctx);
+    const path = decodeURIComponent(calls[0].path);
+    assert.match(path, /\$filter=receivedDateTime ge 2026-01-01T00:00:00\.000Z and receivedDateTime lt 2026-02-01T00:00:00\.000Z/);
+    assert.match(path, /\$orderby=receivedDateTime/);
+    assert.match(r.text, /in that range/);
+});
+
 test('read returns decoded body (html stripped) and lists attachments by name, never bytes', async () => {
     const { fetch } = fakeGraph({
         'GET /me/messages/AAA': { id: 'AAA', receivedDateTime: '2026-10-27T10:00:00Z', from: { emailAddress: { address: 'x@example.com' } }, toRecipients: [{ emailAddress: { address: 'me@example.com' } }], subject: 'Hi', hasAttachments: true, body: { contentType: 'html', content: '<p>Bonjour<br>monde</p><script>bad()</script>' } },

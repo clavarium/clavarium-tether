@@ -12,7 +12,7 @@
  * tests. Message ids are Graph's own opaque ids (long strings), used as the
  * "uid" for read/move/flag.
  */
-import { no } from '../../server/verbs.mjs';
+import { no, asDate } from '../../server/verbs.mjs';
 
 const GRAPH = 'https://graph.microsoft.com/v1.0';
 const LIST_MAX = 30;
@@ -49,9 +49,17 @@ export function graphMail({ fetch: fetchImpl = globalThis.fetch, token }) {
     return {
         async list(target, a, ctx) {
             const folder = folderOf(a.mailbox);
-            const data = await call(target, ctx, 'GET', `/me/mailFolders/${encodeURIComponent(folder)}/messages?$top=${LIST_MAX}&$select=id,receivedDateTime,from,subject&$orderby=receivedDateTime%20desc`);
+            /* An optional date window, filtered on the same property it is ordered
+               by (Graph allows that): ge is inclusive, lt is exclusive. */
+            const since = asDate(a.since, 'since');
+            const before = asDate(a.before, 'before');
+            const span = [];
+            if (since) span.push(`receivedDateTime ge ${since.toISOString()}`);
+            if (before) span.push(`receivedDateTime lt ${before.toISOString()}`);
+            const filter = span.length ? `&$filter=${encodeURIComponent(span.join(' and '))}` : '';
+            const data = await call(target, ctx, 'GET', `/me/mailFolders/${encodeURIComponent(folder)}/messages?$top=${LIST_MAX}&$select=id,receivedDateTime,from,subject&$orderby=receivedDateTime%20desc${filter}`);
             const items = (data?.value ?? []).map(brief);
-            const text = items.length ? items.join('\n') : 'No message.';
+            const text = items.length ? items.join('\n') : (since || before ? 'No message in that range.' : 'No message.');
             return { text, size: Buffer.byteLength(text) };
         },
         async read(target, a, ctx) {
