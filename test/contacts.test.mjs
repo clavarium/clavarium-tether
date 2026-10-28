@@ -81,6 +81,22 @@ test('contacts.list (Microsoft) over Graph briefs the contacts', async () => {
     assert.ok(s.calls.some((c) => c.url.includes('graph.microsoft.com/v1.0/me/contacts')), 'the Graph endpoint');
 });
 
+test('contacts.search (Google) keeps only the contacts whose name/email matches', async () => {
+    const s = server();
+    const r = await contacts({ fetch: s.fetch }).run('contacts.search', G, { text: 'alice' }, ctx());
+    assert.ok(r.text.includes('Alice Smith'), 'the match is kept');
+    assert.ok(!r.text.includes('Bob Jones'), 'the non-match is dropped');
+});
+
+test('contacts.search (Microsoft) filters host-side on a substring; no match says so', async () => {
+    const s = server();
+    const hit = await contacts({ fetch: s.fetch }).run('contacts.search', M, { text: 'car' }, ctx());
+    assert.ok(hit.text.includes('Carol'), 'a substring of the name matches');
+    assert.ok(s.calls.some((c) => c.url.includes('graph.microsoft.com/v1.0/me/contacts')), 'listed over Graph');
+    const miss = await contacts({ fetch: s.fetch }).run('contacts.search', M, { text: 'zzz' }, ctx());
+    assert.match(miss.text, /No contact matches/);
+});
+
 test('contacts.read (Microsoft) returns one contact; unknown provider refused', async () => {
     const s = server();
     const r = await contacts({ fetch: s.fetch }).run('contacts.read', M, { id: 'm1' }, ctx());

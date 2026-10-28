@@ -13,6 +13,7 @@ import { no, Refused } from '../../server/verbs.mjs';
 import { refreshAccess, thunderbird, PROVIDERS } from '../oauth.mjs';
 
 const LIST_MAX = 50;
+const SCAN_MAX = 200;           /* contacts looked at when searching by name */
 
 /* A vCard's useful fields. Lines fold with a leading space; unfold first. */
 function fromVcard(text) {
@@ -63,7 +64,7 @@ export function contacts({ fetch: fetchImpl = globalThis.fetch } = {}) {
     const PROPFIND = '<?xml version="1.0" encoding="utf-8"?><D:propfind xmlns:D="DAV:"><D:prop><D:getetag/></D:prop></D:propfind>';
     const hrefsIn = (xml) => [...xml.matchAll(/<[^>]*?:?href[^>]*>([\s\S]*?)<\/[^>]*?:?href>/gi)].map((m) => decodeXml(m[1].trim()));
 
-    async function googleList(target, ctx) {
+    async function googleList(target, ctx, { match } = {}) {
         const base = CARDDAV(userOf(target));
         const basePath = (() => { try { return new URL(base).pathname.replace(/\/+$/, ''); } catch { return ''; } })();
         const listed = await req(target, ctx, 'PROPFIND', base, { headers: { Depth: '1', 'Content-Type': 'application/xml; charset=utf-8' }, body: PROPFIND });
@@ -76,7 +77,7 @@ export function contacts({ fetch: fetchImpl = globalThis.fetch } = {}) {
             if (!clean || clean.endsWith('/')) return false;
             let p; try { p = new URL(h, base).pathname.replace(/\/+$/, ''); } catch { p = clean.replace(/\/+$/, ''); }
             return p !== basePath;
-        }).slice(0, LIST_MAX);
+        }).slice(0, match ? SCAN_MAX : LIST_MAX);
         if (!hrefs.length) return [];
         const body = `<?xml version="1.0" encoding="utf-8"?><C:addressbook-multiget xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:carddav"><D:prop><D:getetag/><C:address-data/></D:prop>${hrefs.map((h) => `<D:href>${h.replace(/&/g, '&amp;').replace(/</g, '&lt;')}</D:href>`).join('')}</C:addressbook-multiget>`;
         const res = await req(target, ctx, 'REPORT', base, { headers: { Depth: '1', 'Content-Type': 'application/xml; charset=utf-8' }, body });
@@ -89,7 +90,9 @@ export function contacts({ fetch: fetchImpl = globalThis.fetch } = {}) {
             const data = /<[^>]*?:?address-data[^>]*>([\s\S]*?)<\/[^>]*?:?address-data>/i.exec(block)?.[1];
             if (!data) continue;
             const card = fromVcard(decodeXml(data));
-            if (card.name || card.emails.length) out.push(brief(href || '(no id)', card));
+            const has = card.name || card.emails.length;
+            const hit = !match || `${card.name} ${card.emails.join(' ')}`.toLowerCase().includes(match);
+            if (has && hit) out.push(brief(href || '(no id)', card));
             if (out.length >= LIST_MAX) break;
         }
         return out;
@@ -104,6 +107,27 @@ export function contacts({ fetch: fetchImpl = globalThis.fetch } = {}) {
             if (!res.ok) no(`${target.title}: the address book could not be read (${res.status})`);
             const items = ((await res.json()).value ?? []).map((c) => brief(c.id, fromMs(c)));
             const text = items.length ? items.join('\n') : 'No contact.';
+            return { text, size: Buffer.byteLength(text) };
+        },
+        /* The contacts whose name or email matches a word, briefly. Both providers
+           are filtered host-side over the first SCAN_MAX entries -- a plain, provider-
+           agnostic match that does not lean on each service's own search quirks. */
+        async 'contacts.search'(target, a, ctx) {
+            const provider = providerOf(target);
+            const q = String(a.text ?? '').trim().toLowerCase();
+            if (!q) no('search needs a name to look for');
+            let items;
+            if (provider === 'google') items = await googleList(target, ctx, { match: q });
+            else {
+                const res = await req(target, ctx, 'GET', `https://graph.microsoft.com/v1.0/me/contacts?$top=${SCAN_MAX}&$select=id,displayName,givenName,surname,emailAddresses,mobilePhone,businessPhones,homePhones`);
+                if (!res.ok) no(`${target.title}: the address book could not be searched (${res.status})`);
+                items = ((await res.json()).value ?? [])
+                    .map((c) => ({ id: c.id, card: fromMs(c) }))
+                    .filter(({ card }) => `${card.name} ${card.emails.join(' ')}`.toLowerCase().includes(q))
+                    .slice(0, LIST_MAX)
+                    .map(({ id, card }) => brief(id, card));
+            }
+            const text = items.length ? items.join('\n') : 'No contact matches.';
             return { text, size: Buffer.byteLength(text) };
         },
         /* One contact in full, by its id (the Microsoft id, or the Google CardDAV href). */

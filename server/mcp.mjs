@@ -115,6 +115,7 @@ export const TOOLS = [
     tool('calendar-create', 'Create an event. A person may approve: say why.', { target: TARGET, title: { type: 'string' }, start: S('ISO date-time, or a date for all-day'), end: S('ISO date-time, or a date'), where: S('a place, optional'), why: WHY }, ['target', 'title', 'start', 'end']),
     tool('calendar-attach', 'Join a file to an event (Microsoft). A person may approve: say why.', { target: TARGET, id: S('the event id from a list'), attach: S('the file as base64 bytes'), attachName: S('the file name'), why: WHY }, ['target', 'id', 'attach']),
     tool('contacts-list', 'The contacts of an address-book target: name, emails, phones.', { target: TARGET }, ['target']),
+    tool('contacts-search', 'Contacts whose name or email matches a word, briefly.', { target: TARGET, text: S('a name or part of one to look for') }, ['target', 'text']),
     tool('contacts-read', 'One contact in full by its id.', { target: TARGET, id: { type: 'string' } }, ['target', 'id']),
     tool('contacts-attach', "Set a contact's photo (Microsoft). A person may approve: say why.", { target: TARGET, id: S('the contact id from a list'), attach: S('the photo as base64 bytes'), attachName: S('the file name, optional'), why: WHY }, ['target', 'id', 'attach']),
 ];

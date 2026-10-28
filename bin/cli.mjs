@@ -44,6 +44,7 @@ export const HELP = `${NAME}: act on the targets you were given (machines, folde
   ${NAME} calendar TARGET create --title "..." --start ISO --end ISO [--where "..."]
   ${NAME} calendar TARGET attach EVENT_ID FILE             join a file to an event (Microsoft)
   ${NAME} contacts TARGET list                          name, emails, phones
+  ${NAME} contacts TARGET search "name"                 contacts matching a name
   ${NAME} contacts TARGET read ID
   ${NAME} contacts TARGET attach CONTACT_ID FILE           set a contact's photo (Microsoft)
   ${NAME} serve [--store DIR] [--port N] [--side FOLDER=NAME] [--local FOLDER[=TITLE]]
@@ -59,7 +60,7 @@ const FILE_VERBS = ['list', 'read', 'search', 'write', 'move', 'delete'];
 const BROWSER_VERBS = ['tabs', 'open', 'shot', 'html', 'console', 'eval', 'click', 'type', 'key', 'scroll', 'drag'];
 const MAIL_VERBS = ['list', 'read', 'search', 'move', 'flag', 'send'];
 const CAL_VERBS = ['list', 'read', 'create', 'attach'];
-const CONTACT_VERBS = ['list', 'read', 'attach'];
+const CONTACT_VERBS = ['list', 'search', 'read', 'attach'];
 const baseName = (p) => String(p).split('/').pop();
 const readB64 = (p) => { try { return readFileSync(p).toString('base64'); } catch { return null; } };
 
@@ -152,6 +153,7 @@ export function read(argv) {
             const [what, ...p] = rest;
             if (!target || !CONTACT_VERBS.includes(what)) return { refused: `${NAME} contacts TARGET ${CONTACT_VERBS.join('|')} ...` };
             if (what === 'list') return ['contacts.list', { target }];
+            if (what === 'search') return need(p.length, 'contacts TARGET search "name"') ?? ['contacts.search', { target, text: p.join(' ') }];
             if (what === 'attach') {
                 if (p.length < 2) return { refused: 'contacts TARGET attach CONTACT_ID FILE (a photo)' };
                 const b = readB64(p[1]); if (b === null) return { refused: `cannot read the file to attach: ${p[1]}` };
