@@ -15,6 +15,7 @@
 import { no, asDate } from '../../server/verbs.mjs';
 
 const GRAPH = 'https://graph.microsoft.com/v1.0';
+const TZ = 'Europe/Paris';   /* answer in the person's timezone, not UTC */
 const LIST_MAX = 30;
 const READ_MAX = 512 * 1024;
 const SOURCE_MAX = 4 * 1024 * 1024;
@@ -36,7 +37,7 @@ export function graphMail({ fetch: fetchImpl = globalThis.fetch, token }) {
         const access = await token(target, ctx);
         const r = await fetchImpl(`${GRAPH}${path}`, {
             method,
-            headers: { authorization: `Bearer ${access}`, ...(body ? { 'content-type': 'application/json' } : {}) },
+            headers: { authorization: `Bearer ${access}`, prefer: `outlook.timezone="${TZ}"`, ...(body ? { 'content-type': 'application/json' } : {}) },
             ...(body ? { body: JSON.stringify(body) } : {}),
         });
         if (r.status === 401 || r.status === 403) no(`${target.title}: not authorized -- reconnect the account (the Microsoft mail scope may be missing)`);

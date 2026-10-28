@@ -17,6 +17,9 @@ import { no, Refused } from '../../server/verbs.mjs';
 import { refreshAccess, thunderbird, PROVIDERS } from '../oauth.mjs';
 
 const LIST_MAX = 200;           /* events a list returns at most, then it says so (a year holds many) */
+const TZ = 'Europe/Paris';      /* the person's timezone: events are shown and created in it, not UTC */
+/* A Graph/ISO datetime, shown short and local: "2026-11-10 16:00". */
+const shortWhen = (dt) => { const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(String(dt || '')); return m ? `${m[1]}-${m[2]}-${m[3]} ${m[4]}:${m[5]}` : (dt || '?'); };
 const READ_MAX = 256 * 1024;
 const dateField = (s) => (/^\d{4}-\d{2}-\d{2}$/.test(s) ? { date: s } : { dateTime: s });
 
@@ -37,8 +40,14 @@ const API = {
         event: (id) => `https://graph.microsoft.com/v1.0/me/events/${encodeURIComponent(id)}`,
         create: 'https://graph.microsoft.com/v1.0/me/events',
         items: (j) => j.value ?? [],
-        brief: (e) => `${e.id}\n  ${e.start?.dateTime ?? '?'} — ${e.subject ?? '(no title)'}${e.location?.displayName ? `  @ ${e.location.displayName}` : ''}`,
-        body: ({ title, start, end, where }) => ({ subject: title, start: { dateTime: start, timeZone: 'UTC' }, end: { dateTime: end, timeZone: 'UTC' }, ...(where ? { location: { displayName: where } } : {}) }),
+        brief: (e) => `${e.id}\n  ${shortWhen(e.start?.dateTime)} — ${e.subject ?? '(no title)'}${e.location?.displayName ? `  @ ${e.location.displayName}` : ''}`,
+        body: ({ title, start, end, where, notes, attendees }) => ({
+            subject: title,
+            start: { dateTime: start, timeZone: TZ }, end: { dateTime: end, timeZone: TZ },
+            ...(where ? { location: { displayName: where } } : {}),
+            ...(notes ? { body: { contentType: 'text', content: String(notes) } } : {}),
+            ...(attendees?.length ? { attendees: attendees.map((a) => ({ emailAddress: { address: a }, type: 'required' })) } : {}),
+        }),
     },
 };
 
@@ -63,7 +72,9 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
 
     async function call(target, ctx, method, url, json) {
         const token = await access(target, ctx);
-        const headers = { Authorization: `Bearer ${token}` };
+        /* Ask Microsoft to answer in the person's timezone, not UTC, so a 4pm
+           meeting reads 16:00 and not 15:00. Harmless for the Google REST path. */
+        const headers = { Authorization: `Bearer ${token}`, Prefer: `outlook.timezone="${TZ}"` };
         if (json !== undefined) headers['Content-Type'] = 'application/json';
         let res;
         try { res = await fetchImpl(url, { method, headers, ...(json !== undefined ? { body: JSON.stringify(json) } : {}) }); }
@@ -166,8 +177,9 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
         async 'calendar.create'(target, a, ctx) {
             const api = API[providerOf(target)];
             if (!a.title) no('an event needs a title');
-            if (!a.start || !a.end) no('an event needs a start and an end (ISO times, e.g. 2030-01-02T09:00:00Z)');
-            const res = await call(target, ctx, 'POST', api.create, api.body({ title: a.title, start: a.start, end: a.end, where: a.where }));
+            if (!a.start || !a.end) no('an event needs a start and an end (local ISO times, e.g. 2026-11-10T16:00:00)');
+            const attendees = String(a.with ?? '').split(',').map((x) => x.trim()).filter(Boolean);
+            const res = await call(target, ctx, 'POST', api.create, api.body({ title: a.title, start: a.start, end: a.end, where: a.where, notes: a.notes, attendees }));
             if (!res.ok) no(`${target.title}: the event was not created (${res.status} ${await bodyError(res)})`.trim());
             const made = await res.json().catch(() => ({}));
             return { text: `Created: ${a.title} (${a.start}). Its id is ${made.id ?? '(unknown)'}.`, size: 0 };
@@ -247,7 +259,9 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
             if (a.start !== undefined) patch.start = { dateTime: String(a.start), timeZone: 'UTC' };
             if (a.end !== undefined) patch.end = { dateTime: String(a.end), timeZone: 'UTC' };
             if (a.where !== undefined) patch.location = { displayName: String(a.where) };
-            if (!Object.keys(patch).length) no('update needs at least one of: title, start, end, where');
+            if (a.notes !== undefined) patch.body = { contentType: 'text', content: String(a.notes) };
+            if (a.with !== undefined) patch.attendees = String(a.with).split(',').map((x) => x.trim()).filter(Boolean).map((e) => ({ emailAddress: { address: e }, type: 'required' }));
+            if (!Object.keys(patch).length) no('update needs at least one of: title, start, end, where, notes, with');
             const res = await call(target, ctx, 'PATCH', API.microsoft.event(String(a.id)), patch);
             if (res.status === 404) no('no such event');
             if (!res.ok) no(`${target.title}: the event was not changed (${res.status} ${await bodyError(res)})`.trim());

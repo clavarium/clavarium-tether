@@ -44,8 +44,8 @@ export const HELP = `${NAME}: act on the targets you were given (machines, folde
   ${NAME} mail TARGET send --to "a@b,c@d" --subject "..." --body "..." [--cc "..."] [--attach FILE]
   ${NAME} calendar TARGET list [--from DATE] [--to DATE]   events in a window (default: from now on)
   ${NAME} calendar TARGET read ID
-  ${NAME} calendar TARGET create --title "..." --start ISO --end ISO [--where "..."]
-  ${NAME} calendar TARGET update EVENT_ID [--title "..."] [--start ISO] [--end ISO] [--where "..."]  (Microsoft)
+  ${NAME} calendar TARGET create --title "..." --start ISO --end ISO [--where "..."] [--notes "..."] [--with "a@b,c@d"]
+  ${NAME} calendar TARGET update EVENT_ID [--title] [--start] [--end] [--where] [--notes] [--with]  (Microsoft)
   ${NAME} calendar TARGET attach EVENT_ID FILE             join a file to an event (Microsoft)
   ${NAME} calendar TARGET detach EVENT_ID NAME|N           remove an attachment from an event (Microsoft)
   ${NAME} calendar TARGET delete EVENT_ID                  delete an event
@@ -163,8 +163,8 @@ export function read(argv) {
                 case 'detach': return need(p.length >= 2, 'calendar TARGET detach EVENT_ID NAME|N') ?? ['calendar.detach', { target, id: p[0], which: p.slice(1).join(' '), ...why }];
                 case 'delete': return need(p[0], 'calendar TARGET delete EVENT_ID') ?? ['calendar.delete', { target, id: p[0], ...why }];
                 case 'respond': return need(p.length >= 2, 'calendar TARGET respond EVENT_ID accept|decline|tentative [--comment "..."]') ?? ['calendar.respond', { target, id: p[0], answer: p[1], ...(flags.comment !== undefined ? { comment: flags.comment } : {}), ...why }];
-                case 'update': return need(p[0], 'calendar TARGET update EVENT_ID [--title "..."] [--start ISO] [--end ISO] [--where "..."]') ?? ['calendar.update', { target, id: p[0], ...(flags.title !== undefined ? { title: flags.title } : {}), ...(flags.start !== undefined ? { start: flags.start } : {}), ...(flags.end !== undefined ? { end: flags.end } : {}), ...(flags.where !== undefined ? { where: flags.where } : {}), ...why }];
-                default: return need(flags.title !== undefined && flags.start !== undefined && flags.end !== undefined, 'calendar TARGET create --title "..." --start ISO --end ISO [--where "..."]') ?? ['calendar.create', { target, title: flags.title, start: flags.start, end: flags.end, ...(flags.where !== undefined ? { where: flags.where } : {}), ...why }];
+                case 'update': return need(p[0], 'calendar TARGET update EVENT_ID [--title] [--start] [--end] [--where] [--notes] [--with]') ?? ['calendar.update', { target, id: p[0], ...(flags.title !== undefined ? { title: flags.title } : {}), ...(flags.start !== undefined ? { start: flags.start } : {}), ...(flags.end !== undefined ? { end: flags.end } : {}), ...(flags.where !== undefined ? { where: flags.where } : {}), ...(flags.notes !== undefined ? { notes: flags.notes } : {}), ...(flags.with !== undefined ? { with: flags.with } : {}), ...why }];
+                default: return need(flags.title !== undefined && flags.start !== undefined && flags.end !== undefined, 'calendar TARGET create --title "..." --start ISO --end ISO [--where "..."] [--notes "..."] [--with "a@b,c@d"]') ?? ['calendar.create', { target, title: flags.title, start: flags.start, end: flags.end, ...(flags.where !== undefined ? { where: flags.where } : {}), ...(flags.notes !== undefined ? { notes: flags.notes } : {}), ...(flags.with !== undefined ? { with: flags.with } : {}), ...why }];
             }
         }
         case 'contacts': {

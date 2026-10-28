@@ -114,6 +114,35 @@ test('calendar.attach is Microsoft-only for now (Google uses Drive links)', asyn
     await assert.rejects(calendar({ fetch: s.fetch }).run('calendar.attach', G, { id: 'g1', attach: 'SGk=' }, ctx()), /Microsoft-only/);
 });
 
+test('calendar.create (Microsoft) sends notes, invitees, and the local timezone', async () => {
+    const calls = [];
+    const fetch = async (url, opts = {}) => {
+        calls.push({ url, method: opts.method || 'GET', prefer: opts.headers?.Prefer, body: (() => { try { return opts.body ? JSON.parse(opts.body) : undefined; } catch { return opts.body; } })() });
+        if (url.includes('login.microsoftonline.com')) return json({ access_token: 'T', expires_in: 3600 });
+        return json({ id: 'm-new' });
+    };
+    const r = await calendar({ fetch }).run('calendar.create', M, { title: 'Point', start: '2026-11-10T16:00:00', end: '2026-11-10T17:00:00', notes: 'ordre du jour', with: 'jerome@example.com, sam@example.com' }, ctx());
+    assert.match(r.text, /Created/);
+    const post = calls.find((c) => c.method === 'POST' && c.url.includes('/me/events'));
+    assert.equal(post.body.body.content, 'ordre du jour', 'notes go in the event body');
+    assert.deepEqual(post.body.attendees.map((a) => a.emailAddress.address), ['jerome@example.com', 'sam@example.com'], 'invitees added');
+    assert.equal(post.body.start.timeZone, 'Europe/Paris', 'created in local time, not UTC');
+    assert.match(post.prefer, /outlook\.timezone="Europe\/Paris"/, 'asks Microsoft to answer in local time');
+});
+
+test('calendar.update (Microsoft) patches notes and invitees', async () => {
+    const calls = [];
+    const fetch = async (url, opts = {}) => {
+        calls.push({ method: opts.method || 'GET', body: (() => { try { return opts.body ? JSON.parse(opts.body) : undefined; } catch { return opts.body; } })() });
+        if (url.includes('login.microsoftonline.com')) return json({ access_token: 'T', expires_in: 3600 });
+        return json({ id: 'm1' });
+    };
+    await calendar({ fetch }).run('calendar.update', M, { id: 'm1', notes: 'maj', with: 'x@example.com' }, ctx());
+    const patch = calls.find((c) => c.method === 'PATCH');
+    assert.equal(patch.body.body.content, 'maj');
+    assert.equal(patch.body.attendees[0].emailAddress.address, 'x@example.com');
+});
+
 test('calendar.detach removes an attachment by name (Microsoft)', async () => {
     const calls = [];
     const fetch = async (url, opts = {}) => {
