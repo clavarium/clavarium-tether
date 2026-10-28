@@ -124,6 +124,9 @@ export const TOOLS = [
     tool('contacts-list', 'The contacts of an address-book target: name, emails, phones.', { target: TARGET }, ['target']),
     tool('contacts-search', 'Contacts whose name or email matches a word, briefly.', { target: TARGET, text: S('a name or part of one to look for') }, ['target', 'text']),
     tool('contacts-read', 'One contact in full by its id.', { target: TARGET, id: { type: 'string' } }, ['target', 'id']),
+    tool('contacts-create', 'Create a contact (Microsoft). A person may approve: say why.', { target: TARGET, name: S('the full name'), email: S('an email address, optional'), phone: S('a phone number, optional'), why: WHY }, ['target']),
+    tool('contacts-update', 'Change a contact — name, email or phone (Microsoft). A person may approve: say why.', { target: TARGET, id: S('the contact id from a list'), name: S('new name, optional'), email: S('new email, optional'), phone: S('new phone, optional'), why: WHY }, ['target', 'id']),
+    tool('contacts-delete', 'Delete a contact (Microsoft). A person may approve: say why.', { target: TARGET, id: S('the contact id from a list'), why: WHY }, ['target', 'id']),
     tool('contacts-attach', "Set a contact's photo (Microsoft). A person may approve: say why.", { target: TARGET, id: S('the contact id from a list'), attach: S('the photo as base64 bytes'), attachName: S('the file name, optional'), why: WHY }, ['target', 'id', 'attach']),
 ];
 /* A tool's arguments as the keeper reads them: [verb, args], or null. */

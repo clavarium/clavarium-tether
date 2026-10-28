@@ -104,6 +104,36 @@ test('contacts.read (Microsoft) returns one contact; unknown provider refused', 
     await assert.rejects(contacts({ fetch: s.fetch }).run('contacts.list', { id: 'x', title: 'X', config: { user: 'u' }, secrets: { refresh: 'r' } }, {}, ctx()), /google or microsoft/);
 });
 
+test('contacts.create / update / delete (Microsoft) hit the right Graph endpoints', async () => {
+    const calls = [];
+    const fetch = async (url, opts = {}) => {
+        calls.push({ url, method: opts.method || 'GET', body: (() => { try { return opts.body ? JSON.parse(opts.body) : undefined; } catch { return opts.body; } })() });
+        if (url.includes('login.microsoftonline.com')) return json({ access_token: 'CON-Tok', expires_in: 3600 });
+        if ((opts.method || 'GET') === 'POST') return json({ id: 'new1' });
+        return new Response(null, { status: 204 });
+    };
+    const c = contacts({ fetch });
+    const made = await c.run('contacts.create', M, { name: 'Alice Martin', email: 'alice@example.com', phone: '+33 1' }, ctx());
+    assert.match(made.text, /Created Alice Martin/);
+    const post = calls.find((x) => x.method === 'POST' && x.url.endsWith('/me/contacts'));
+    assert.equal(post.body.displayName, 'Alice Martin');
+    assert.equal(post.body.givenName, 'Alice');
+    assert.equal(post.body.surname, 'Martin');
+    assert.equal(post.body.emailAddresses[0].address, 'alice@example.com');
+    await c.run('contacts.update', M, { id: 'm1', phone: '+33 2' }, ctx());
+    const patch = calls.find((x) => x.method === 'PATCH' && x.url.includes('/me/contacts/m1'));
+    assert.equal(patch.body.mobilePhone, '+33 2');
+    assert.equal(patch.body.displayName, undefined, 'only the given field is sent');
+    const del = await c.run('contacts.delete', M, { id: 'm1' }, ctx());
+    assert.match(del.text, /Deleted the contact/);
+    assert.ok(calls.some((x) => x.method === 'DELETE' && x.url.includes('/me/contacts/m1')), 'DELETE to the contact');
+});
+
+test('contacts write is Microsoft-only for now', async () => {
+    const s = server();
+    await assert.rejects(contacts({ fetch: s.fetch }).run('contacts.create', G, { name: 'X' }, ctx()), /Microsoft-only/);
+});
+
 test('contacts.attach (Microsoft) PUTs the photo bytes to the contact', async () => {
     const s = server();
     const r = await contacts({ fetch: s.fetch }).run('contacts.attach', M, { id: 'm1', attach: Buffer.from('img').toString('base64') }, ctx());

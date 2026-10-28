@@ -27,6 +27,14 @@ const decodeXml = (s) => s.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/
 
 /* Microsoft returns JSON: normalise one contact to the same shape. */
 const fromMs = (c) => ({ name: c.displayName || [c.givenName, c.surname].filter(Boolean).join(' '), emails: (c.emailAddresses ?? []).map((e) => e.address).filter(Boolean), tels: [c.mobilePhone, ...(c.businessPhones ?? []), ...(c.homePhones ?? [])].filter(Boolean) });
+/* A Microsoft contact body from the simple fields an agent gives (only those set). */
+const msBody = (a) => {
+    const b = {};
+    if (a.name !== undefined) { const p = String(a.name).trim().split(/\s+/); b.displayName = String(a.name); b.givenName = p[0] || ''; b.surname = p.slice(1).join(' '); }
+    if (a.email !== undefined) b.emailAddresses = String(a.email).trim() ? [{ address: String(a.email).trim(), name: String(a.name || a.email) }] : [];
+    if (a.phone !== undefined) b.mobilePhone = String(a.phone);
+    return b;
+};
 
 export function contacts({ fetch: fetchImpl = globalThis.fetch } = {}) {
     const tokens = new Map();
@@ -148,6 +156,36 @@ export function contacts({ fetch: fetchImpl = globalThis.fetch } = {}) {
             if (!res.ok) no(`${target.title}: that contact could not be read (${res.status})`);
             const text = JSON.stringify(await res.json(), null, 1).slice(0, 64 * 1024);
             return { text, size: Buffer.byteLength(text) };
+        },
+        /* Create a contact (Microsoft). Google means writing a vCard over CardDAV --
+           on the parity card. */
+        async 'contacts.create'(target, a, ctx) {
+            if (providerOf(target) !== 'microsoft') no(`${target.title}: writing contacts is Microsoft-only for now`);
+            if (!a.name && !a.email) no('a contact needs at least a name or an email');
+            const res = await req(target, ctx, 'POST', 'https://graph.microsoft.com/v1.0/me/contacts', { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(msBody(a)) });
+            if (!res.ok) no(`${target.title}: the contact was not created (${res.status})`);
+            const made = await res.json().catch(() => ({}));
+            return { text: `Created ${a.name || a.email}. Its id is ${made.id ?? '(unknown)'}.`, size: 0 };
+        },
+        /* Change a contact's name, email or phone (Microsoft), only the fields given. */
+        async 'contacts.update'(target, a, ctx) {
+            if (providerOf(target) !== 'microsoft') no(`${target.title}: writing contacts is Microsoft-only for now`);
+            const id = String(a.id ?? '').trim(); if (!id) no('update needs the contact id');
+            const body = msBody(a);
+            if (!Object.keys(body).length) no('update needs at least one of: name, email, phone');
+            const res = await req(target, ctx, 'PATCH', `https://graph.microsoft.com/v1.0/me/contacts/${encodeURIComponent(id)}`, { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+            if (res.status === 404) no('no such contact');
+            if (!res.ok) no(`${target.title}: the contact was not changed (${res.status})`);
+            return { text: 'Updated the contact.', size: 0 };
+        },
+        /* Delete a contact (Microsoft). */
+        async 'contacts.delete'(target, a, ctx) {
+            if (providerOf(target) !== 'microsoft') no(`${target.title}: writing contacts is Microsoft-only for now`);
+            const id = String(a.id ?? '').trim(); if (!id) no('delete needs the contact id');
+            const res = await req(target, ctx, 'DELETE', `https://graph.microsoft.com/v1.0/me/contacts/${encodeURIComponent(id)}`);
+            if (res.status === 404) no('no such contact');
+            if (!res.ok) no(`${target.title}: the contact was not deleted (${res.status})`);
+            return { text: 'Deleted the contact.', size: 0 };
         },
         /* Set a contact's photo. An act. Microsoft takes the image bytes (Graph);
            a Google photo means editing the vCard (coming with contacts writing) --

@@ -79,6 +79,9 @@ export const VERBS = Object.freeze({
     'contacts.list': { reads: true, kinds: ['contacts'], needs: [] },
     'contacts.search': { reads: true, kinds: ['contacts'], needs: ['text'] },
     'contacts.read': { reads: true, kinds: ['contacts'], needs: ['id'] },
+    'contacts.create': { reads: false, kinds: ['contacts'], needs: [] },
+    'contacts.update': { reads: false, kinds: ['contacts'], needs: ['id'] },
+    'contacts.delete': { reads: false, kinds: ['contacts'], needs: ['id'] },
     'contacts.attach': { reads: false, kinds: ['contacts'], needs: ['id', 'attach'] },
 });
 
@@ -172,6 +175,9 @@ export function check(verb, a = {}) {
         case 'contacts.attach': str('id', 1024); str('attach', TEXT_MAX, true); str('attachName', 200); break;
         case 'contacts.search': str('text', 200); break;
         case 'contacts.read': str('id', 1024); break;
+        case 'contacts.create': str('name', 200); str('email', 200); str('phone', 60); break;
+        case 'contacts.update': str('id', 1024); str('name', 200); str('email', 200); str('phone', 60); break;
+        case 'contacts.delete': str('id', 1024); break;
         default: for (const k of v.needs) str(k, COMMAND_MAX, true);
     }
     for (const k of v.needs) if (out[k] === undefined || out[k] === '') no(`${verb} needs ${k}`);
@@ -217,6 +223,9 @@ export function detail(verb, a = {}) {
         case 'calendar.respond': return `${a.answer} invitation ${a.id}`;
         case 'calendar.update': return `event ${a.id}${a.title ? `: ${a.title}` : ''}`;
         case 'contacts.read': return a.id;
+        case 'contacts.create': return `add ${a.name || a.email || 'a contact'}`;
+        case 'contacts.update': return `contact ${a.id}`;
+        case 'contacts.delete': return `delete contact ${a.id}`;
         case 'contacts.attach': return `a photo → contact ${a.id}`;
         default: return '';
     }

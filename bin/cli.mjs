@@ -53,6 +53,9 @@ export const HELP = `${NAME}: act on the targets you were given (machines, folde
   ${NAME} contacts TARGET list                          name, emails, phones
   ${NAME} contacts TARGET search "name"                 contacts matching a name
   ${NAME} contacts TARGET read ID
+  ${NAME} contacts TARGET create --name "..." [--email "..."] [--phone "..."]   (Microsoft)
+  ${NAME} contacts TARGET update ID [--name "..."] [--email "..."] [--phone "..."]   (Microsoft)
+  ${NAME} contacts TARGET delete ID                     (Microsoft)
   ${NAME} contacts TARGET attach CONTACT_ID FILE           set a contact's photo (Microsoft)
   ${NAME} serve [--store DIR] [--port N] [--side FOLDER=NAME] [--local FOLDER[=TITLE]]
                                        keep targets yourself, with their page (no application)
@@ -67,7 +70,7 @@ const FILE_VERBS = ['list', 'read', 'search', 'write', 'move', 'delete'];
 const BROWSER_VERBS = ['tabs', 'open', 'shot', 'html', 'console', 'eval', 'click', 'type', 'key', 'scroll', 'drag'];
 const MAIL_VERBS = ['list', 'read', 'source', 'attachment', 'search', 'move', 'flag', 'delete', 'send'];
 const CAL_VERBS = ['list', 'read', 'create', 'update', 'attach', 'detach', 'delete', 'respond'];
-const CONTACT_VERBS = ['list', 'search', 'read', 'attach'];
+const CONTACT_VERBS = ['list', 'search', 'read', 'create', 'update', 'delete', 'attach'];
 const baseName = (p) => String(p).split('/').pop();
 const readB64 = (p) => { try { return readFileSync(p).toString('base64'); } catch { return null; } };
 
@@ -169,6 +172,9 @@ export function read(argv) {
             if (!target || !CONTACT_VERBS.includes(what)) return { refused: `${NAME} contacts TARGET ${CONTACT_VERBS.join('|')} ...` };
             if (what === 'list') return ['contacts.list', { target }];
             if (what === 'search') return need(p.length, 'contacts TARGET search "name"') ?? ['contacts.search', { target, text: p.join(' ') }];
+            if (what === 'create') return need(flags.name !== undefined || flags.email !== undefined, 'contacts TARGET create --name "..." [--email "..."] [--phone "..."]') ?? ['contacts.create', { target, ...(flags.name !== undefined ? { name: flags.name } : {}), ...(flags.email !== undefined ? { email: flags.email } : {}), ...(flags.phone !== undefined ? { phone: flags.phone } : {}), ...why }];
+            if (what === 'update') return need(p[0], 'contacts TARGET update ID [--name "..."] [--email "..."] [--phone "..."]') ?? ['contacts.update', { target, id: p[0], ...(flags.name !== undefined ? { name: flags.name } : {}), ...(flags.email !== undefined ? { email: flags.email } : {}), ...(flags.phone !== undefined ? { phone: flags.phone } : {}), ...why }];
+            if (what === 'delete') return need(p[0], 'contacts TARGET delete ID') ?? ['contacts.delete', { target, id: p[0], ...why }];
             if (what === 'attach') {
                 if (p.length < 2) return { refused: 'contacts TARGET attach CONTACT_ID FILE (a photo)' };
                 const b = readB64(p[1]); if (b === null) return { refused: `cannot read the file to attach: ${p[1]}` };
