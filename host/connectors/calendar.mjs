@@ -185,6 +185,43 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
             if (!res.ok) no(`${target.title}: the file was not attached (${res.status} ${await bodyError(res)})`.trim());
             return { text: `Attached ${a.attachName || 'the file'} to the event.`, size: 0 };
         },
+        /* Remove a file from an event, by its name or 1-based number. An act.
+           Microsoft only, like attaching (Graph deletes the attachment by id). */
+        async 'calendar.detach'(target, a, ctx) {
+            const provider = providerOf(target);
+            if (provider !== 'microsoft') no(`${target.title}: event attachments are Microsoft-only for now`);
+            if (!a.id) no('detach needs the event id (from the list)');
+            const which = String(a.which ?? '').trim();
+            if (!which) no('detach needs which attachment (its name or number)');
+            const ev = encodeURIComponent(String(a.id));
+            const listed = await call(target, ctx, 'GET', `https://graph.microsoft.com/v1.0/me/events/${ev}/attachments?$select=id,name`);
+            if (!listed.ok) no(`${target.title}: the event's attachments could not be read (${listed.status})`);
+            const atts = (await listed.json()).value ?? [];
+            if (!atts.length) no('this event has no attachment');
+            const n = /^\d+$/.test(which) ? Number(which) - 1 : atts.findIndex((x) => (x.name || '').toLowerCase().includes(which.toLowerCase()));
+            const att = atts[n];
+            if (!att) no(`no attachment "${which}" — this event has: ${atts.map((x) => x.name).join(', ')}`);
+            const res = await call(target, ctx, 'DELETE', `https://graph.microsoft.com/v1.0/me/events/${ev}/attachments/${encodeURIComponent(att.id)}`);
+            if (!res.ok) no(`${target.title}: the attachment was not removed (${res.status} ${await bodyError(res)})`.trim());
+            return { text: `Removed ${att.name} from the event.`, size: 0 };
+        },
+        /* Delete an event. An act. Microsoft over Graph; Google over CalDAV (the id
+           is the event's CalDAV href, as read returns it). */
+        async 'calendar.delete'(target, a, ctx) {
+            const provider = providerOf(target);
+            if (!a.id) no('delete needs the event id (from the list)');
+            if (provider === 'google') {
+                const url = /^https?:\/\//.test(String(a.id)) ? String(a.id) : new URL(String(a.id), CALDAV(userOf(target))).href;
+                const res = await dav(target, ctx, 'DELETE', url, {});
+                if (res.status === 404) no('no such event');
+                if (!res.ok) no(`${target.title}: the event was not deleted (${res.status})`);
+                return { text: 'Deleted the event.', size: 0 };
+            }
+            const res = await call(target, ctx, 'DELETE', API.microsoft.event(String(a.id)));
+            if (res.status === 404) no('no such event');
+            if (!res.ok) no(`${target.title}: the event was not deleted (${res.status} ${await bodyError(res)})`.trim());
+            return { text: 'Deleted the event.', size: 0 };
+        },
     };
 
     return {

@@ -114,6 +114,31 @@ test('calendar.attach is Microsoft-only for now (Google uses Drive links)', asyn
     await assert.rejects(calendar({ fetch: s.fetch }).run('calendar.attach', G, { id: 'g1', attach: 'SGk=' }, ctx()), /Microsoft-only/);
 });
 
+test('calendar.detach removes an attachment by name (Microsoft)', async () => {
+    const calls = [];
+    const fetch = async (url, opts = {}) => {
+        calls.push({ url, method: opts.method || 'GET' });
+        if (url.includes('login.microsoftonline.com')) return json({ access_token: 'T', expires_in: 3600 });
+        if (url.includes('/attachments') && (opts.method || 'GET') === 'GET') return json({ value: [{ id: 'at1', name: 'rapport.pdf' }] });
+        return new Response(null, { status: 204 });
+    };
+    const r = await calendar({ fetch }).run('calendar.detach', M, { id: 'm1', which: 'rapport' }, ctx());
+    assert.match(r.text, /Removed rapport\.pdf/);
+    assert.ok(calls.some((c) => c.method === 'DELETE' && c.url.includes('/me/events/m1/attachments/at1')), 'DELETEs the right attachment');
+});
+
+test('calendar.delete removes an event (Microsoft)', async () => {
+    const calls = [];
+    const fetch = async (url, opts = {}) => {
+        calls.push({ url, method: opts.method || 'GET' });
+        if (url.includes('login.microsoftonline.com')) return json({ access_token: 'T', expires_in: 3600 });
+        return new Response(null, { status: 204 });
+    };
+    const r = await calendar({ fetch }).run('calendar.delete', M, { id: 'EVID' }, ctx());
+    assert.match(r.text, /Deleted the event/);
+    assert.ok(calls.some((c) => c.method === 'DELETE' && c.url.includes('/me/events/EVID')), 'DELETEs the event');
+});
+
 test('calendar refuses a target with no provider, and create without times', async () => {
     const s = server();
     const c = calendar({ fetch: s.fetch });
