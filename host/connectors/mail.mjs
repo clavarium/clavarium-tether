@@ -371,6 +371,18 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
                 return { text: `Marked #${uid} ${String(a.flag).toLowerCase().trim()}.`, size: 0 };
             });
         },
+        /* Delete a message. An act. Over IMAP, mark \\Deleted then expunge that one uid;
+           over Graph, DELETE moves it to Deleted Items (a soft delete). */
+        async 'mail.delete'(target, a, ctx) {
+            if (isGraph(target)) return gmail.remove(target, a, ctx);
+            const uid = numUid(a.uid);
+            return withImap(target, ctx, async (imap) => {
+                await imap.command(`SELECT ${quoted(boxOf(target, a.mailbox))}`, 'that mailbox could not be opened');
+                await imap.command(`UID STORE ${uid} +FLAGS (\\Deleted)`, 'that message could not be deleted');
+                await imap.command(`UID EXPUNGE ${uid}`, 'that message could not be removed');
+                return { text: `Deleted #${uid}.`, size: 0 };
+            });
+        },
         /* Send a message. A provider signs in to SMTP with XOAUTH2; a classic box with
            LOGIN on its SMTP server. The message is built from the fields -- nothing an
            agent wrote becomes a header or a command. */

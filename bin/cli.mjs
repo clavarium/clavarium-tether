@@ -40,6 +40,7 @@ export const HELP = `${NAME}: act on the targets you were given (machines, folde
   ${NAME} mail TARGET search "text" [--mailbox NAME]
   ${NAME} mail TARGET move UID MAILBOX                 move a message to a folder
   ${NAME} mail TARGET flag UID read|unread|flagged|unflagged
+  ${NAME} mail TARGET delete UID                       delete a message (to Trash / Deleted Items)
   ${NAME} mail TARGET send --to "a@b,c@d" --subject "..." --body "..." [--cc "..."] [--attach FILE]
   ${NAME} calendar TARGET list [--from DATE] [--to DATE]   events in a window (default: from now on)
   ${NAME} calendar TARGET read ID
@@ -64,7 +65,7 @@ ${NAME} ${VERSION}`;
 
 const FILE_VERBS = ['list', 'read', 'search', 'write', 'move', 'delete'];
 const BROWSER_VERBS = ['tabs', 'open', 'shot', 'html', 'console', 'eval', 'click', 'type', 'key', 'scroll', 'drag'];
-const MAIL_VERBS = ['list', 'read', 'source', 'attachment', 'search', 'move', 'flag', 'send'];
+const MAIL_VERBS = ['list', 'read', 'source', 'attachment', 'search', 'move', 'flag', 'delete', 'send'];
 const CAL_VERBS = ['list', 'read', 'create', 'update', 'attach', 'detach', 'delete', 'respond'];
 const CONTACT_VERBS = ['list', 'search', 'read', 'attach'];
 const baseName = (p) => String(p).split('/').pop();
@@ -135,6 +136,7 @@ export function read(argv) {
                 case 'search': return need(p.length, 'mail TARGET search "text" [--mailbox NAME]') ?? ['mail.search', { target, text: p.join(' '), ...box }];
                 case 'move': return need(p.length === 2, 'mail TARGET move UID MAILBOX') ?? ['mail.move', { target, uid: p[0], mailbox: p[1], ...why }];
                 case 'flag': return need(p.length === 2, 'mail TARGET flag UID FLAG') ?? ['mail.flag', { target, uid: p[0], flag: p[1], ...why }];
+                case 'delete': return need(p[0], 'mail TARGET delete UID') ?? ['mail.delete', { target, uid: p[0], ...box, ...why }];
                 default: {
                     const bad = need(flags.to !== undefined && flags.subject !== undefined && flags.body !== undefined, 'mail TARGET send --to "a@b" --subject "..." --body "..." [--cc "..."] [--attach FILE]');
                     if (bad) return bad;

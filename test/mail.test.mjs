@@ -279,9 +279,18 @@ test('mail.move opens read-write and UID MOVEs; mail.flag UID STOREs the system 
     await assert.rejects(c.run('mail.flag', TARGET, { uid: '5', flag: 'bogus' }, ctx()), /read, unread, flagged/);
 });
 
+test('mail.delete marks the message \\Deleted and expunges just that uid (IMAP)', async () => {
+    const s = imapServer(STORE);
+    const r = await mail({ fetch: okToken, connect: s.connect }).run('mail.delete', TARGET, { uid: '6' }, ctx());
+    assert.match(r.text, /Deleted #6/);
+    assert.ok(s.commands.some((x) => /^SELECT/.test(x)), 'opened read-write');
+    assert.ok(s.commands.some((x) => /^UID STORE 6 \+FLAGS \(\\Deleted\)/.test(x)), 'flagged it deleted');
+    assert.ok(s.commands.some((x) => /^UID EXPUNGE 6/.test(x)), 'expunged that one uid');
+});
+
 test('mail refuses a target with no provider and no host, and an unknown verb', async () => {
     const s = imapServer(STORE);
     const c = mail({ fetch: okToken, connect: s.connect });
     await assert.rejects(c.run('mail.list', { id: 'x', title: 'X', config: { user: 'u' }, secrets: { password: 'p' } }, {}, ctx()), /mail server \(host\), or a google\/microsoft/);
-    await assert.rejects(async () => c.run('mail.delete', TARGET, {}, ctx()), /not done by this connector/);
+    await assert.rejects(async () => c.run('mail.nope', TARGET, {}, ctx()), /not done by this connector/);
 });

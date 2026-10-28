@@ -123,6 +123,15 @@ test('move and flag hit the right Graph endpoints (acts)', async () => {
     assert.deepEqual(calls[1].body, { isRead: true });
 });
 
+test('remove soft-deletes a message via Graph DELETE', async () => {
+    const { fetch, calls } = fakeGraph({ 'DELETE /me/messages/X': { _status: 204 } });
+    const g = graphMail({ fetch, token: mint });
+    const r = await g.remove(target, { uid: 'X' }, ctx);
+    assert.match(r.text, /Deleted X/);
+    assert.equal(calls[0].method, 'DELETE');
+    assert.match(calls[0].path, /\/me\/messages\/X/);
+});
+
 test('a 401 says to reconnect (scope may be missing)', async () => {
     const fetch = async () => ({ ok: false, status: 401, json: async () => ({}) });
     const g = graphMail({ fetch, token: mint });

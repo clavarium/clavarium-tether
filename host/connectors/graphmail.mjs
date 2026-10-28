@@ -131,6 +131,13 @@ export function graphMail({ fetch: fetchImpl = globalThis.fetch, token }) {
             const text = `${att.name} (${att.contentType || 'application/octet-stream'}, ${Math.round((att.size || 0) / 1024)} KB)\n\n${att.contentBytes}`;
             return { text, size: Buffer.byteLength(text) };
         },
+        /* Graph DELETE moves the message to Deleted Items (a soft delete). */
+        async remove(target, a, ctx) {
+            const id = String(a.uid ?? '').trim();
+            if (!id) no('delete needs the message id');
+            await call(target, ctx, 'DELETE', `/me/messages/${encodeURIComponent(id)}`);
+            return { text: `Deleted ${id}.`, size: 0 };
+        },
         async move(target, a, ctx) {
             const id = String(a.uid ?? '').trim();
             if (!id) no('move needs the message id');

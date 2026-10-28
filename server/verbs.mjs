@@ -66,6 +66,7 @@ export const VERBS = Object.freeze({
     'mail.search': { reads: true, kinds: ['mail'], needs: ['text'] },
     'mail.move': { reads: false, kinds: ['mail'], needs: ['uid', 'mailbox'] },
     'mail.flag': { reads: false, kinds: ['mail'], needs: ['uid', 'flag'] },
+    'mail.delete': { reads: false, kinds: ['mail'], needs: ['uid'] },
     'mail.send': { reads: false, kinds: ['mail'], needs: ['to', 'subject', 'body'] },
     'calendar.list': { reads: true, kinds: ['calendar'], needs: [] },
     'calendar.read': { reads: true, kinds: ['calendar'], needs: ['id'] },
@@ -158,6 +159,7 @@ export function check(verb, a = {}) {
         case 'mail.search': str('text', 400); str('mailbox', 200); break;
         case 'mail.move': str('uid', 1024); str('mailbox', 200); break;
         case 'mail.flag': str('uid', 1024); str('flag', 40); break;
+        case 'mail.delete': str('uid', 1024); str('mailbox', 200); break;
         case 'mail.send': str('to', 1000); str('subject', 400); str('body', TEXT_MAX, true); str('cc', 1000); str('attach', TEXT_MAX, true); str('attachName', 200); break;
         case 'calendar.list': str('from', 64); str('to', 64); break;
         case 'calendar.read': str('id', 1024); break;
@@ -205,6 +207,7 @@ export function detail(verb, a = {}) {
         case 'mail.search': return a.text;
         case 'mail.move': return `#${a.uid} → ${a.mailbox}`;
         case 'mail.flag': return `#${a.uid} ${a.flag}`;
+        case 'mail.delete': return `delete message #${a.uid}`;
         case 'mail.send': return `to ${a.to}: ${a.subject ?? ''}${a.attach ? ` + ${a.attachName || 'a file'}` : ''}`;
         case 'calendar.read': return a.id;
         case 'calendar.create': return `${a.title} (${a.start})`;
