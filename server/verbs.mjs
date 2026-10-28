@@ -73,6 +73,7 @@ export const VERBS = Object.freeze({
     'calendar.attach': { reads: false, kinds: ['calendar'], needs: ['id', 'attach'] },
     'calendar.detach': { reads: false, kinds: ['calendar'], needs: ['id', 'which'] },
     'calendar.delete': { reads: false, kinds: ['calendar'], needs: ['id'] },
+    'calendar.respond': { reads: false, kinds: ['calendar'], needs: ['id', 'answer'] },
     'contacts.list': { reads: true, kinds: ['contacts'], needs: [] },
     'contacts.search': { reads: true, kinds: ['contacts'], needs: ['text'] },
     'contacts.read': { reads: true, kinds: ['contacts'], needs: ['id'] },
@@ -163,6 +164,7 @@ export function check(verb, a = {}) {
         case 'calendar.attach': str('id', 1024); str('attach', TEXT_MAX, true); str('attachName', 200); break;
         case 'calendar.detach': str('id', 1024); str('which', 400); break;
         case 'calendar.delete': str('id', 1024); break;
+        case 'calendar.respond': str('id', 1024); str('answer', 40); str('comment', 400); break;
         case 'contacts.attach': str('id', 1024); str('attach', TEXT_MAX, true); str('attachName', 200); break;
         case 'contacts.search': str('text', 200); break;
         case 'contacts.read': str('id', 1024); break;
@@ -207,6 +209,7 @@ export function detail(verb, a = {}) {
         case 'calendar.attach': return `${a.attachName || 'a file'} → event ${a.id}`;
         case 'calendar.detach': return `remove ${a.which} from event ${a.id}`;
         case 'calendar.delete': return `delete event ${a.id}`;
+        case 'calendar.respond': return `${a.answer} invitation ${a.id}`;
         case 'contacts.read': return a.id;
         case 'contacts.attach': return `a photo → contact ${a.id}`;
         default: return '';

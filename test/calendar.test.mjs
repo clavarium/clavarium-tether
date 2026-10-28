@@ -127,6 +127,30 @@ test('calendar.detach removes an attachment by name (Microsoft)', async () => {
     assert.ok(calls.some((c) => c.method === 'DELETE' && c.url.includes('/me/events/m1/attachments/at1')), 'DELETEs the right attachment');
 });
 
+test('calendar.respond accepts/declines an invitation via the right Graph action (Microsoft)', async () => {
+    const calls = [];
+    const fetch = async (url, opts = {}) => {
+        calls.push({ url, method: opts.method || 'GET', body: opts.body });
+        if (url.includes('login.microsoftonline.com')) return json({ access_token: 'T', expires_in: 3600 });
+        return new Response(null, { status: 202 });
+    };
+    const r = await calendar({ fetch }).run('calendar.respond', M, { id: 'm1', answer: 'decline', comment: 'busy' }, ctx());
+    assert.match(r.text, /Declined/);
+    const post = calls.find((c) => c.method === 'POST' && c.url.includes('/me/events/m1/decline'));
+    assert.ok(post, 'POST to the decline action');
+    assert.equal(JSON.parse(post.body).sendResponse, true, 'sends the response to the organiser');
+    // "tentative" maps to Graph's tentativelyAccept
+    const s2 = [];
+    await calendar({ fetch: async (u, o = {}) => { s2.push(u); return u.includes('login') ? json({ access_token: 'T', expires_in: 3600 }) : new Response(null, { status: 202 }); } }).run('calendar.respond', M, { id: 'm1', answer: 'tentative' }, ctx());
+    assert.ok(s2.some((u) => u.includes('/tentativelyAccept')), 'tentative -> tentativelyAccept');
+});
+
+test('calendar.respond is Microsoft-only, and rejects an unknown answer', async () => {
+    const s = server();
+    await assert.rejects(calendar({ fetch: s.fetch }).run('calendar.respond', G, { id: 'g1', answer: 'accept' }, ctx()), /Microsoft-only/);
+    await assert.rejects(calendar({ fetch: s.fetch }).run('calendar.respond', M, { id: 'm1', answer: 'whatever' }, ctx()), /accept, decline or tentative/);
+});
+
 test('calendar.delete removes an event (Microsoft)', async () => {
     const calls = [];
     const fetch = async (url, opts = {}) => {

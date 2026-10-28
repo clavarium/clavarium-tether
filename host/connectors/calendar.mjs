@@ -222,6 +222,20 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
             if (!res.ok) no(`${target.title}: the event was not deleted (${res.status} ${await bodyError(res)})`.trim());
             return { text: 'Deleted the event.', size: 0 };
         },
+        /* Respond to a meeting invitation: accept, decline or tentative. An act.
+           Microsoft over Graph; a Google RSVP (CalDAV PARTSTAT) comes with parity. */
+        async 'calendar.respond'(target, a, ctx) {
+            const provider = providerOf(target);
+            if (provider !== 'microsoft') no(`${target.title}: answering an invitation is Microsoft-only for now`);
+            if (!a.id) no('respond needs the event id (from the list)');
+            const map = { accept: 'accept', yes: 'accept', decline: 'decline', no: 'decline', refuse: 'decline', tentative: 'tentativelyAccept', maybe: 'tentativelyAccept' };
+            const action = map[String(a.answer ?? '').toLowerCase().trim()];
+            if (!action) no('answer is accept, decline or tentative');
+            const body = { sendResponse: true, ...(a.comment ? { comment: String(a.comment) } : {}) };
+            const res = await call(target, ctx, 'POST', `https://graph.microsoft.com/v1.0/me/events/${encodeURIComponent(String(a.id))}/${action}`, body);
+            if (!res.ok) no(`${target.title}: the response was not sent (${res.status} ${await bodyError(res)})`.trim());
+            return { text: `${action === 'accept' ? 'Accepted' : action === 'decline' ? 'Declined' : 'Tentatively accepted'} the invitation.`, size: 0 };
+        },
     };
 
     return {
