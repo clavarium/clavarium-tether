@@ -41,8 +41,10 @@ export function graphMail({ fetch: fetchImpl = globalThis.fetch, token }) {
         });
         if (r.status === 401 || r.status === 403) no(`${target.title}: not authorized -- reconnect the account (the Microsoft mail scope may be missing)`);
         if (!r.ok) { let m = ''; try { m = (await r.json())?.error?.message ?? ''; } catch { /* no json */ } no(`${target.title}: ${m || `the mail request failed (${r.status})`}`); }
-        if (r.status === 204) return null;
-        return r.json();
+        /* Some acts answer with no body (sendMail is 202, a delete is 204): parse the
+           body only if there is one, so a successful send is not a JSON-parse error. */
+        const text = await r.text();
+        return text ? JSON.parse(text) : null;
     }
 
     const brief = (m) => `#${m.id}\n  ${m.receivedDateTime ?? ''}\n  From: ${addrsOf([m.from])}\n  Subject: ${m.subject ?? ''}`;

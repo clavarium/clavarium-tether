@@ -16,7 +16,8 @@ function fakeGraph(routes) {
         const hit = routes[`${opts.method} ${path.split('?')[0]}`];
         if (hit === undefined) return { ok: false, status: 404, json: async () => ({ error: { message: 'not found' } }) };
         const status = hit._status ?? 200;
-        return { ok: status < 400, status, json: async () => hit };
+        const empty = hit._status === 202 || hit._status === 204;  /* these answer with no body */
+        return { ok: status < 400, status, json: async () => hit, text: async () => (empty ? '' : JSON.stringify(hit)) };
     };
     return { fetch, calls };
 }
@@ -83,6 +84,14 @@ test('send posts a well-formed Graph message from the fields', async () => {
     assert.deepEqual(sent.body.message.toRecipients.map((r) => r.emailAddress.address), ['c@example.com', 'e@example.org']);
     assert.equal(sent.body.message.body.content, 'text');
     assert.equal(sent.body.message.attachments, undefined, 'no attachments key without a file');
+});
+
+test('a 202 with an empty body (sendMail) is a success, not a JSON-parse crash', async () => {
+    // Real fetch throws "Unexpected end of JSON input" on .json() of an empty 202.
+    const fetch = async () => ({ ok: true, status: 202, text: async () => '', json: async () => { throw new SyntaxError('Unexpected end of JSON input'); } });
+    const g = graphMail({ fetch, token: mint });
+    const r = await g.send(target, { to: 'x@example.com', subject: 'S', body: 'b' }, ctx);
+    assert.match(r.text, /[Ss]ent/, 'the send reports success, the empty body does not crash it');
 });
 
 test('send joins a file as a Graph fileAttachment when given one', async () => {
