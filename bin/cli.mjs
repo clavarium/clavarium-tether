@@ -64,7 +64,8 @@ const CONTACT_VERBS = ['list', 'search', 'read', 'attach'];
 const baseName = (p) => String(p).split('/').pop();
 const readB64 = (p) => { try { return readFileSync(p).toString('base64'); } catch { return null; } };
 
-/* A command line, read: [verb, args] or { refused }. A --from file is read by run(). */
+/* A command line, read: [verb, args] or { refused }. For `files write`, a --from
+   local file is read by run(); other verbs keep --from as a plain value. */
 export function read(argv) {
     const flags = {}; const words = [];
     for (let i = 0; i < argv.length; i++) {
@@ -175,7 +176,10 @@ export async function run(argv, { env = process.env, cwd = process.cwd(), wait, 
     if (args[0] === '--version') return { code: 0, out: `${VERSION}\n`, err: '' };
     const what = read(args);
     if (what.refused) return { code: 64, out: '', err: `${what.refused}\n` };
-    if (what[1].from !== undefined) {
+    /* Only `files write --from LOCAL_FILE` reads a local file. Other verbs use `from`
+       for their own thing (a calendar window's start, a move's source, a drag's point),
+       so it must not be swallowed as a filename. */
+    if (what[0] === 'files.write' && what[1].from !== undefined) {
         try { what[1].text = readFileSync(what[1].from, 'utf8'); } catch (e) { return { code: 64, out: '', err: `cannot read ${what[1].from}: ${e.code ?? e.message}\n` }; }
         delete what[1].from;
     }

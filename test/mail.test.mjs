@@ -98,6 +98,23 @@ test('mail.list rejects a date it cannot read', async () => {
     await assert.rejects(() => mail({ fetch: okToken, connect: s.connect }).run('mail.list', TARGET, { since: 'whenever' }, ctx()), /since must be a date/);
 });
 
+test('renderMessage surfaces a calendar invitation (title and date) from a text/calendar part', () => {
+    const ics = 'BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nSUMMARY:PG X Emilie\r\nDTSTART:20261110T160000Z\r\nDTEND:20261110T170000Z\r\nLOCATION:Microsoft Teams\r\nEND:VEVENT\r\nEND:VCALENDAR';
+    const raw = ['Subject: Invitation', 'Content-Type: multipart/mixed; boundary="b"', '', '--b', 'Content-Type: text/plain', '', 'Join on Teams: https://teams.example', '--b', 'Content-Type: text/calendar; method=REQUEST', '', ics, '--b--', ''].join('\r\n');
+    const m = renderMessage(raw);
+    assert.match(m, /--- Invitation ---/, 'an invitation section');
+    assert.match(m, /PG X Emilie/, 'its title');
+    assert.match(m, /2026-11-10 16:00/, 'the real start date, not just the Teams link');
+    assert.match(m, /Microsoft Teams/, 'where');
+});
+
+test('mail.list says when more than the cap matched, never truncating in silence', async () => {
+    const big = Array.from({ length: 40 }, (_, i) => ({ uid: i + 1, from: `p${i} <p${i}@example.com>`, subject: `m${i}`, body: 'x\r\n' }));
+    const s = imapServer(big);
+    const r = await mail({ fetch: okToken, connect: s.connect }).run('mail.list', TARGET, {}, ctx());
+    assert.match(r.text, /Showing the 30 most recent of 40/, 'the cap is announced with the real total');
+});
+
 test('mail.read returns a message in full by its uid', async () => {
     const s = imapServer(STORE);
     const r = await mail({ fetch: okToken, connect: s.connect }).run('mail.read', TARGET, { uid: '6' }, ctx());

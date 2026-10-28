@@ -54,6 +54,26 @@ test('read returns decoded body (html stripped) and lists attachments by name, n
     assert.match(r.text, /photo\.png \(image\/png, 2 KB\)/);
 });
 
+test('read surfaces a meeting invitation date for an event message', async () => {
+    const { fetch } = fakeGraph({
+        'GET /me/messages/INV': { id: 'INV', from: { emailAddress: { address: 'org@example.com' } }, subject: 'PG X Emilie', body: { contentType: 'text', content: 'Join on Teams' }, hasAttachments: false },
+        'GET /me/messages/INV/microsoft.graph.eventMessage/event': { subject: 'PG X Emilie', start: { dateTime: '2026-11-10T16:00:00.0000000', timeZone: 'UTC' }, end: { dateTime: '2026-11-10T17:00:00', timeZone: 'UTC' }, location: { displayName: 'Microsoft Teams' } },
+    });
+    const g = graphMail({ fetch, token: mint });
+    const r = await g.read(target, { uid: 'INV' }, ctx);
+    assert.match(r.text, /--- Invitation ---/);
+    assert.match(r.text, /2026-11-10 16:00/, 'the event date, not just the body');
+    assert.match(r.text, /Microsoft Teams/);
+});
+
+test('a plain message has no invitation section (the event cast fails and is ignored)', async () => {
+    const { fetch } = fakeGraph({ 'GET /me/messages/N': { id: 'N', from: { emailAddress: { address: 'a@example.com' } }, subject: 'Hi', body: { contentType: 'text', content: 'hello there' }, hasAttachments: false } });
+    const g = graphMail({ fetch, token: mint });
+    const r = await g.read(target, { uid: 'N' }, ctx);
+    assert.doesNotMatch(r.text, /Invitation/);
+    assert.match(r.text, /hello there/);
+});
+
 test('send posts a well-formed Graph message from the fields', async () => {
     const { fetch, calls } = fakeGraph({ 'POST /me/sendMail': { _status: 202 } });
     const g = graphMail({ fetch, token: mint });

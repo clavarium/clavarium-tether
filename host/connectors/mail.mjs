@@ -61,6 +61,24 @@ const stripHtml = (html) => html
     .replace(/<\/(p|div|tr|li|h[1-6]|table)>/gi, '\n').replace(/<[^>]+>/g, '')
     .replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#3[49];/g, "'")
     .replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+/* The essentials of a calendar invitation carried in a mail (a text/calendar part,
+   or an .ics attachment): the agent should see WHEN, not just the body's join link. */
+function icalWhen(raw) {
+    if (!raw) return '';
+    const m = /(\d{4})(\d{2})(\d{2})(?:T(\d{2})(\d{2}))?/.exec(raw);
+    if (!m) return raw.trim();
+    const [, y, mo, d, h, mi] = m;
+    return h ? `${y}-${mo}-${d} ${h}:${mi}${/Z\b/.test(raw) ? ' UTC' : ''}` : `${y}-${mo}-${d}`;
+}
+function readInvite(ics) {
+    const block = String(ics).split(/BEGIN:VEVENT/i)[1];
+    if (!block) return null;
+    const v = block.replace(/\r?\n[ \t]/g, '');  /* unfold folded lines first */
+    const g = (k) => { const m = new RegExp(`^${k}[^:\\r\\n]*:(.+)$`, 'im').exec(v); return m ? m[1].trim() : ''; };
+    const summary = g('SUMMARY'); const start = g('DTSTART');
+    if (!start && !summary) return null;
+    return { summary, start: icalWhen(start), end: icalWhen(g('DTEND')), location: g('LOCATION') };
+}
 function walk(part, out, depth = 0) {
     if (depth > 20) return;
     const [headers, body] = splitHead(part);
@@ -72,6 +90,7 @@ function walk(part, out, depth = 0) {
         for (const p of body.split(new RegExp(`\\r?\\n?--${boundary.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\$&')}(?:--)?[ \\t]*\\r?\\n?`))) if (p.trim()) walk(p, out, depth + 1);
         return;
     }
+    if ((type.startsWith('text/calendar') || /\.ics$/i.test(filename || '')) && !out.invite) out.invite = decodeBody(headers, body);
     if (filename || headerOf(headers, 'Content-Disposition').toLowerCase().startsWith('attachment')) {
         out.attachments.push({ name: filename || '(unnamed)', type: type.split(';')[0].trim(), kb: Math.max(1, Math.round(body.replace(/\s/g, '').length * 3 / 4 / 1024)) });
     } else if (type.startsWith('text/plain') && !out.text) out.text = decodeBody(headers, body);
@@ -84,8 +103,10 @@ export function renderMessage(raw) {
         const head = ['From', 'To', 'Cc', 'Date', 'Subject'].map((h) => { const v = headerOf(raw, h); return v ? `${h}: ${v}` : null; }).filter(Boolean).join('\n');
         let body = out.text || (out.html ? stripHtml(out.html) : '');
         if (!body.trim()) body = splitHead(raw)[1];
+        const inv = out.invite ? readInvite(out.invite) : null;
+        const invite = inv ? `\n\n--- Invitation ---\n  ${inv.summary || '(no title)'}\n  ${inv.start}${inv.end ? ` — ${inv.end}` : ''}${inv.location ? `\n  @ ${inv.location}` : ''}` : '';
         const attach = out.attachments.length ? `\n\n--- Attachments (${out.attachments.length}) ---\n${out.attachments.map((a) => `  ${a.name} (${a.type}, ~${a.kb} KB)`).join('\n')}` : '';
-        return `${head}\n\n${body.trim()}${attach}`.trim();
+        return `${head}\n\n${body.trim()}${invite}${attach}`.trim();
     } catch { return raw; }
 }
 
@@ -225,10 +246,13 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
                 if (before) span.push(`BEFORE ${imapDate(before)}`);
                 if (!span.length) span.push(`SINCE ${imapDate(new Date(Date.now() - SINCE_DAYS * 86_400_000))}`);
                 const found = await imap.command(`UID SEARCH ${span.join(' ')}`, 'the mailbox could not be searched');
-                const uids = searchUids(found).slice(-LIST_MAX).reverse();
+                const all = searchUids(found);
+                const uids = all.slice(-LIST_MAX).reverse();
                 const items = await brief(imap, uids);
                 const empty = since || before ? 'No message in that range.' : 'No message in the last 30 days.';
-                const text = items.length ? items.join('\n') : empty;
+                /* Never cap in silence: if the window held more, say so and how to move it. */
+                const more = all.length > LIST_MAX ? `\n\n(Showing the ${LIST_MAX} most recent of ${all.length} in this window — use since/before to move it.)` : '';
+                const text = items.length ? items.join('\n') + more : empty;
                 return { text, size: Buffer.byteLength(text) };
             });
         },
@@ -245,7 +269,9 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
                 if (cut < 0) no('no such message');
                 const raw = fetched.slice(cut + 1).replace(/\)\s*$/, '');
                 const text = renderMessage(raw);
-                return { text, size: Buffer.byteLength(text) };
+                /* The fetch is bounded; if it filled, say the message was longer. */
+                const cut2 = Buffer.byteLength(raw) >= READ_MAX ? `\n\n(Large message — showing the first ${Math.round(READ_MAX / 1024)} KB.)` : '';
+                return { text: text + cut2, size: Buffer.byteLength(text + cut2) };
             });
         },
         /* The messages whose text matches, briefly. */

@@ -30,6 +30,17 @@ function server() {
     };
     return { fetch, calls };
 }
+test('calendar.list says when it capped (Microsoft nextLink), never silently', async () => {
+    const fetch = async (url) => {
+        if (url.includes('login.microsoftonline.com')) return json({ access_token: 'T', expires_in: 3600 });
+        return json({ value: [{ id: 'm1', subject: 'Review', start: { dateTime: '2030-01-02T10:00:00' } }], '@odata.nextLink': 'https://graph.microsoft.com/next' });
+    };
+    const Mt = { id: 'c2', title: 'Cal', config: { provider: 'microsoft' }, secrets: { refresh: 'r' } };
+    const r = await calendar({ fetch }).run('calendar.list', Mt, {}, { secret: async () => 'R' });
+    assert.match(r.text, /Showing the first 200/, 'the cap is 200 now (not 25) and it is announced');
+    assert.match(r.text, /narrow/i, 'and it says how to see more');
+});
+
 const G = { id: 'c1', title: 'Cal', config: { provider: 'google', user: 'me@example.com' }, secrets: { refresh: 'cal-refresh' } };
 const M = { id: 'c2', title: 'Cal', config: { provider: 'microsoft' }, secrets: { refresh: 'cal-refresh' } };
 const ctx = () => ({ secret: async (k) => (k === 'refresh' ? 'REFRESH' : undefined) });

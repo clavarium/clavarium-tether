@@ -16,7 +16,7 @@
 import { no, Refused } from '../../server/verbs.mjs';
 import { refreshAccess, thunderbird, PROVIDERS } from '../oauth.mjs';
 
-const LIST_MAX = 25;
+const LIST_MAX = 200;           /* events a list returns at most, then it says so (a year holds many) */
 const READ_MAX = 256 * 1024;
 const dateField = (s) => (/^\d{4}-\d{2}-\d{2}$/.test(s) ? { date: s } : { dateTime: s });
 
@@ -115,7 +115,7 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
             }
         }
         out.sort((x, y) => String(x.start).localeCompare(String(y.start)));
-        return out.slice(0, LIST_MAX).map((ev) => `${ev.id || '(no id)'}\n  ${fmtICal(ev.start)} — ${ev.summary || '(no title)'}${ev.location ? `  @ ${ev.location}` : ''}`);
+        return out.map((ev) => `${ev.id || '(no id)'}\n  ${fmtICal(ev.start)} — ${ev.summary || '(no title)'}${ev.location ? `  @ ${ev.location}` : ''}`);
     }
     async function googleRead(target, ctx, id) {
         const url = /^https?:\/\//.test(id) ? id : new URL(id, CALDAV(userOf(target))).href;
@@ -134,18 +134,22 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
             const when = (s) => { const d = s ? new Date(s) : null; return d && !Number.isNaN(d.getTime()) ? d.toISOString() : null; };
             const from = when(a.from) ?? new Date().toISOString();
             const to = when(a.to) ?? new Date(new Date(from).getTime() + 365 * 86_400_000).toISOString();
-            /* Google over CalDAV (the REST API its client cannot use); Microsoft over Graph. */
-            if (provider === 'google') {
-                const items = await googleList(target, ctx, { from, to });
-                const text = items.length ? items.join('\n') : 'No event in that range.';
+            /* A cap keeps the reply readable; when it bites, say so and why -- never a
+               silent truncation. `more` is true when events were left out. */
+            const pack = (briefs, more) => {
+                if (!briefs.length) return { text: 'No event in that range.', size: 18 };
+                const shown = briefs.slice(0, LIST_MAX);
+                const note = (more || briefs.length > LIST_MAX) ? `\n\n(Showing the first ${LIST_MAX} events in this window, to keep the reply readable — narrow it with from/to to see the rest.)` : '';
+                const text = shown.join('\n') + note;
                 return { text, size: Buffer.byteLength(text) };
-            }
+            };
+            /* Google over CalDAV (the REST API its client cannot use); Microsoft over Graph. */
+            if (provider === 'google') return pack(await googleList(target, ctx, { from, to }));
             const api = API[provider];
             const res = await call(target, ctx, 'GET', api.list(LIST_MAX, { from, to }));
             if (!res.ok) no(`${target.title}: ${res.status} ${await bodyError(res)}`.trim());
-            const items = api.items(await res.json());
-            const text = items.length ? items.map(api.brief).join('\n') : 'No event in that range.';
-            return { text, size: Buffer.byteLength(text) };
+            const json = await res.json();
+            return pack(api.items(json).map(api.brief), Boolean(json['@odata.nextLink']));
         },
         /* One event in full, by its id. */
         async 'calendar.read'(target, a, ctx) {

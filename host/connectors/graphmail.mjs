@@ -59,7 +59,9 @@ export function graphMail({ fetch: fetchImpl = globalThis.fetch, token }) {
             const filter = span.length ? `&$filter=${encodeURIComponent(span.join(' and '))}` : '';
             const data = await call(target, ctx, 'GET', `/me/mailFolders/${encodeURIComponent(folder)}/messages?$top=${LIST_MAX}&$select=id,receivedDateTime,from,subject&$orderby=receivedDateTime%20desc${filter}`);
             const items = (data?.value ?? []).map(brief);
-            const text = items.length ? items.join('\n') : (since || before ? 'No message in that range.' : 'No message.');
+            /* Never cap in silence: Graph hands back a nextLink when more remain. */
+            const more = data?.['@odata.nextLink'] ? `\n\n(Showing the first ${LIST_MAX} most recent — use since/before to move the window.)` : '';
+            const text = items.length ? items.join('\n') + more : (since || before ? 'No message in that range.' : 'No message.');
             return { text, size: Buffer.byteLength(text) };
         },
         async read(target, a, ctx) {
@@ -72,8 +74,21 @@ export function graphMail({ fetch: fetchImpl = globalThis.fetch, token }) {
                 const at = await call(target, ctx, 'GET', `/me/messages/${encodeURIComponent(id)}/attachments?$select=name,contentType,size`);
                 att = (at?.value ?? []).map((x) => `  - ${x.name} (${x.contentType}, ${Math.round((x.size || 0) / 1024)} KB)`).join('\n');
             }
+            /* A meeting invitation's body is only the join link; the WHEN lives on the
+               associated event. Best-effort: cast to eventMessage and read its event.
+               A plain message is not castable (the call fails) -- then there is no invite. */
+            let invite = '';
+            try {
+                const ev = await call(target, ctx, 'GET', `/me/messages/${encodeURIComponent(id)}/microsoft.graph.eventMessage/event?$select=subject,start,end,location`);
+                if (ev?.start?.dateTime) {
+                    const when = (t) => (t?.dateTime ? `${t.dateTime.slice(0, 16).replace('T', ' ')}${t.timeZone && t.timeZone !== 'UTC' ? ` ${t.timeZone}` : ''}` : '');
+                    const loc = ev.location?.displayName;
+                    invite = `\n\n--- Invitation ---\n  ${ev.subject || '(no title)'}\n  ${when(ev.start)}${ev.end?.dateTime ? ` — ${when(ev.end)}` : ''}${loc ? `\n  @ ${loc}` : ''}`;
+                }
+            } catch { /* not a meeting invitation */ }
             const head = [`From: ${addrsOf([m.from])}`, `To: ${addrsOf(m.toRecipients)}`, m?.ccRecipients?.length ? `Cc: ${addrsOf(m.ccRecipients)}` : '', `Date: ${m.receivedDateTime ?? ''}`, `Subject: ${m.subject ?? ''}`].filter(Boolean).join('\n');
-            const text = `${head}\n\n${bodyText}${att ? `\n\nAttachments:\n${att}` : ''}`.slice(0, READ_MAX);
+            const full = `${head}\n\n${bodyText}${invite}${att ? `\n\nAttachments:\n${att}` : ''}`;
+            const text = full.length > READ_MAX ? `${full.slice(0, READ_MAX)}\n\n(Large message — showing the first ${Math.round(READ_MAX / 1024)} KB.)` : full;
             return { text, size: Buffer.byteLength(text) };
         },
         async search(target, a, ctx) {
