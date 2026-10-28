@@ -182,10 +182,12 @@ export function detail(verb, a = {}) {
         case 'mail.search': return a.text;
         case 'mail.move': return `#${a.uid} → ${a.mailbox}`;
         case 'mail.flag': return `#${a.uid} ${a.flag}`;
-        case 'mail.send': return `to ${a.to}: ${a.subject ?? ''}`;
+        case 'mail.send': return `to ${a.to}: ${a.subject ?? ''}${a.attach ? ` + ${a.attachName || 'a file'}` : ''}`;
         case 'calendar.read': return a.id;
         case 'calendar.create': return `${a.title} (${a.start})`;
+        case 'calendar.attach': return `${a.attachName || 'a file'} → event ${a.id}`;
         case 'contacts.read': return a.id;
+        case 'contacts.attach': return `a photo → contact ${a.id}`;
         default: return '';
     }
 }
