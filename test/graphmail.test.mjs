@@ -96,6 +96,24 @@ test('send joins a file as a Graph fileAttachment when given one', async () => {
     assert.equal(att[0].contentBytes, 'SGVsbG8=', 'the base64 is passed straight through (what Graph wants)');
 });
 
+test('source fetches the raw MIME via $value (not JSON)', async () => {
+    const fetch = async (url) => (url.endsWith('/$value')
+        ? { ok: true, status: 200, text: async () => 'From: a@example.com\r\nSubject: S\r\n\r\nraw body here' }
+        : { ok: false, status: 404, json: async () => ({}) });
+    const g = graphMail({ fetch, token: mint });
+    const r = await g.source(target, { uid: 'X' }, ctx);
+    assert.match(r.text, /Subject: S/);
+    assert.match(r.text, /raw body here/);
+});
+
+test('attachment returns a file attachment as base64, by name', async () => {
+    const { fetch } = fakeGraph({ 'GET /me/messages/X/attachments': { value: [{ id: 'a1', name: 'r.pdf', contentType: 'application/pdf', size: 9, contentBytes: Buffer.from('PDF-BYTES').toString('base64') }] } });
+    const g = graphMail({ fetch, token: mint });
+    const r = await g.attachment(target, { uid: 'X', which: 'r.pdf' }, ctx);
+    assert.match(r.text, /r\.pdf \(application\/pdf/);
+    assert.equal(Buffer.from(r.text.split('\n\n').pop().trim(), 'base64').toString(), 'PDF-BYTES');
+});
+
 test('move and flag hit the right Graph endpoints (acts)', async () => {
     const { fetch, calls } = fakeGraph({ 'POST /me/messages/AAA/move': { _status: 201 }, 'PATCH /me/messages/AAA': { _status: 200 } });
     const g = graphMail({ fetch, token: mint });

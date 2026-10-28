@@ -121,6 +121,38 @@ test('mail.read returns a message in full by its uid', async () => {
     assert.ok(r.text.includes('The report') && r.text.includes('It is attached.'), 'headers and body');
 });
 
+/* A server that returns one crafted raw message for any UID FETCH (for source/attachment). */
+function imapWithRaw(uid, raw) {
+    const connect = () => {
+        const socket = new EventEmitter(); socket.destroy = () => {};
+        socket.write = (text) => {
+            const line = text.replace(/\r\n$/, ''); const sp = line.indexOf(' '); const tag = line.slice(0, sp); const cmd = line.slice(sp + 1);
+            let reply = `${tag} OK\r\n`;
+            if (cmd.startsWith('AUTHENTICATE XOAUTH2')) reply = `${tag} OK authenticated\r\n`;
+            else if (cmd.startsWith('EXAMINE')) reply = `${tag} OK [READ-ONLY] done\r\n`;
+            else if (cmd.startsWith('UID FETCH')) reply = `* 1 FETCH (UID ${uid} BODY[] {${Buffer.byteLength(raw)}}\r\n${raw})\r\n${tag} OK\r\n`;
+            setImmediate(() => socket.emit('data', Buffer.from(reply)));
+        };
+        setImmediate(() => socket.emit('data', Buffer.from('* OK ready\r\n')));
+        return socket;
+    };
+    return { connect };
+}
+
+test('mail.source returns the raw message (headers and body), not just the readable view', async () => {
+    const raw = 'From: A <a@example.com>\r\nSubject: hi\r\nContent-Type: text/html\r\n\r\n<p>body here</p>';
+    const r = await mail({ fetch: okToken, connect: imapWithRaw(7, raw).connect }).run('mail.source', TARGET, { uid: '7' }, ctx());
+    assert.match(r.text, /Subject: hi/);
+    assert.match(r.text, /<p>body here<\/p>/, 'the raw HTML, untouched');
+});
+
+test('mail.attachment extracts one attachment and returns its real bytes as base64', async () => {
+    const raw = ['From: A <a@example.com>', 'Subject: files', 'Content-Type: multipart/mixed; boundary="xb"', '', '--xb', 'Content-Type: text/plain', '', 'see attached', '--xb', 'Content-Type: application/pdf; name="r.pdf"', 'Content-Transfer-Encoding: base64', 'Content-Disposition: attachment; filename="r.pdf"', '', Buffer.from('PDF-BYTES').toString('base64'), '--xb--', ''].join('\r\n');
+    const r = await mail({ fetch: okToken, connect: imapWithRaw(9, raw).connect }).run('mail.attachment', TARGET, { uid: '9', which: 'r.pdf' }, ctx());
+    assert.match(r.text, /r\.pdf \(application\/pdf/, 'names the file and its type');
+    assert.equal(Buffer.from(r.text.split('\n\n').pop().trim(), 'base64').toString(), 'PDF-BYTES', 'the decoded bytes are the file itself');
+});
+
 test('a server that connects but never answers fails in time, it does not hang', async () => {
     const socket = Object.assign(new EventEmitter(), { write() {} });
     const imap = new Exchange(socket, 1_000_000, 40); /* 40ms idle for the test */

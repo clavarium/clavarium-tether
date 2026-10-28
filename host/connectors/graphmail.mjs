@@ -17,6 +17,7 @@ import { no, asDate } from '../../server/verbs.mjs';
 const GRAPH = 'https://graph.microsoft.com/v1.0';
 const LIST_MAX = 30;
 const READ_MAX = 512 * 1024;
+const SOURCE_MAX = 4 * 1024 * 1024;
 /* Friendly folder words mapped to Graph's well-known names; anything else is
    passed through (a folder's own id or display name). */
 const FOLDER = { inbox: 'inbox', sent: 'sentitems', 'sent items': 'sentitems', drafts: 'drafts', draft: 'drafts', trash: 'deleteditems', deleted: 'deleteditems', 'deleted items': 'deleteditems', junk: 'junkemail', spam: 'junkemail', archive: 'archive' };
@@ -97,6 +98,37 @@ export function graphMail({ fetch: fetchImpl = globalThis.fetch, token }) {
             const data = await call(target, ctx, 'GET', `/me/messages?$search=${encodeURIComponent(`"${q}"`)}&$top=${LIST_MAX}&$select=id,receivedDateTime,from,subject`);
             const items = (data?.value ?? []).map(brief);
             const text = items.length ? items.join('\n') : 'Nothing found.';
+            return { text, size: Buffer.byteLength(text) };
+        },
+        /* The raw MIME source ($value is not JSON, so it is fetched directly). */
+        async source(target, a, ctx) {
+            const id = String(a.uid ?? '').trim();
+            if (!id) no('source needs the message id');
+            const access = await token(target, ctx);
+            let r;
+            try { r = await fetchImpl(`${GRAPH}/me/messages/${encodeURIComponent(id)}/$value`, { headers: { authorization: `Bearer ${access}` } }); }
+            catch { return no(`${target.title}: could not reach the mailbox`); }
+            if (r.status === 401 || r.status === 403) no(`${target.title}: not authorized -- reconnect the account (the Microsoft mail scope may be missing)`);
+            if (r.status === 404) no('no such message');
+            if (!r.ok) no(`${target.title}: the source could not be read (${r.status})`);
+            const raw = (await r.text()).slice(0, SOURCE_MAX);
+            const more = raw.length >= SOURCE_MAX ? `\n\n(Large message — first ${Math.round(SOURCE_MAX / 1024)} KB of the source.)` : '';
+            return { text: raw + more, size: Buffer.byteLength(raw) };
+        },
+        /* One attachment's bytes (base64), by its name or its 1-based number. Graph
+           hands a file attachment's contentBytes already base64-encoded. */
+        async attachment(target, a, ctx) {
+            const id = String(a.uid ?? '').trim();
+            const which = String(a.which ?? '').trim();
+            if (!id) no('attachment needs the message id');
+            const data = await call(target, ctx, 'GET', `/me/messages/${encodeURIComponent(id)}/attachments?$select=id,name,contentType,size,contentBytes`);
+            const atts = (data?.value ?? []);
+            if (!atts.length) no('this message has no attachment');
+            const n = /^\d+$/.test(which) ? Number(which) - 1 : atts.findIndex((x) => (x.name || '').toLowerCase().includes(which.toLowerCase()));
+            const att = atts[n];
+            if (!att) no(`no attachment "${which}" — this message has: ${atts.map((x) => x.name).join(', ')}`);
+            if (att.contentBytes === undefined || att.contentBytes === null) no(`"${att.name}" is not a downloadable file attachment`);
+            const text = `${att.name} (${att.contentType || 'application/octet-stream'}, ${Math.round((att.size || 0) / 1024)} KB)\n\n${att.contentBytes}`;
             return { text, size: Buffer.byteLength(text) };
         },
         async move(target, a, ctx) {

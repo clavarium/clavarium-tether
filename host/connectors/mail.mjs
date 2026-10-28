@@ -31,6 +31,7 @@ const SMTP_HOST = { google: 'smtp.gmail.com', microsoft: 'smtp.office365.com' };
 const PORT = 993;
 const LIST_MAX = 30;            /* messages a list returns at most */
 const READ_MAX = 512 * 1024;    /* bytes of one message read at once */
+const SOURCE_MAX = 4 * 1024 * 1024; /* bytes of a raw source or attachment download */
 const SESSION_MAX = 8 * 1024 * 1024; /* bytes a whole IMAP session may receive */
 const SINCE_DAYS = 30;          /* a bare list looks back this far */
 
@@ -108,6 +109,32 @@ export function renderMessage(raw) {
         const attach = out.attachments.length ? `\n\n--- Attachments (${out.attachments.length}) ---\n${out.attachments.map((a) => `  ${a.name} (${a.type}, ~${a.kb} KB)`).join('\n')}` : '';
         return `${head}\n\n${body.trim()}${invite}${attach}`.trim();
     } catch { return raw; }
+}
+
+/* An attachment's bytes (not text): base64/quoted-printable/raw -> a Buffer, so
+   binary files come back whole, never mangled by a text decode. */
+function decodeBytes(headers, body) {
+    const enc = headerOf(headers, 'Content-Transfer-Encoding').toLowerCase();
+    if (enc === 'base64') return Buffer.from(body.replace(/[^A-Za-z0-9+/=]/g, ''), 'base64');
+    if (enc === 'quoted-printable') return Buffer.from(body.replace(/=\r?\n/g, '').replace(/=([0-9A-Fa-f]{2})/g, (_, h) => String.fromCharCode(parseInt(h, 16))), 'binary');
+    return Buffer.from(body, 'binary');
+}
+/* The attachments of a raw message, with their still-encoded bodies, for download. */
+function attachmentsOf(raw) {
+    const list = [];
+    (function dig(part, depth = 0) {
+        if (depth > 20) return;
+        const [headers, body] = splitHead(part);
+        const type = (headerOf(headers, 'Content-Type') || 'text/plain').toLowerCase();
+        if (type.startsWith('multipart/')) {
+            const boundary = param(headers, 'boundary'); if (!boundary) return;
+            for (const p of body.split(new RegExp(`\\r?\\n?--${boundary.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\$&')}(?:--)?[ \\t]*\\r?\\n?`))) if (p.trim()) dig(p, depth + 1);
+            return;
+        }
+        const filename = param(headers, 'filename') || param(headers, 'name');
+        if (filename || headerOf(headers, 'Content-Disposition').toLowerCase().startsWith('attachment')) list.push({ name: filename || `part${list.length + 1}`, type: type.split(';')[0].trim(), headers, body });
+    })(raw);
+    return list;
 }
 
 const numUid = (u) => { const n = Number(u); if (!Number.isInteger(n) || n <= 0) no('that needs the message number (uid)'); return n; };
@@ -272,6 +299,43 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
                 /* The fetch is bounded; if it filled, say the message was longer. */
                 const cut2 = Buffer.byteLength(raw) >= READ_MAX ? `\n\n(Large message — showing the first ${Math.round(READ_MAX / 1024)} KB.)` : '';
                 return { text: text + cut2, size: Buffer.byteLength(text + cut2) };
+            });
+        },
+        /* The raw source of a message: every header, both bodies (text and HTML),
+           attachments inline -- everything, for when the readable view is not enough. */
+        async 'mail.source'(target, a, ctx) {
+            if (isGraph(target)) return gmail.source(target, a, ctx);
+            const uid = numUid(a.uid);
+            return withImap(target, ctx, async (imap) => {
+                await imap.command(`EXAMINE ${quoted(boxOf(target, a.mailbox))}`, 'that mailbox could not be opened');
+                const lines = await imap.command(`UID FETCH ${uid} (BODY.PEEK[]<0.${SOURCE_MAX}>)`, 'that message could not be read');
+                const fetched = lines.find((l) => /^\* \d+ FETCH/i.test(l)) ?? '';
+                const cut = fetched.indexOf('\n'); if (cut < 0) no('no such message');
+                const raw = fetched.slice(cut + 1).replace(/\)\s*$/, '');
+                const more = Buffer.byteLength(raw) >= SOURCE_MAX ? `\n\n(Large message — first ${Math.round(SOURCE_MAX / 1024)} KB of the source.)` : '';
+                return { text: raw + more, size: Buffer.byteLength(raw) };
+            });
+        },
+        /* One attachment's bytes (base64), by its file name (or its 1-based number). */
+        async 'mail.attachment'(target, a, ctx) {
+            if (isGraph(target)) return gmail.attachment(target, a, ctx);
+            const uid = numUid(a.uid);
+            const which = String(a.which ?? '').trim();
+            return withImap(target, ctx, async (imap) => {
+                await imap.command(`EXAMINE ${quoted(boxOf(target, a.mailbox))}`, 'that mailbox could not be opened');
+                const lines = await imap.command(`UID FETCH ${uid} (BODY.PEEK[]<0.${SOURCE_MAX}>)`, 'that message could not be read');
+                const fetched = lines.find((l) => /^\* \d+ FETCH/i.test(l)) ?? '';
+                const cut = fetched.indexOf('\n'); if (cut < 0) no('no such message');
+                const raw = fetched.slice(cut + 1).replace(/\)\s*$/, '');
+                const atts = attachmentsOf(raw);
+                if (!atts.length) no('this message has no attachment');
+                const n = /^\d+$/.test(which) ? Number(which) - 1 : atts.findIndex((x) => x.name.toLowerCase().includes(which.toLowerCase()));
+                const att = atts[n];
+                if (!att) no(`no attachment "${which}" — this message has: ${atts.map((x) => x.name).join(', ')}`);
+                const bytes = decodeBytes(att.headers, att.body);
+                const partial = Buffer.byteLength(raw) >= SOURCE_MAX ? ' — the message was large, these bytes may be partial' : '';
+                const text = `${att.name} (${att.type}, ${Math.round(bytes.length / 1024)} KB)${partial}\n\n${bytes.toString('base64')}`;
+                return { text, size: Buffer.byteLength(text) };
             });
         },
         /* The messages whose text matches, briefly. */

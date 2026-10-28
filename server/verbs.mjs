@@ -61,6 +61,8 @@ export const VERBS = Object.freeze({
        with a token the agent never holds. Reads at level watch; send/move/flag act. */
     'mail.list': { reads: true, kinds: ['mail'], needs: [] },
     'mail.read': { reads: true, kinds: ['mail'], needs: ['uid'] },
+    'mail.source': { reads: true, kinds: ['mail'], needs: ['uid'] },
+    'mail.attachment': { reads: true, kinds: ['mail'], needs: ['uid', 'which'] },
     'mail.search': { reads: true, kinds: ['mail'], needs: ['text'] },
     'mail.move': { reads: false, kinds: ['mail'], needs: ['uid', 'mailbox'] },
     'mail.flag': { reads: false, kinds: ['mail'], needs: ['uid', 'flag'] },
@@ -147,6 +149,8 @@ export function check(verb, a = {}) {
         case 'screen.key': str('key', 60); break;
         case 'mail.list': str('mailbox', 200); str('since', 64); str('before', 64); break;
         case 'mail.read': str('uid', 1024); str('mailbox', 200); break;
+        case 'mail.source': str('uid', 1024); str('mailbox', 200); break;
+        case 'mail.attachment': str('uid', 1024); str('which', 400); str('mailbox', 200); break;
         case 'mail.search': str('text', 400); str('mailbox', 200); break;
         case 'mail.move': str('uid', 1024); str('mailbox', 200); break;
         case 'mail.flag': str('uid', 1024); str('flag', 40); break;

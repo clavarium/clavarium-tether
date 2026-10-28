@@ -35,6 +35,8 @@ export const HELP = `${NAME}: act on the targets you were given (machines, folde
   ${NAME} browser TARGET drag FROM TO [--tab N]
   ${NAME} mail TARGET list [--mailbox NAME] [--since DATE] [--before DATE]   recent messages (default: last 30 days)
   ${NAME} mail TARGET read UID [--mailbox NAME]        one message in full
+  ${NAME} mail TARGET source UID [--mailbox NAME]      the raw source (every header, both bodies)
+  ${NAME} mail TARGET attachment UID NAME|N            download one attachment (base64)
   ${NAME} mail TARGET search "text" [--mailbox NAME]
   ${NAME} mail TARGET move UID MAILBOX                 move a message to a folder
   ${NAME} mail TARGET flag UID read|unread|flagged|unflagged
@@ -58,7 +60,7 @@ ${NAME} ${VERSION}`;
 
 const FILE_VERBS = ['list', 'read', 'search', 'write', 'move', 'delete'];
 const BROWSER_VERBS = ['tabs', 'open', 'shot', 'html', 'console', 'eval', 'click', 'type', 'key', 'scroll', 'drag'];
-const MAIL_VERBS = ['list', 'read', 'search', 'move', 'flag', 'send'];
+const MAIL_VERBS = ['list', 'read', 'source', 'attachment', 'search', 'move', 'flag', 'send'];
 const CAL_VERBS = ['list', 'read', 'create', 'attach'];
 const CONTACT_VERBS = ['list', 'search', 'read', 'attach'];
 const baseName = (p) => String(p).split('/').pop();
@@ -124,6 +126,8 @@ export function read(argv) {
             switch (what) {
                 case 'list': return ['mail.list', { target, ...box, ...(flags.since !== undefined ? { since: flags.since } : {}), ...(flags.before !== undefined ? { before: flags.before } : {}) }];
                 case 'read': return need(p[0], 'mail TARGET read UID [--mailbox NAME]') ?? ['mail.read', { target, uid: p[0], ...box }];
+                case 'source': return need(p[0], 'mail TARGET source UID [--mailbox NAME]') ?? ['mail.source', { target, uid: p[0], ...box }];
+                case 'attachment': return need(p.length >= 2, 'mail TARGET attachment UID NAME|N [--mailbox NAME]') ?? ['mail.attachment', { target, uid: p[0], which: p.slice(1).join(' '), ...box }];
                 case 'search': return need(p.length, 'mail TARGET search "text" [--mailbox NAME]') ?? ['mail.search', { target, text: p.join(' '), ...box }];
                 case 'move': return need(p.length === 2, 'mail TARGET move UID MAILBOX') ?? ['mail.move', { target, uid: p[0], mailbox: p[1], ...why }];
                 case 'flag': return need(p.length === 2, 'mail TARGET flag UID FLAG') ?? ['mail.flag', { target, uid: p[0], flag: p[1], ...why }];
