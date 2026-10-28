@@ -211,22 +211,24 @@ export function detail(verb, a = {}) {
         case 'mail.list': return a.mailbox ?? '';
         case 'mail.read': return `#${a.uid}`;
         case 'mail.search': return a.text;
-        case 'mail.move': return `#${a.uid} → ${a.mailbox}`;
-        case 'mail.flag': return `#${a.uid} ${a.flag}`;
-        case 'mail.delete': return `delete message #${a.uid}`;
+        /* Ids from Graph are long and opaque; the approval says the ACTION, and the
+           agent's "why" names the thing. So no raw id dumped into the one line. */
+        case 'mail.move': return `move a message → ${a.mailbox}`;
+        case 'mail.flag': return `mark a message ${a.flag}`;
+        case 'mail.delete': return 'delete a message';
         case 'mail.send': return `to ${a.to}: ${a.subject ?? ''}${a.attach ? ` + ${a.attachName || 'a file'}` : ''}`;
         case 'calendar.read': return a.id;
         case 'calendar.create': return `${a.title} (${a.start})`;
-        case 'calendar.attach': return `${a.attachName || 'a file'} → event ${a.id}`;
-        case 'calendar.detach': return `remove ${a.which} from event ${a.id}`;
-        case 'calendar.delete': return `delete event ${a.id}`;
-        case 'calendar.respond': return `${a.answer} invitation ${a.id}`;
-        case 'calendar.update': return `event ${a.id}${a.title ? `: ${a.title}` : ''}`;
+        case 'calendar.attach': return `${a.attachName || 'a file'} → an event`;
+        case 'calendar.detach': return `remove ${a.which || 'a file'} from an event`;
+        case 'calendar.delete': return 'delete an event';
+        case 'calendar.respond': return `${a.answer} an invitation`;
+        case 'calendar.update': return `change an event${a.title ? ` → ${a.title}` : ''}`;
         case 'contacts.read': return a.id;
         case 'contacts.create': return `add ${a.name || a.email || 'a contact'}`;
-        case 'contacts.update': return `contact ${a.id}`;
-        case 'contacts.delete': return `delete contact ${a.id}`;
-        case 'contacts.attach': return `a photo → contact ${a.id}`;
+        case 'contacts.update': return 'change a contact';
+        case 'contacts.delete': return 'delete a contact';
+        case 'contacts.attach': return "set a contact's photo";
         default: return '';
     }
 }

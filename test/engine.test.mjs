@@ -89,6 +89,16 @@ test('a verb\'s arguments are checked; its detail never holds a file\'s content'
     assert.equal(detail('browser.open', check('browser.open', { target: 'b', url: 'https://example.com' })), 'https://example.com');
 });
 
+test('an approval detail names the action, never a raw provider id', () => {
+    const longId = 'AAMkAGVkZjQ5OThmLTYxNTktNDgxOS04MmYyLTVkZWYxOGExNmNmMw==';
+    assert.equal(detail('calendar.attach', { attachName: 'slides.pdf', id: longId }), 'slides.pdf → an event');
+    assert.equal(detail('calendar.delete', { id: longId }), 'delete an event');
+    assert.equal(detail('calendar.respond', { answer: 'decline', id: longId }), 'decline an invitation');
+    assert.equal(detail('contacts.delete', { id: longId }), 'delete a contact');
+    for (const [v, a] of [['calendar.detach', { which: 'x', id: longId }], ['calendar.update', { id: longId }], ['contacts.update', { id: longId }], ['contacts.attach', { id: longId }], ['mail.delete', { uid: longId }], ['mail.move', { uid: longId, mailbox: 'Archive' }], ['mail.flag', { uid: longId, flag: 'read' }]])
+        assert.ok(!detail(v, a).includes(longId), `${v} must not dump the raw id into the approval line`);
+});
+
 test('the store: a target holds no secret; grants, rules and stops are kept across a restart', () => {
     const dir = tmp();
     const s = openStore(dir);
