@@ -145,6 +145,25 @@ test('calendar.respond accepts/declines an invitation via the right Graph action
     assert.ok(s2.some((u) => u.includes('/tentativelyAccept')), 'tentative -> tentativelyAccept');
 });
 
+test('calendar.update PATCHes only the fields given (Microsoft)', async () => {
+    const calls = [];
+    const fetch = async (url, opts = {}) => {
+        calls.push({ url, method: opts.method || 'GET', body: opts.body });
+        if (url.includes('login.microsoftonline.com')) return json({ access_token: 'T', expires_in: 3600 });
+        return json({ id: 'm1' });
+    };
+    const r = await calendar({ fetch }).run('calendar.update', M, { id: 'm1', title: 'New title', where: 'Room 9' }, ctx());
+    assert.match(r.text, /Updated/);
+    const patch = calls.find((c) => c.method === 'PATCH' && c.url.includes('/me/events/m1'));
+    assert.ok(patch, 'PATCH to the event');
+    const body = JSON.parse(patch.body);
+    assert.equal(body.subject, 'New title');
+    assert.equal(body.location.displayName, 'Room 9');
+    assert.equal(body.start, undefined, 'untouched fields are not sent');
+    await assert.rejects(calendar({ fetch }).run('calendar.update', M, { id: 'm1' }, ctx()), /at least one of/);
+    await assert.rejects(calendar({ fetch }).run('calendar.update', G, { id: 'g1', title: 'x' }, ctx()), /Microsoft-only/);
+});
+
 test('calendar.respond is Microsoft-only, and rejects an unknown answer', async () => {
     const s = server();
     await assert.rejects(calendar({ fetch: s.fetch }).run('calendar.respond', G, { id: 'g1', answer: 'accept' }, ctx()), /Microsoft-only/);

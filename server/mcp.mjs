@@ -119,6 +119,7 @@ export const TOOLS = [
     tool('calendar-detach', 'Remove an attachment from an event (Microsoft), by its file name or 1-based number. A person may approve: say why.', { target: TARGET, id: S('the event id from a list'), which: S('the attachment file name, or its number'), why: WHY }, ['target', 'id', 'which']),
     tool('calendar-delete', 'Delete an event. A person may approve: say why.', { target: TARGET, id: S('the event id from a list'), why: WHY }, ['target', 'id']),
     tool('calendar-respond', 'Answer a meeting invitation — accept, decline or tentative (Microsoft). A person may approve: say why.', { target: TARGET, id: S('the event id from a list'), answer: S('accept, decline or tentative'), comment: S('a short note to the organiser, optional'), why: WHY }, ['target', 'id', 'answer']),
+    tool('calendar-update', 'Change an event — any of title, start, end, where (Microsoft). A person may approve: say why.', { target: TARGET, id: S('the event id from a list'), title: S('new title, optional'), start: S('new start, ISO, optional'), end: S('new end, ISO, optional'), where: S('new place, optional'), why: WHY }, ['target', 'id']),
     tool('contacts-list', 'The contacts of an address-book target: name, emails, phones.', { target: TARGET }, ['target']),
     tool('contacts-search', 'Contacts whose name or email matches a word, briefly.', { target: TARGET, text: S('a name or part of one to look for') }, ['target', 'text']),
     tool('contacts-read', 'One contact in full by its id.', { target: TARGET, id: { type: 'string' } }, ['target', 'id']),

@@ -236,6 +236,23 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
             if (!res.ok) no(`${target.title}: the response was not sent (${res.status} ${await bodyError(res)})`.trim());
             return { text: `${action === 'accept' ? 'Accepted' : action === 'decline' ? 'Declined' : 'Tentatively accepted'} the invitation.`, size: 0 };
         },
+        /* Change an event: any of title, start, end, where. An act. Microsoft over
+           Graph (PATCH); a Google edit (CalDAV PUT) comes with parity. */
+        async 'calendar.update'(target, a, ctx) {
+            const provider = providerOf(target);
+            if (provider !== 'microsoft') no(`${target.title}: changing an event is Microsoft-only for now`);
+            if (!a.id) no('update needs the event id (from the list)');
+            const patch = {};
+            if (a.title !== undefined) patch.subject = String(a.title);
+            if (a.start !== undefined) patch.start = { dateTime: String(a.start), timeZone: 'UTC' };
+            if (a.end !== undefined) patch.end = { dateTime: String(a.end), timeZone: 'UTC' };
+            if (a.where !== undefined) patch.location = { displayName: String(a.where) };
+            if (!Object.keys(patch).length) no('update needs at least one of: title, start, end, where');
+            const res = await call(target, ctx, 'PATCH', API.microsoft.event(String(a.id)), patch);
+            if (res.status === 404) no('no such event');
+            if (!res.ok) no(`${target.title}: the event was not changed (${res.status} ${await bodyError(res)})`.trim());
+            return { text: 'Updated the event.', size: 0 };
+        },
     };
 
     return {
