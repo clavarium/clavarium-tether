@@ -118,11 +118,14 @@ export function check(verb, a = {}) {
     const v = VERBS[verb];
     const out = {};
     if (v.kinds) { out.target = oneLine(a.target, 100); if (!out.target) no('say which target'); }
-    const why = oneLine(a.why, WHY_MAX); if (why) out.why = why;
+    /* What the agent writes is kept whole or refused, never cut in the middle: told its length and
+       the limit, it shortens and asks again (the "why" is what a person reads before deciding). */
+    const tooLong = (k, n, max) => no(`${k} is ${n} characters; ${max} at most -- nothing was done: shorten it and ask again`);
+    const why = oneLine(a.why, Infinity); if (why.length > WHY_MAX) tooLong('why', why.length, WHY_MAX); if (why) out.why = why;
     const str = (k, max, keep = false) => {
         if (a[k] === undefined || a[k] === null) return;
-        const s = keep ? String(a[k]) : oneLine(a[k], max + 1);
-        if (s.length > max) no(`${k} is too long (${max} characters at most)`);
+        const s = keep ? String(a[k]) : oneLine(a[k], Infinity);
+        if (s.length > max) tooLong(k, s.length, max);
         out[k] = s;
     };
     /* Which granted tab a browser verb acts on (optional: none means the agent's active one). */
