@@ -17,6 +17,15 @@ test('buildMessage joins a file as a multipart/mixed message', () => {
     assert.match(msg, /see attached/, 'the text is still there');
 });
 
+test('buildMessage joins SEVERAL files, each its own part', () => {
+    const msg = buildMessage({ from: 'me@example.com', to: ['bob@example.com'], subject: 'Hi', body: 'both attached',
+        attachments: [{ name: 'a.html', bytes: 'QUJD' }, { name: 'b.html', bytes: 'REVG' }] });
+    assert.match(msg, /multipart\/mixed/);
+    assert.match(msg, /filename="a\.html"/, 'first file is there');
+    assert.match(msg, /filename="b\.html"/, 'second file is there too (not dropped)');
+    assert.match(msg, /both attached/, 'the text is still there');
+});
+
 test('buildMessage without a file stays plain text', () => {
     const msg = buildMessage({ from: 'me@example.com', to: ['bob@example.com'], subject: 'Hi', body: 'hello' });
     assert.match(msg, /Content-Type: text\/plain/);

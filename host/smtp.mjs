@@ -19,22 +19,30 @@ export function address(a) {
     return s;
 }
 
-/* An RFC-822 message from plain fields; headers come only from here. With an
-   `attach` (base64 bytes) + `attachName`, a multipart/mixed message: the text and
-   then the file, so a message can carry one joined file. */
-export function buildMessage({ from, to, subject, body, attach, attachName, date = new Date() }) {
+/* Several files joined to a message, as {name, bytes(base64)}. Takes an
+   `attachments` array, or a single `attach` + `attachName` (back-compat). */
+export function joinedFiles({ attach, attachName, attachments } = {}) {
+    const list = Array.isArray(attachments) ? attachments : (attach ? [{ name: attachName, bytes: attach }] : []);
+    return list.map((f) => ({ name: String(f?.name || 'attachment').replace(/[\r\n"\\]/g, ''), bytes: String(f?.bytes ?? '') })).filter((f) => f.bytes);
+}
+
+/* An RFC-822 message from plain fields; headers come only from here. With one or
+   more joined files (`attachments`, or a single `attach`+`attachName`), a
+   multipart/mixed message: the text, then each file. */
+export function buildMessage({ from, to, subject, body, attach, attachName, attachments, date = new Date() }) {
     const header = (name, value) => `${name}: ${String(value).replace(/[\r\n]+/g, ' ').trim()}`;
     const top = [header('From', from), header('To', to.join(', ')), header('Subject', subject ?? ''), header('Date', date.toUTCString()), 'MIME-Version: 1.0'];
     const text = String(body ?? '').replace(/\r?\n/g, '\r\n');
-    if (attach) {
-        const name = String(attachName || 'attachment').replace(/[\r\n"\\]/g, '');
+    const files = joinedFiles({ attach, attachName, attachments });
+    if (files.length) {
         const b = `b_${Math.random().toString(36).slice(2)}${Date.now().toString(36)}`;
-        const b64 = String(attach).replace(/\s+/g, '').replace(/(.{76})/g, '$1\r\n');
-        return [...top,
-            `Content-Type: multipart/mixed; boundary="${b}"`, '',
-            `--${b}`, 'Content-Type: text/plain; charset=utf-8', 'Content-Transfer-Encoding: 8bit', '', text,
-            `--${b}`, `Content-Type: application/octet-stream; name="${name}"`, 'Content-Transfer-Encoding: base64', `Content-Disposition: attachment; filename="${name}"`, '', b64,
-            `--${b}--`, ''].join('\r\n');
+        const parts = [`--${b}`, 'Content-Type: text/plain; charset=utf-8', 'Content-Transfer-Encoding: 8bit', '', text];
+        for (const f of files) {
+            const b64 = f.bytes.replace(/\s+/g, '').replace(/(.{76})/g, '$1\r\n');
+            parts.push(`--${b}`, `Content-Type: application/octet-stream; name="${f.name}"`, 'Content-Transfer-Encoding: base64', `Content-Disposition: attachment; filename="${f.name}"`, '', b64);
+        }
+        parts.push(`--${b}--`, '');
+        return [...top, `Content-Type: multipart/mixed; boundary="${b}"`, '', ...parts].join('\r\n');
     }
     const lines = [...top, 'Content-Type: text/plain; charset=utf-8', 'Content-Transfer-Encoding: 8bit', '', text];
     return lines.join('\r\n');
@@ -72,7 +80,7 @@ class Line {
 /* Send one message. `auth` is { xoauth2 } for a provider, or { user, password } for
    a classic box. `connect` opens the plain socket, `secure` upgrades it after
    STARTTLS (tls.connect wrapping the same socket). */
-export async function send({ host, port = 587, auth, from, to, subject, body, attach, attachName, connect = netConnect, secure = (opts) => tlsConnect(opts) }) {
+export async function send({ host, port = 587, auth, from, to, subject, body, attach, attachName, attachments, connect = netConnect, secure = (opts) => tlsConnect(opts) }) {
     const sender = address(from);
     const rcpts = (Array.isArray(to) ? to : [to]).map(address);
     if (!rcpts.length) throw new Error('no recipient');
@@ -98,7 +106,7 @@ export async function send({ host, port = 587, auth, from, to, subject, body, at
         await step(`MAIL FROM:<${sender}>`, 250);
         for (const r of rcpts) await step(`RCPT TO:<${r}>`, 250);
         await step('DATA', 354);
-        const message = buildMessage({ from: sender, to: rcpts, subject, body, attach, attachName })
+        const message = buildMessage({ from: sender, to: rcpts, subject, body, attach, attachName, attachments })
             .split('\r\n').map((l) => (l.startsWith('.') ? `.${l}` : l)).join('\r\n'); /* dot-stuffing */
         io.write(`${message}\r\n.\r\n`);
         const done = await io.reply();

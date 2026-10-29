@@ -354,6 +354,15 @@ test('the command line is read as the help says', () => {
     assert.deepEqual(read(['mail', 'box', 'flag', '42', 'read']), ['mail.flag', { target: 'box', uid: '42', flag: 'read' }]);
     assert.deepEqual(read(['mail', 'box', 'send', '--to', 'a@example.com', '--subject', 'Hi', '--body', 'there']), ['mail.send', { target: 'box', to: 'a@example.com', subject: 'Hi', body: 'there' }]);
     assert.ok(read(['mail', 'box', 'send', '--to', 'a@example.com']).refused, 'send needs subject and body');
+    { /* several --attach all go (the bug was: only the last file was kept) */
+        const d = mkdtempSync(join(tmpdir(), 'att-')); const fa = join(d, 'a.html'); const fb = join(d, 'b.html');
+        writeFileSync(fa, 'AAA'); writeFileSync(fb, 'BBB');
+        const got = read(['mail', 'box', 'send', '--to', 'a@example.com', '--subject', 'S', '--body', 'b', '--attach', fa, '--attach', fb]);
+        assert.equal(got[1].attachments.length, 2, 'both files attached, not just the last');
+        assert.deepEqual(got[1].attachments.map((f) => f.name), ['a.html', 'b.html']);
+        assert.equal(read(['mail', 'box', 'send', '--to', 'a@example.com', '--subject', 'S', '--body', 'b', '--attach', `${fa},${fb}`])[1].attachments.length, 2, '--attach A,B also works');
+        assert.ok(read(['mail', 'box', 'send', '--to', 'a@example.com', '--subject', 'S', '--body', 'b', '--attach', join(d, 'no.html')]).refused, 'a missing attachment is refused, not dropped');
+    }
     assert.ok(read(['mail', 'box', 'move', '42']).refused, 'move needs a destination');
     assert.ok(read(['mail', 'box', 'nope']).refused);
     assert.deepEqual(read(['calendar', 'cal', 'list']), ['calendar.list', { target: 'cal' }]);

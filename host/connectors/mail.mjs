@@ -405,10 +405,11 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
             if (Number(target.config?.smtpPort) > 0) port = Number(target.config.smtpPort);
             let sent;
             try {
-                sent = await smtpSend({ host, port, auth, from: user, to, subject: a.subject, body: a.body, attach: a.attach, attachName: a.attachName,
+                sent = await smtpSend({ host, port, auth, from: user, to, subject: a.subject, body: a.body, attach: a.attach, attachName: a.attachName, attachments: a.attachments,
                     ...(smtpConnect ? { connect: smtpConnect } : {}), ...(smtpSecure ? { secure: smtpSecure } : {}) });
             } catch (e) { if (e instanceof Refused) throw e; no(`${target.title}: ${e?.message ?? 'the message could not be sent'}`); }
-            return { text: `Sent to ${sent.join(', ')}${a.attach ? ` with ${a.attachName || 'an attachment'}` : ''}.`, size: 0 };
+            const names = Array.isArray(a.attachments) ? a.attachments.map((f) => f.name) : (a.attach ? [a.attachName || 'an attachment'] : []);
+            return { text: `Sent to ${sent.join(', ')}${names.length ? ` with ${names.join(', ')}` : ''}.`, size: 0 };
         },
     };
 

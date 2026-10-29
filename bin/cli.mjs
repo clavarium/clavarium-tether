@@ -41,7 +41,7 @@ export const HELP = `${NAME}: act on the targets you were given (machines, folde
   ${NAME} mail TARGET move UID MAILBOX                 move a message to a folder
   ${NAME} mail TARGET flag UID read|unread|flagged|unflagged
   ${NAME} mail TARGET delete UID                       delete a message (to Trash / Deleted Items)
-  ${NAME} mail TARGET send --to "a@b,c@d" --subject "..." --body "..." [--cc "..."] [--attach FILE]
+  ${NAME} mail TARGET send --to "a@b,c@d" --subject "..." --body "..." [--cc "..."] [--attach FILE ...]   (--attach repeats, or --attach A,B)
   ${NAME} calendar TARGET list [--from DATE] [--to DATE]   events in a window (default: from now on)
   ${NAME} calendar TARGET read ID
   ${NAME} calendar TARGET freebusy "a@b,c@d" [--from DATE] [--to DATE]   when others are busy (Microsoft)
@@ -84,6 +84,8 @@ export function read(argv) {
         if (a === '--enter') { flags.enter = true; continue; }
         if (a === '--readable') { flags.readable = true; continue; }
         if (a === '--share') { flags.share = true; continue; }
+        /* --attach may be given several times, and each value may list files with commas. */
+        if (a === '--attach') { if (argv[i + 1] === undefined) return { refused: '--attach needs a file' }; (flags.attach ??= []).push(...String(argv[++i]).split(',').map((x) => x.trim()).filter(Boolean)); continue; }
         if (a.startsWith('--')) { if (argv[i + 1] === undefined) return { refused: `${a} needs a value` }; flags[a.slice(2)] = argv[++i]; continue; }
         words.push(a);
     }
@@ -146,7 +148,11 @@ export function read(argv) {
                     const bad = need(flags.to !== undefined && flags.subject !== undefined && flags.body !== undefined, 'mail TARGET send --to "a@b" --subject "..." --body "..." [--cc "..."] [--attach FILE]');
                     if (bad) return bad;
                     let att = {};
-                    if (flags.attach !== undefined) { const b = readB64(flags.attach); if (b === null) return { refused: `cannot read the file to attach: ${flags.attach}` }; att = { attach: b, attachName: flags['attach-name'] || baseName(flags.attach) }; }
+                    if (flags.attach !== undefined) {
+                        const files = [];
+                        for (const path of flags.attach) { const b = readB64(path); if (b === null) return { refused: `cannot read the file to attach: ${path}` }; files.push({ name: baseName(path), bytes: b }); }
+                        att = { attachments: files };
+                    }
                     return ['mail.send', { target, to: flags.to, subject: flags.subject, body: flags.body, ...(flags.cc !== undefined ? { cc: flags.cc } : {}), ...att, ...why }];
                 }
             }

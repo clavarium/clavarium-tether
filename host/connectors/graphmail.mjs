@@ -162,18 +162,20 @@ export function graphMail({ fetch: fetchImpl = globalThis.fetch, token }) {
             const to = String(a.to ?? '').split(',').map((x) => x.trim()).filter(Boolean);
             if (!to.length) no('send needs a recipient (to)');
             const cc = String(a.cc ?? '').split(',').map((x) => x.trim()).filter(Boolean);
-            /* A file joined to the message: its bytes, already base64 (what Graph
-               wants), and a name. One attachment for now (the common need). */
-            const attach = String(a.attach ?? '');
+            /* Files joined to the message: bytes already base64 (what Graph wants)
+               and a name. Several possible: an `attachments` array, or one
+               `attach`+`attachName` (back-compat). */
+            const files = (Array.isArray(a.attachments) ? a.attachments : (a.attach ? [{ name: a.attachName, bytes: a.attach }] : []))
+                .map((f) => ({ name: String(f?.name || 'attachment'), bytes: String(f?.bytes ?? '') })).filter((f) => f.bytes);
             const message = {
                 subject: String(a.subject ?? ''),
                 body: { contentType: 'text', content: String(a.body ?? '') },
                 toRecipients: to.map((address) => ({ emailAddress: { address } })),
                 ...(cc.length ? { ccRecipients: cc.map((address) => ({ emailAddress: { address } })) } : {}),
-                ...(attach ? { attachments: [{ '@odata.type': '#microsoft.graph.fileAttachment', name: String(a.attachName || 'attachment'), contentBytes: attach }] } : {}),
+                ...(files.length ? { attachments: files.map((f) => ({ '@odata.type': '#microsoft.graph.fileAttachment', name: f.name, contentBytes: f.bytes })) } : {}),
             };
             await call(target, ctx, 'POST', '/me/sendMail', { message, saveToSentItems: true });
-            return { text: `Sent to ${to.join(', ')}${attach ? ` with ${a.attachName || 'an attachment'}` : ''}.`, size: 0 };
+            return { text: `Sent to ${to.join(', ')}${files.length ? ` with ${files.map((f) => f.name).join(', ')}` : ''}.`, size: 0 };
         },
     };
 }

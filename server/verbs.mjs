@@ -17,6 +17,8 @@ const FOLDERS = ['computer', 'ssh', 'files'];
 /* Sizes an agent may send. What a target sends back is capped by its connector. */
 export const COMMAND_MAX = 4000;
 export const TEXT_MAX = 1_000_000;
+/* The total base64 of a message's attachments (~22 MB of real files). Over it, the send is refused, not sent short. */
+export const ATTACH_MAX = 30 * 1024 * 1024;
 export const PATH_MAX = 1000;
 export const WHY_MAX = 300;
 
@@ -164,7 +166,17 @@ export function check(verb, a = {}) {
         case 'mail.move': str('uid', 1024); str('mailbox', 200); break;
         case 'mail.flag': str('uid', 1024); str('flag', 40); break;
         case 'mail.delete': str('uid', 1024); str('mailbox', 200); break;
-        case 'mail.send': str('to', 1000); str('subject', 400); str('body', TEXT_MAX, true); str('cc', 1000); str('attach', TEXT_MAX, true); str('attachName', 200); break;
+        case 'mail.send': {
+            str('to', 1000); str('subject', 400); str('body', TEXT_MAX, true); str('cc', 1000); str('attach', TEXT_MAX, true); str('attachName', 200);
+            if (Array.isArray(a.attachments)) {
+                let total = 0;
+                const files = a.attachments.slice(0, 50).map((f) => ({ name: oneLine(f?.name, 200) || 'attachment', bytes: String(f?.bytes ?? '') })).filter((f) => f.bytes);
+                for (const f of files) total += f.bytes.length;
+                if (total > ATTACH_MAX) no(`the attachments are too large to send together (over ${Math.round(ATTACH_MAX / 1024 / 1024)} MB of files)`);
+                if (files.length) out.attachments = files;
+            }
+            break;
+        }
         case 'calendar.list': str('from', 64); str('to', 64); break;
         case 'calendar.read': str('id', 1024); break;
         case 'calendar.freebusy': str('who', 2000); str('from', 64); str('to', 64); break;
@@ -218,7 +230,11 @@ export function detail(verb, a = {}) {
         case 'mail.move': return `move a message → ${a.mailbox}`;
         case 'mail.flag': return `mark a message ${a.flag}`;
         case 'mail.delete': return 'delete a message';
-        case 'mail.send': return `to ${a.to}: ${a.subject ?? ''}${a.attach ? ` + ${a.attachName || 'a file'}` : ''}`;
+        case 'mail.send': {
+            const kb = (b64) => Math.max(1, Math.round((String(b64).length * 3 / 4) / 1024));
+            const files = Array.isArray(a.attachments) ? a.attachments.map((f) => `${f.name} (${kb(f.bytes)} KB)`) : (a.attach ? [`${a.attachName || 'a file'} (${kb(a.attach)} KB)`] : []);
+            return `to ${a.to}: ${a.subject ?? ''}${files.length ? ` + ${files.join(', ')}` : ''}`;
+        }
         case 'calendar.read': return a.id;
         case 'calendar.freebusy': return a.who;
         case 'calendar.create': return `${a.title} (${a.start})`;

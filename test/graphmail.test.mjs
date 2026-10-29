@@ -105,6 +105,16 @@ test('send joins a file as a Graph fileAttachment when given one', async () => {
     assert.equal(att[0].contentBytes, 'SGVsbG8=', 'the base64 is passed straight through (what Graph wants)');
 });
 
+test('send joins SEVERAL files (attachments array), none dropped', async () => {
+    const { fetch, calls } = fakeGraph({ 'POST /me/sendMail': { _status: 202 } });
+    const g = graphMail({ fetch, token: mint });
+    const r = await g.send(target, { to: 'c@example.com', subject: 'Yo', body: 't', attachments: [{ name: 'a.html', bytes: 'QUJD' }, { name: 'b.html', bytes: 'REVG' }] }, ctx);
+    const att = calls[0].body.message.attachments;
+    assert.equal(att.length, 2, 'both files are attached, not just the last');
+    assert.deepEqual(att.map((x) => x.name), ['a.html', 'b.html']);
+    assert.match(r.text, /a\.html.*b\.html/, 'the result lists both');
+});
+
 test('source fetches the raw MIME via $value (not JSON)', async () => {
     const fetch = async (url) => (url.endsWith('/$value')
         ? { ok: true, status: 200, text: async () => 'From: a@example.com\r\nSubject: S\r\n\r\nraw body here' }
