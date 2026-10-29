@@ -25,6 +25,8 @@ export const WHY_MAX = 300;
 /* name: { reads, kinds, needs: [arg names], done: false when declared only } */
 export const VERBS = Object.freeze({
     targets: { reads: true, kinds: null, needs: [] },
+    pending: { reads: true, kinds: null, needs: [] },
+    withdraw: { reads: true, kinds: null, needs: ['id'] },
     'terminal.open': { reads: false, kinds: SHELLS, needs: [] },
     'terminal.read': { reads: true, kinds: SHELLS, needs: [] },
     'terminal.type': { reads: false, kinds: SHELLS, needs: ['text'] },
@@ -184,6 +186,7 @@ export function check(verb, a = {}) {
             }
             break;
         }
+        case 'withdraw': str('id', 100); str('reason', 300); break;
         case 'calendar.list': str('from', 64); str('to', 64); str('category', 200); break;
         case 'calendar.category-add': str('name', 200); str('color', 40); break;
         case 'calendar.category-rename': str('name', 200); str('to', 200); str('color', 40); break;

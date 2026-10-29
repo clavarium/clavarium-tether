@@ -48,3 +48,11 @@ test('read parses calendar category add/rename/delete', () => {
 test('read parses mail attachment --out as a destination folder', () => {
     assert.deepEqual(read(['mail', 'Box', 'attachment', 'AAA', 'report.pdf', '--out', 'downloads'])[1], { target: 'Box', uid: 'AAA', which: 'report.pdf', out: 'downloads' });
 });
+
+test('read parses pending and withdraw', () => {
+    assert.deepEqual(read(['pending'])[1], {});
+    assert.deepEqual(read(['pending']).slice(0, 1), ['pending']);
+    assert.deepEqual(read(['withdraw', 'req-123'])[1], { id: 'req-123' });
+    assert.deepEqual(read(['withdraw', 'req-123', 'sent', 'by', 'mistake'])[1], { id: 'req-123', reason: 'sent by mistake' });
+    assert.ok(read(['withdraw']).refused, 'withdraw needs an id');
+});

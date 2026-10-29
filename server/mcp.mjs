@@ -84,6 +84,8 @@ const tool = (name, description, properties = {}, required = []) => ({ name, des
 /* Tool names use "-" where a verb has ".": terminal-run is terminal.run. */
 export const TOOLS = [
     tool('targets', 'What you were given: each target, its kind, your level on it and its allow rules.'),
+    tool('pending', 'Your own requests still waiting for a person to approve (id, what, why). Use it to find one to withdraw.'),
+    tool('withdraw', 'Take back one of your own waiting requests (its id from pending): it leaves the person\'s screen as "withdrawn by the AI" and can no longer be approved. For a request you sent by mistake or that became wrong before it was approved.', { id: S('the request id, from pending'), reason: S('a short why, shown to the person, optional') }, ['id']),
     tool('terminal-open', 'Open a terminal on a target (a computer or a machine reached by SSH).', { target: TARGET, why: WHY }, ['target']),
     tool('terminal-read', 'Read the screen of the terminal you opened on a target.', { target: TARGET, lines: { type: 'number', description: 'how many lines back (40 by default)' } }, ['target']),
     tool('terminal-type', 'Type keys in the terminal you opened on a target (a person may have to approve).', { target: TARGET, text: { type: 'string' }, enter: { type: 'boolean', description: 'press Enter after' }, why: WHY }, ['target', 'text']),

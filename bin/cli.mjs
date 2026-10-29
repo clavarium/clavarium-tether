@@ -13,6 +13,8 @@ import { NAME, VERSION, FOLDER, ENV_DIR } from '../server/name.mjs';
 export const HELP = `${NAME}: act on the targets you were given (machines, folders, browsers, mailboxes, calendars, address books).
 
   ${NAME}                                  your targets, your level on each, its rules
+  ${NAME} pending                          your requests still waiting for a person to approve
+  ${NAME} withdraw ID [reason]             take back a waiting request (it can no longer be approved)
   ${NAME} run TARGET "command" [--timeout S]   run a command: its output and exit code
   ${NAME} open TARGET                      open a terminal
   ${NAME} read TARGET [--lines N]          read the terminal's screen
@@ -100,6 +102,8 @@ export function read(argv) {
     const need = (ok, usage) => (ok ? null : { refused: `${NAME} ${usage}` });
     switch (verb) {
         case 'targets': return ['targets', {}];
+        case 'pending': return ['pending', {}];
+        case 'withdraw': return target ? ['withdraw', { id: target, ...(flags.reason !== undefined ? { reason: flags.reason } : rest.length ? { reason: rest.join(' ') } : {}) }] : { refused: `${NAME} withdraw ID [reason]   (ID from "${NAME} pending")` };
         case 'run': return need(target && rest.length, 'run TARGET "command"') ?? ['terminal.run', { target, command: rest.join(' '), ...(flags.timeout !== undefined ? { timeout: Number(flags.timeout) } : {}), ...why }];
         case 'open': return need(target, 'open TARGET') ?? ['terminal.open', { target, ...why }];
         case 'read': return need(target, 'read TARGET') ?? ['terminal.read', { target, ...(flags.lines !== undefined ? { lines: Number(flags.lines) } : {}) }];

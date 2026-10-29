@@ -51,6 +51,17 @@ export function approvals({ now = () => Date.now(), timeout = TIMEOUT_MS, onChan
             const w = oneLine(word, WORD_MAX);
             return end(id, { decision, ...(by ? { by } : {}), ...(w ? { word: w } : {}) });
         },
+        /* The agent takes back its own waiting request: it ends as "withdrawn",
+           and can no longer be approved. Scoped -- an agent withdraws only its own
+           (a conversation never touches another's), the person's decision still wins
+           if it already came. */
+        withdraw(id, agentId, word = '') {
+            const p = pending.get(id);
+            if (!p) no('this request is no longer waiting (decided, withdrawn, or too late)');
+            if (agentId && p.request.agent?.id !== agentId) no('you can withdraw only your own request');
+            const w = oneLine(word, WORD_MAX);
+            return end(id, { decision: 'withdrawn', ...(w ? { word: w } : {}) });
+        },
         /* Those whose time is up end as "timeout". How many ended. */
         expire() {
             let n = 0;

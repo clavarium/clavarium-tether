@@ -193,6 +193,29 @@ test('the keeper: a call that needs a person waits; Accept runs it, Refuse refus
     assert.equal(j[1].by.name, 'Owner'); assert.equal(j[1].exit, 0); assert.equal(j[1].size, 3);
 });
 
+test('the keeper: an agent lists its own waiting requests (pending) and withdraws one -- its own only; the person can no longer approve it', async () => {
+    const { k, conn } = setup('propose');
+    const p = k.act('terminal.run', { target: 'web', command: 'sudo rm -rf /tmp/x', why: 'clean up' }, BOT);
+    await tick();
+    const [req] = k.approvals();
+    const pend = await k.act('pending', {}, BOT);
+    assert.equal(pend.ok, true); assert.equal(pend.data.length, 1); assert.equal(pend.data[0].id, req.id);
+    assert.match(pend.text, /terminal\.run/);
+    /* another agent cannot withdraw it (isolation). */
+    const bad = await k.act('withdraw', { id: req.id }, OTHER);
+    assert.equal(bad.ok, false); assert.match(bad.text, /only your own/);
+    assert.equal(k.approvals().length, 1, 'still waiting');
+    /* the agent withdraws its own: the held call ends as withdrawn, nothing ran. */
+    const w = await k.act('withdraw', { id: req.id, reason: 'sent by mistake' }, BOT);
+    assert.equal(w.ok, true); assert.match(w.text, /Withdrew the request/);
+    assert.deepEqual(await p, { ok: false, text: 'withdrawn by the AI: "sent by mistake": nothing was done' });
+    assert.equal(conn.calls.length, 0, 'the action never ran');
+    assert.equal(k.approvals().length, 0, 'gone from the person\'s screen');
+    assert.deepEqual((await k.act('pending', {}, BOT)).data, []);
+    /* withdrawing something no longer waiting is refused, not a crash. */
+    assert.equal((await k.act('withdraw', { id: req.id }, BOT)).ok, false);
+});
+
 test('the keeper: Always approves, adds the rule, and the same call no longer asks', async () => {
     const { k, conn } = setup('propose');
     const p = k.act('terminal.run', { target: 'web', command: 'git pull' }, BOT);

@@ -113,6 +113,17 @@ export function keeper(dir, { sides = () => [], ask, secrets = async () => { thr
             const list = store.targets().filter((t) => t.grants[who.id]).map((t) => ({ id: t.id, title: t.title, kind: t.kind, level: t.grants[who.id].level, rules: t.grants[who.id].rules }));
             return { text: sayTargets(list), data: list };
         }
+        /* Its own requests still waiting for a person, and taking one back. Scoped to
+           the agent: a conversation sees and withdraws only its own, never another's. */
+        if (verb === 'pending') {
+            const list = queue.list(me.id).map((r) => ({ id: r.id, verb: r.verb, target: r.target?.title ?? null, detail: r.detail ?? '', why: r.why ?? '', since: r.at }));
+            return { text: list.length ? list.map((r) => `${r.id}  ${r.verb}${r.target ? ` on ${r.target}` : ''}${r.detail ? ` — ${r.detail}` : ''}${r.why ? ` (${r.why})` : ''}`).join('\n') : 'No request of yours is waiting for a person.', data: list };
+        }
+        if (verb === 'withdraw') {
+            queue.withdraw(oneLine(a.id, 100), me.id, a.reason);
+            journal.append({ agent: me, verb: 'withdraw', detail: oneLine(a.id, 100), ...(a.reason ? { word: oneLine(a.reason, 200) } : {}) });
+            return { text: `Withdrew the request ${oneLine(a.id, 100)}: it can no longer be approved.` };
+        }
         const t = store.target(a.target);
         const g = t?.grants?.[who.id];
         if (!t || !g) no(`no target ${a.target} that you were given`);
@@ -155,6 +166,7 @@ export function keeper(dir, { sides = () => [], ask, secrets = async () => { thr
                 journal.append({ ...base, decision: outcome.decision, by: outcome.by, word: outcome.word });
                 if (outcome.decision === 'no') no(`refused by ${outcome.by?.name ?? 'a person'}${outcome.word ? `: "${outcome.word}"` : ''}`);
                 if (outcome.decision === 'timeout') no(`not answered within ${minutes} minute${minutes === 1 ? '' : 's'}: nothing was done`);
+                if (outcome.decision === 'withdrawn') no(`withdrawn by the AI${outcome.word ? `: "${outcome.word}"` : ''}: nothing was done`);
                 no('a person stopped everything for you: nothing was done');
             }
             if (store.stopped(who.id)) no('a person stopped everything for you: nothing was done');
