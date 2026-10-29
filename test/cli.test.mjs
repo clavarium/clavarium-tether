@@ -44,3 +44,7 @@ test('read parses calendar category add/rename/delete', () => {
     assert.deepEqual(read(['calendar', 'C', 'category', 'delete', 'Trip'])[1], { target: 'C', name: 'Trip' });
     assert.equal(read(['calendar', 'C', 'category', 'add'])[0] ?? read(['calendar', 'C', 'category', 'add']).refused ? true : false, true);
 });
+
+test('read parses mail attachment --out as a destination folder', () => {
+    assert.deepEqual(read(['mail', 'Box', 'attachment', 'AAA', 'report.pdf', '--out', 'downloads'])[1], { target: 'Box', uid: 'AAA', which: 'report.pdf', out: 'downloads' });
+});

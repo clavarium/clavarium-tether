@@ -4,7 +4,8 @@
  * the keeper's answer. `serve` IS a keeper: the targets, their approvals and
  * their page, for use without an application.
  */
-import { realpathSync, readFileSync } from 'node:fs';
+import { realpathSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ask, findFolder } from '../server/mcp.mjs';
 import { NAME, VERSION, FOLDER, ENV_DIR } from '../server/name.mjs';
@@ -144,7 +145,7 @@ export function read(argv) {
                 case 'list': return ['mail.list', { target, ...box, ...(flags.since !== undefined ? { since: flags.since } : {}), ...(flags.before !== undefined ? { before: flags.before } : {}) }];
                 case 'read': return need(p[0], 'mail TARGET read UID [--mailbox NAME]') ?? ['mail.read', { target, uid: p[0], ...box }];
                 case 'source': return need(p[0], 'mail TARGET source UID [--mailbox NAME]') ?? ['mail.source', { target, uid: p[0], ...box }];
-                case 'attachment': return need(p.length >= 2, 'mail TARGET attachment UID NAME|N [--mailbox NAME]') ?? ['mail.attachment', { target, uid: p[0], which: p.slice(1).join(' '), ...box }];
+                case 'attachment': return need(p.length >= 2, 'mail TARGET attachment UID NAME|N [--mailbox NAME] [--out DIR]') ?? ['mail.attachment', { target, uid: p[0], which: p.slice(1).join(' '), ...box, ...(flags.out !== undefined ? { out: flags.out } : {}) }];
                 case 'search': return need(p.length, 'mail TARGET search "text" [--mailbox NAME]') ?? ['mail.search', { target, text: p.join(' '), ...box }];
                 case 'move': return need(p.length === 2, 'mail TARGET move UID MAILBOX') ?? ['mail.move', { target, uid: p[0], mailbox: p[1], ...why }];
                 case 'flag': return need(p.length === 2, 'mail TARGET flag UID FLAG') ?? ['mail.flag', { target, uid: p[0], flag: p[1], ...why }];
@@ -231,6 +232,20 @@ export async function run(argv, { env = process.env, cwd = process.cwd(), wait, 
     const folder = findFolder({ dir, env, from: cwd });
     if (!folder) return { code: 2, out: '', err: `No ${FOLDER} folder here or above. Run it from your work folder, or give --dir FOLDER.\n` };
     const r = await ask(folder, what[0], what[1], { ...(wait ? { wait } : {}), onHeld });
+    /* mail attachment --out DIR: write the file here (the client's side), rather than
+       printing its base64. The connector hands back "name (type, size)\n\n<base64>". */
+    if (r.ok && what[0] === 'mail.attachment' && what[1].out !== undefined) {
+        const nl = r.text.indexOf('\n\n');
+        const header = nl >= 0 ? r.text.slice(0, nl) : r.text;
+        const b64 = nl >= 0 ? r.text.slice(nl + 2) : '';
+        const name = baseName(header.replace(/ \([^)]*\)\s*$/, '').trim()) || 'attachment';
+        try {
+            mkdirSync(what[1].out, { recursive: true });
+            const path = join(what[1].out, name);
+            writeFileSync(path, Buffer.from(b64, 'base64'));
+            return { code: 0, out: `Saved ${header} to ${path}\n`, err: '' };
+        } catch (e) { return { code: 1, out: '', err: `cannot write to ${what[1].out}: ${e.code ?? e.message}\n` }; }
+    }
     if (r.ok) return { code: 0, out: `${r.text}\n`, err: '' };
     return { code: r.nokeeper ? 3 : r.late ? 4 : 1, out: '', err: `Not done: ${r.text}\n` };
 }

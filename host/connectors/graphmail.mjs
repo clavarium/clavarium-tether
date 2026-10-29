@@ -124,14 +124,21 @@ export function graphMail({ fetch: fetchImpl = globalThis.fetch, token }) {
             const id = String(a.uid ?? '').trim();
             const which = String(a.which ?? '').trim();
             if (!id) no('attachment needs the message id');
-            const data = await call(target, ctx, 'GET', `/me/messages/${encodeURIComponent(id)}/attachments?$select=id,name,contentType,size,contentBytes`);
+            /* List without contentBytes: that property lives on a file attachment, not
+               on the base attachment type, so $select-ing it on the mixed collection is
+               what Graph rejected ("no property contentBytes on type ...attachment"). */
+            const data = await call(target, ctx, 'GET', `/me/messages/${encodeURIComponent(id)}/attachments?$select=id,name,contentType,size`);
             const atts = (data?.value ?? []);
             if (!atts.length) no('this message has no attachment');
             const n = /^\d+$/.test(which) ? Number(which) - 1 : atts.findIndex((x) => (x.name || '').toLowerCase().includes(which.toLowerCase()));
             const att = atts[n];
             if (!att) no(`no attachment "${which}" — this message has: ${atts.map((x) => x.name).join(', ')}`);
-            if (att.contentBytes === undefined || att.contentBytes === null) no(`"${att.name}" is not a downloadable file attachment`);
-            const text = `${att.name} (${att.contentType || 'application/octet-stream'}, ${Math.round((att.size || 0) / 1024)} KB)\n\n${att.contentBytes}`;
+            /* Fetch the chosen attachment in full for its bytes (a file attachment then
+               carries contentBytes, already base64). */
+            const full = await call(target, ctx, 'GET', `/me/messages/${encodeURIComponent(id)}/attachments/${encodeURIComponent(att.id)}`);
+            const bytes = full?.contentBytes;
+            if (bytes === undefined || bytes === null) no(`"${att.name}" is not a downloadable file attachment (it may be a linked file or an attached item -- open the message source for it)`);
+            const text = `${att.name} (${att.contentType || 'application/octet-stream'}, ${Math.round((att.size || 0) / 1024)} KB)\n\n${bytes}`;
             return { text, size: Buffer.byteLength(text) };
         },
         /* Graph DELETE moves the message to Deleted Items (a soft delete). */

@@ -125,12 +125,26 @@ test('source fetches the raw MIME via $value (not JSON)', async () => {
     assert.match(r.text, /raw body here/);
 });
 
-test('attachment returns a file attachment as base64, by name', async () => {
-    const { fetch } = fakeGraph({ 'GET /me/messages/X/attachments': { value: [{ id: 'a1', name: 'r.pdf', contentType: 'application/pdf', size: 9, contentBytes: Buffer.from('PDF-BYTES').toString('base64') }] } });
+test('attachment lists without contentBytes (the bug), then fetches the chosen file in full for its bytes', async () => {
+    const { fetch, calls } = fakeGraph({
+        'GET /me/messages/X/attachments': { value: [{ id: 'a1', name: 'r.pdf', contentType: 'application/pdf', size: 9 }] },
+        'GET /me/messages/X/attachments/a1': { id: 'a1', name: 'r.pdf', contentType: 'application/pdf', size: 9, contentBytes: Buffer.from('PDF-BYTES').toString('base64') },
+    });
     const g = graphMail({ fetch, token: mint });
     const r = await g.attachment(target, { uid: 'X', which: 'r.pdf' }, ctx);
     assert.match(r.text, /r\.pdf \(application\/pdf/);
     assert.equal(Buffer.from(r.text.split('\n\n').pop().trim(), 'base64').toString(), 'PDF-BYTES');
+    assert.doesNotMatch(decodeURIComponent(calls[0].path), /contentBytes/, 'the list query no longer asks for contentBytes on the mixed collection');
+    assert.ok(calls.some((c) => c.path.includes('/attachments/a1')), 'it fetches the chosen attachment in full');
+});
+
+test('attachment refuses a non-file attachment (no contentBytes) with a clear message', async () => {
+    const { fetch } = fakeGraph({
+        'GET /me/messages/X/attachments': { value: [{ id: 'ref1', name: 'shared.docx', contentType: 'application/vnd...', size: 0 }] },
+        'GET /me/messages/X/attachments/ref1': { id: 'ref1', name: 'shared.docx', '@odata.type': '#microsoft.graph.referenceAttachment' },
+    });
+    const g = graphMail({ fetch, token: mint });
+    await assert.rejects(g.attachment(target, { uid: 'X', which: 'shared.docx' }, ctx), /not a downloadable file attachment/);
 });
 
 test('move and flag hit the right Graph endpoints (acts)', async () => {
