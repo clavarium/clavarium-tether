@@ -350,3 +350,40 @@ test('calendar.category-rename and -delete resolve the category by name (Microso
     assert.ok(calls.find((c) => c.method === 'DELETE').url.includes('/masterCategories/c1'));
     await assert.rejects(g.run('calendar.category-delete', M, { name: 'Ghost' }, ctx()), /no category "Ghost"/);
 });
+
+test('create makes a Teams meeting by default when there are participants, not without; --online none opts out', async () => {
+    const mk = (calls) => async (url, opts = {}) => {
+        calls.push({ url, method: opts.method || 'GET', body: opts.body });
+        if (url.includes('login.microsoftonline.com')) return json({ access_token: 'T', expires_in: 3600 });
+        if (url.includes('/me/events') && opts.method === 'POST') return json({ id: 'm-new' });
+        return json({ error: { message: 'no' } }, 404);
+    };
+    const c1 = []; await calendar({ fetch: mk(c1) }).run('calendar.create', M, { title: 'Sync', start: '2030-01-02T10:00:00', end: '2030-01-02T11:00:00', with: 'a@example.com' }, ctx());
+    const b1 = JSON.parse(c1.find((c) => c.method === 'POST' && c.url.includes('/me/events')).body);
+    assert.equal(b1.isOnlineMeeting, true); assert.equal(b1.onlineMeetingProvider, 'teamsForBusiness');
+    const c2 = []; await calendar({ fetch: mk(c2) }).run('calendar.create', M, { title: 'Solo', start: '2030-01-02T10:00:00', end: '2030-01-02T11:00:00' }, ctx());
+    assert.equal(JSON.parse(c2.find((c) => c.method === 'POST' && c.url.includes('/me/events')).body).isOnlineMeeting, undefined, 'no participants -> no Teams');
+    const c3 = []; await calendar({ fetch: mk(c3) }).run('calendar.create', M, { title: 'InPerson', start: '2030-01-02T10:00:00', end: '2030-01-02T11:00:00', with: 'a@example.com', online: 'none' }, ctx());
+    assert.equal(JSON.parse(c3.find((c) => c.method === 'POST' && c.url.includes('/me/events')).body).isOnlineMeeting, undefined, '--online none opts out');
+});
+
+test('update --notes keeps an existing Teams meeting (never erases it); --online teams/none re-adds or removes', async () => {
+    const calls = [];
+    const fetch = async (url, opts = {}) => {
+        calls.push({ url, method: opts.method || 'GET', body: opts.body });
+        if (url.includes('login.microsoftonline.com')) return json({ access_token: 'T', expires_in: 3600 });
+        if (url.includes('$select=isOnlineMeeting')) return json({ isOnlineMeeting: true, onlineMeetingProvider: 'teamsForBusiness' });
+        if (opts.method === 'PATCH') return json({ id: 'm1' });
+        return json({ error: { message: 'no' } }, 404);
+    };
+    await calendar({ fetch }).run('calendar.update', M, { id: 'm1', notes: 'maj' }, ctx());
+    const patch = JSON.parse(calls.find((c) => c.method === 'PATCH').body);
+    assert.equal(patch.body.content, 'maj');
+    assert.equal(patch.isOnlineMeeting, true, 'the Teams meeting is preserved when the notes change');
+    const mk = (calls2) => async (url, opts = {}) => { calls2.push({ url, method: opts.method || 'GET', body: opts.body }); if (url.includes('login.microsoftonline.com')) return json({ access_token: 'T', expires_in: 3600 }); if (opts.method === 'PATCH') return json({ id: 'm1' }); return json({ error: { message: 'no' } }, 404); };
+    const a = []; await calendar({ fetch: mk(a) }).run('calendar.update', M, { id: 'm1', online: 'teams' }, ctx());
+    assert.equal(JSON.parse(a.find((c) => c.method === 'PATCH').body).isOnlineMeeting, true);
+    assert.equal(a.some((c) => c.url.includes('$select=isOnlineMeeting')), false, 'no needless fetch when --online is explicit');
+    const b = []; await calendar({ fetch: mk(b) }).run('calendar.update', M, { id: 'm1', online: 'none' }, ctx());
+    assert.equal(JSON.parse(b.find((c) => c.method === 'PATCH').body).isOnlineMeeting, false);
+});

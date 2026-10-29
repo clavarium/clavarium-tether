@@ -239,10 +239,17 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
             const categories = catsOf(a);
             if (categories && provider !== 'microsoft') no(`${target.title}: event categories are Microsoft-only`);
             const attendees = String(a.with ?? '').split(',').map((x) => x.trim()).filter(Boolean);
-            const res = await call(target, ctx, 'POST', api.create, api.body({ title: a.title, start: a.start, end: a.end, where: a.where, notes: a.notes, attendees, categories: categories ?? undefined }));
+            /* An online (Teams) meeting: on by default once there are participants, off
+               with --online none. Microsoft only (Teams); Graph makes the meeting + link. */
+            const online = a.online !== undefined ? String(a.online).toLowerCase() : (attendees.length ? 'teams' : 'none');
+            if (online !== 'none' && online !== 'teams') no('--online is teams or none');
+            if (online === 'teams' && provider !== 'microsoft') no(`${target.title}: online (Teams) meetings are Microsoft-only`);
+            const payload = api.body({ title: a.title, start: a.start, end: a.end, where: a.where, notes: a.notes, attendees, categories: categories ?? undefined });
+            if (provider === 'microsoft' && online === 'teams') { payload.isOnlineMeeting = true; payload.onlineMeetingProvider = 'teamsForBusiness'; }
+            const res = await call(target, ctx, 'POST', api.create, payload);
             if (!res.ok) no(`${target.title}: the event was not created (${res.status} ${await bodyError(res)})`.trim());
             const made = await res.json().catch(() => ({}));
-            return { text: `Created: ${a.title} (${a.start}). Its id is ${made.id ?? '(unknown)'}.`, size: 0 };
+            return { text: `Created: ${a.title} (${a.start})${online === 'teams' ? ', with a Teams meeting' : ''}. Its id is ${made.id ?? '(unknown)'}.`, size: 0 };
         },
         /* Join a file to an event. An act. Microsoft takes the bytes inline (Graph
            fileAttachment); a Google calendar attach is a Drive link, added once the
@@ -344,7 +351,20 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
             if (a.notes !== undefined) patch.body = { contentType: 'text', content: String(a.notes) };
             if (a.with !== undefined) patch.attendees = String(a.with).split(',').map((x) => x.trim()).filter(Boolean).map((e) => ({ emailAddress: { address: e }, type: 'required' }));
             if (a.categories !== undefined) patch.categories = catsOf(a) ?? []; /* --category none clears them */
-            if (!Object.keys(patch).length) no('update needs at least one of: title, start, end, where, notes, with, category');
+            if (a.online !== undefined) {
+                const online = String(a.online).toLowerCase();
+                if (online === 'teams') { patch.isOnlineMeeting = true; patch.onlineMeetingProvider = 'teamsForBusiness'; }
+                else if (online === 'none') patch.isOnlineMeeting = false;
+                else no('--online is teams or none');
+            }
+            if (!Object.keys(patch).length) no('update needs at least one of: title, start, end, where, notes, with, category, online');
+            /* Never let a change to the notes erase a Teams meeting: if the event is an
+               online meeting and --online was not given, keep it on, so Graph keeps the
+               meeting and re-puts its join link in the body rather than dropping it. */
+            if (patch.body !== undefined && a.online === undefined) {
+                const info = await call(target, ctx, 'GET', `${API.microsoft.event(String(a.id))}?$select=isOnlineMeeting,onlineMeetingProvider`);
+                if (info.ok) { const j = await info.json().catch(() => ({})); if (j.isOnlineMeeting) { patch.isOnlineMeeting = true; patch.onlineMeetingProvider = j.onlineMeetingProvider || 'teamsForBusiness'; } }
+            }
             const res = await call(target, ctx, 'PATCH', API.microsoft.event(String(a.id)), patch);
             if (res.status === 404) no('no such event');
             if (!res.ok) no(`${target.title}: the event was not changed (${res.status} ${await bodyError(res)})`.trim());

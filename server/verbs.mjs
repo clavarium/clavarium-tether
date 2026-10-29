@@ -190,12 +190,12 @@ export function check(verb, a = {}) {
         case 'calendar.category-delete': str('name', 200); break;
         case 'calendar.read': str('id', 1024); break;
         case 'calendar.freebusy': str('who', 2000); str('from', 64); str('to', 64); break;
-        case 'calendar.create': str('title', 400); str('start', 64); str('end', 64); str('where', 400); str('notes', TEXT_MAX, true); str('with', 1000); cats(); break;
+        case 'calendar.create': str('title', 400); str('start', 64); str('end', 64); str('where', 400); str('notes', TEXT_MAX, true); str('with', 1000); str('online', 20); cats(); break;
         case 'calendar.attach': str('id', 1024); str('attach', TEXT_MAX, true); str('attachName', 200); if (a.share === true || a.share === 'true') out.share = true; break;
         case 'calendar.detach': str('id', 1024); str('which', 400); break;
         case 'calendar.delete': str('id', 1024); break;
         case 'calendar.respond': str('id', 1024); str('answer', 40); str('comment', 400); break;
-        case 'calendar.update': str('id', 1024); str('title', 400); str('start', 64); str('end', 64); str('where', 400); str('notes', TEXT_MAX, true); str('with', 1000); cats(); break;
+        case 'calendar.update': str('id', 1024); str('title', 400); str('start', 64); str('end', 64); str('where', 400); str('notes', TEXT_MAX, true); str('with', 1000); str('online', 20); cats(); break;
         case 'contacts.attach': str('id', 1024); str('attach', TEXT_MAX, true); str('attachName', 200); break;
         case 'contacts.search': str('text', 200); break;
         case 'contacts.read': str('id', 1024); break;
