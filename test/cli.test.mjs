@@ -37,3 +37,10 @@ test('read parses --category: repeatable and comma-split on create, none clears 
     /* the categories subverb */
     assert.deepEqual(read(['calendar', 'C', 'categories'])[1], { target: 'C' });
 });
+
+test('read parses calendar category add/rename/delete', () => {
+    assert.deepEqual(read(['calendar', 'C', 'category', 'add', 'Internal', '--color', 'blue'])[1], { target: 'C', name: 'Internal', color: 'blue' });
+    assert.deepEqual(read(['calendar', 'C', 'category', 'rename', 'Old', '--to', 'New', '--color', 'green'])[1], { target: 'C', name: 'Old', to: 'New', color: 'green' });
+    assert.deepEqual(read(['calendar', 'C', 'category', 'delete', 'Trip'])[1], { target: 'C', name: 'Trip' });
+    assert.equal(read(['calendar', 'C', 'category', 'add'])[0] ?? read(['calendar', 'C', 'category', 'add']).refused ? true : false, true);
+});

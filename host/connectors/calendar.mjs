@@ -61,6 +61,10 @@ const COLOR_NAME = {
     preset16: 'dark orange', preset17: 'dark brown', preset18: 'dark yellow', preset19: 'dark green', preset20: 'dark teal',
     preset21: 'dark olive', preset22: 'dark blue', preset23: 'dark purple', preset24: 'dark cranberry',
 };
+/* A colour a person names, back to its Graph preset id (the reverse of COLOR_NAME);
+ * a presetN given straight through is kept. Unknown names fall to null (refused). */
+const COLOR_PRESET = Object.fromEntries(Object.entries(COLOR_NAME).map(([preset, name]) => [name, preset]));
+const presetOf = (colour) => { const c = String(colour ?? '').trim().toLowerCase(); return /^preset(\d|1\d|2[0-4])$/.test(c) || c === 'none' ? c : (COLOR_PRESET[c] ?? null); };
 /* The categories asked for, as a clean list (empty array clears them). */
 const catsOf = (a) => (Array.isArray(a.categories) ? a.categories.map((c) => String(c).trim()).filter(Boolean) : (a.categories ? [String(a.categories).trim()].filter(Boolean) : null));
 
@@ -359,7 +363,54 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
             const text = cats.map((c) => `${c.displayName}  (${COLOR_NAME[c.color] ?? c.color ?? 'no colour'})`).join('\n');
             return { text, size: Buffer.byteLength(text) };
         },
+        /* Create a category in the mailbox, with a colour (Microsoft). An act: a
+           category is a personal label, so it may ask a person. Colours are named
+           (red, blue, dark green, ...) or a presetN; the list is in `categories`. */
+        async 'calendar.category-add'(target, a, ctx) {
+            const provider = providerOf(target);
+            if (provider !== 'microsoft') no(`${target.title}: calendar categories are Microsoft-only`);
+            const name = String(a.name ?? '').trim();
+            if (!name) no('a category needs a name');
+            const color = presetOf(a.color ?? 'none');
+            if (color === null) no(`unknown colour "${a.color}" -- use one of: ${Object.values(COLOR_NAME).filter((n) => n !== 'no colour').join(', ')}`);
+            const res = await call(target, ctx, 'POST', 'https://graph.microsoft.com/v1.0/me/outlook/masterCategories', { displayName: name, color });
+            if (res.status === 409) no(`${target.title}: a category "${name}" already exists`);
+            if (!res.ok) no(`${target.title}: the category was not created (${res.status} ${await bodyError(res)})`.trim());
+            return { text: `Created the category "${name}" (${COLOR_NAME[color] ?? color}).`, size: 0 };
+        },
+        /* Rename a mailbox category, or recolour it, by its current name (Microsoft).
+           Note: events already tagged keep the old name -- Outlook stores the name on
+           each event, so a rename changes the colour registry, not past events. An act. */
+        async 'calendar.category-rename'(target, a, ctx) {
+            const id = await categoryId(target, a, ctx, a.name);
+            const patch = {};
+            if (a.to !== undefined && String(a.to).trim()) patch.displayName = String(a.to).trim();
+            if (a.color !== undefined) { const c = presetOf(a.color); if (c === null) no(`unknown colour "${a.color}"`); patch.color = c; }
+            if (!Object.keys(patch).length) no('rename needs a new name (--to) or a colour (--color)');
+            const res = await call(target, ctx, 'PATCH', `https://graph.microsoft.com/v1.0/me/outlook/masterCategories/${encodeURIComponent(id)}`, patch);
+            if (!res.ok) no(`${target.title}: the category was not changed (${res.status} ${await bodyError(res)})`.trim());
+            return { text: `Changed the category "${a.name}"${patch.displayName ? ` -> "${patch.displayName}"` : ''}${patch.color ? ` (${COLOR_NAME[patch.color] ?? patch.color})` : ''}.`, size: 0 };
+        },
+        /* Remove a mailbox category by name (Microsoft). Events keep the name string. An act. */
+        async 'calendar.category-delete'(target, a, ctx) {
+            const id = await categoryId(target, a, ctx, a.name);
+            const res = await call(target, ctx, 'DELETE', `https://graph.microsoft.com/v1.0/me/outlook/masterCategories/${encodeURIComponent(id)}`);
+            if (!res.ok && res.status !== 204) no(`${target.title}: the category was not removed (${res.status} ${await bodyError(res)})`.trim());
+            return { text: `Removed the category "${a.name}".`, size: 0 };
+        },
     };
+    /* A mailbox category's Graph id, by its display name (Microsoft only). */
+    async function categoryId(target, a, ctx, name) {
+        const provider = providerOf(target);
+        if (provider !== 'microsoft') no(`${target.title}: calendar categories are Microsoft-only`);
+        const want = String(name ?? '').trim();
+        if (!want) no('say which category (its name)');
+        const res = await call(target, ctx, 'GET', 'https://graph.microsoft.com/v1.0/me/outlook/masterCategories');
+        if (!res.ok) no(`${target.title}: the categories could not be read (${res.status} ${await bodyError(res)})`.trim());
+        const found = ((await res.json()).value ?? []).find((c) => String(c.displayName).toLowerCase() === want.toLowerCase());
+        if (!found) no(`${target.title}: no category "${want}"`);
+        return found.id;
+    }
 
     return {
         name: 'calendar',

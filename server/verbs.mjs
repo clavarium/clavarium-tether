@@ -80,6 +80,9 @@ export const VERBS = Object.freeze({
     'calendar.respond': { reads: false, kinds: ['calendar'], needs: ['id', 'answer'] },
     'calendar.update': { reads: false, kinds: ['calendar'], needs: ['id'] },
     'calendar.categories': { reads: true, kinds: ['calendar'], needs: [] },
+    'calendar.category-add': { reads: false, kinds: ['calendar'], needs: ['name'] },
+    'calendar.category-rename': { reads: false, kinds: ['calendar'], needs: ['name'] },
+    'calendar.category-delete': { reads: false, kinds: ['calendar'], needs: ['name'] },
     'contacts.list': { reads: true, kinds: ['contacts'], needs: [] },
     'contacts.search': { reads: true, kinds: ['contacts'], needs: ['text'] },
     'contacts.read': { reads: true, kinds: ['contacts'], needs: ['id'] },
@@ -182,6 +185,9 @@ export function check(verb, a = {}) {
             break;
         }
         case 'calendar.list': str('from', 64); str('to', 64); str('category', 200); break;
+        case 'calendar.category-add': str('name', 200); str('color', 40); break;
+        case 'calendar.category-rename': str('name', 200); str('to', 200); str('color', 40); break;
+        case 'calendar.category-delete': str('name', 200); break;
         case 'calendar.read': str('id', 1024); break;
         case 'calendar.freebusy': str('who', 2000); str('from', 64); str('to', 64); break;
         case 'calendar.create': str('title', 400); str('start', 64); str('end', 64); str('where', 400); str('notes', TEXT_MAX, true); str('with', 1000); cats(); break;
@@ -247,6 +253,9 @@ export function detail(verb, a = {}) {
         case 'calendar.delete': return 'delete an event';
         case 'calendar.respond': return `${a.answer} an invitation`;
         case 'calendar.update': return `change an event${a.title ? ` → ${a.title}` : ''}`;
+        case 'calendar.category-add': return `create the category "${a.name}"${a.color ? ` (${a.color})` : ''}`;
+        case 'calendar.category-rename': return `change the category "${a.name}"`;
+        case 'calendar.category-delete': return `delete the category "${a.name}"`;
         case 'contacts.read': return a.id;
         case 'contacts.create': return `add ${a.name || a.email || 'a contact'}`;
         case 'contacts.update': return 'change a contact';

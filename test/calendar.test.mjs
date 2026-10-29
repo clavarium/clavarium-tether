@@ -315,3 +315,38 @@ test('calendar.list shows each event categories and can keep only one (Microsoft
     assert.match(only.text, /Client call/);
     assert.doesNotMatch(only.text, /Internal sync|No tag/, 'kept only the one category');
 });
+
+test('calendar.category-add creates a category with a named colour (Microsoft), refuses an unknown colour', async () => {
+    const calls = [];
+    const fetch = async (url, opts = {}) => {
+        calls.push({ url, method: opts.method || 'GET', body: opts.body });
+        if (url.includes('login.microsoftonline.com')) return json({ access_token: 'T', expires_in: 3600 });
+        if (url.includes('/me/outlook/masterCategories') && (opts.method || 'GET') === 'POST') return json({ id: 'c1', displayName: 'Internal', color: 'preset7' }, 201);
+        return json({ error: { message: 'no' } }, 404);
+    };
+    const r = await calendar({ fetch }).run('calendar.category-add', M, { name: 'Internal', color: 'blue' }, ctx());
+    assert.match(r.text, /Created the category "Internal" \(blue\)/);
+    assert.deepEqual(JSON.parse(calls.find((c) => c.method === 'POST' && c.url.includes('masterCategories')).body), { displayName: 'Internal', color: 'preset7' });
+    await assert.rejects(calendar({ fetch }).run('calendar.category-add', M, { name: 'X', color: 'chartreuse' }, ctx()), /unknown colour/);
+    await assert.rejects(calendar({ fetch }).run('calendar.category-add', G, { name: 'X', color: 'red' }, ctx()), /Microsoft-only/);
+});
+
+test('calendar.category-rename and -delete resolve the category by name (Microsoft)', async () => {
+    const calls = [];
+    const fetch = async (url, opts = {}) => {
+        calls.push({ url, method: opts.method || 'GET', body: opts.body });
+        if (url.includes('login.microsoftonline.com')) return json({ access_token: 'T', expires_in: 3600 });
+        if (url.includes('/me/outlook/masterCategories') && (opts.method || 'GET') === 'GET') return json({ value: [{ id: 'c1', displayName: 'Internal', color: 'preset7' }] });
+        if (opts.method === 'PATCH') return json({ id: 'c1', displayName: 'Interne', color: 'preset4' });
+        if (opts.method === 'DELETE') return new Response(null, { status: 204 });
+        return json({ error: { message: 'no' } }, 404);
+    };
+    const g = calendar({ fetch });
+    await g.run('calendar.category-rename', M, { name: 'Internal', to: 'Interne', color: 'green' }, ctx());
+    const patch = calls.find((c) => c.method === 'PATCH');
+    assert.ok(patch.url.includes('/masterCategories/c1'));
+    assert.deepEqual(JSON.parse(patch.body), { displayName: 'Interne', color: 'preset4' });
+    await g.run('calendar.category-delete', M, { name: 'internal' }, ctx()); // case-insensitive
+    assert.ok(calls.find((c) => c.method === 'DELETE').url.includes('/masterCategories/c1'));
+    await assert.rejects(g.run('calendar.category-delete', M, { name: 'Ghost' }, ctx()), /no category "Ghost"/);
+});

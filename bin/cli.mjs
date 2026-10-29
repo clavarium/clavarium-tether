@@ -48,6 +48,8 @@ export const HELP = `${NAME}: act on the targets you were given (machines, folde
   ${NAME} calendar TARGET create --title "..." --start ISO --end ISO [--where "..."] [--notes "..."] [--with "a@b,c@d"] [--category "Internal"]
   ${NAME} calendar TARGET update EVENT_ID [--title] [--start] [--end] [--where] [--notes] [--with] [--category NAME|none]  (Microsoft)
   ${NAME} calendar TARGET categories                      the mailbox's categories (name, colour; Microsoft)
+  ${NAME} calendar TARGET category add "Internal" --color blue        create a category (Microsoft)
+  ${NAME} calendar TARGET category rename "Old" --to "New" [--color C] | category delete "Name"
   ${NAME} calendar TARGET list --category "Travel"        only the events of one category (Microsoft)
   ${NAME} calendar TARGET attach EVENT_ID FILE [--share]   join a file to an event (Microsoft); --share if a participant is external
   ${NAME} calendar TARGET detach EVENT_ID NAME|N           remove an attachment from an event (Microsoft)
@@ -72,7 +74,7 @@ ${NAME} ${VERSION}`;
 const FILE_VERBS = ['list', 'read', 'search', 'write', 'move', 'delete'];
 const BROWSER_VERBS = ['tabs', 'open', 'shot', 'html', 'console', 'eval', 'click', 'type', 'key', 'scroll', 'drag'];
 const MAIL_VERBS = ['list', 'read', 'source', 'attachment', 'search', 'move', 'flag', 'delete', 'send'];
-const CAL_VERBS = ['list', 'read', 'freebusy', 'create', 'update', 'attach', 'detach', 'delete', 'respond', 'categories'];
+const CAL_VERBS = ['list', 'read', 'freebusy', 'create', 'update', 'attach', 'detach', 'delete', 'respond', 'categories', 'category'];
 const CONTACT_VERBS = ['list', 'search', 'read', 'create', 'update', 'delete', 'attach'];
 const baseName = (p) => String(p).split('/').pop();
 const readB64 = (p) => { try { return readFileSync(p).toString('base64'); } catch { return null; } };
@@ -167,6 +169,14 @@ export function read(argv) {
             const catArr = flags.category ? (flags.category.length === 1 && flags.category[0].toLowerCase() === 'none' ? [] : flags.category) : undefined;
             switch (what) {
                 case 'categories': return ['calendar.categories', { target }];
+                case 'category': {
+                    const [action, ...nameParts] = p;
+                    const name = nameParts.join(' ');
+                    if (action === 'add') return name ? ['calendar.category-add', { target, name, ...(flags.color !== undefined ? { color: flags.color } : {}), ...why }] : { refused: 'calendar TARGET category add "Name" --color COLOUR' };
+                    if (action === 'rename') return name ? ['calendar.category-rename', { target, name, ...(flags.to !== undefined ? { to: flags.to } : {}), ...(flags.color !== undefined ? { color: flags.color } : {}), ...why }] : { refused: 'calendar TARGET category rename "Old" --to "New" [--color COLOUR]' };
+                    if (action === 'delete') return name ? ['calendar.category-delete', { target, name, ...why }] : { refused: 'calendar TARGET category delete "Name"' };
+                    return { refused: 'calendar TARGET category add|rename|delete ...' };
+                }
                 case 'list': return ['calendar.list', { target, ...(flags.from !== undefined ? { from: flags.from } : {}), ...(flags.to !== undefined ? { to: flags.to } : {}), ...(catArr && catArr.length ? { category: catArr[0] } : {}) }];
                 case 'read': return need(p[0], 'calendar TARGET read ID') ?? ['calendar.read', { target, id: p[0] }];
                 case 'freebusy': return need(p[0], 'calendar TARGET freebusy "a@b,c@d" [--from DATE] [--to DATE]') ?? ['calendar.freebusy', { target, who: p.join(','), ...(flags.from !== undefined ? { from: flags.from } : {}), ...(flags.to !== undefined ? { to: flags.to } : {}) }];
