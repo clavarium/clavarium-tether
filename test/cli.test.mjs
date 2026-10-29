@@ -25,3 +25,15 @@ test('run still reads files write --from as a local file', async () => {
     const r = await run(['files', 'Box', 'write', 'out.txt', '--from', join(clean, 'no-such-file')], opts);
     assert.match(r.err, /cannot read .*no-such-file/, 'files write --from keeps reading the local file');
 });
+
+test('read parses --category: repeatable and comma-split on create, none clears on update, one filter on list, and categories', () => {
+    /* several categories on create (repeated and comma-joined both work) */
+    assert.deepEqual(read(['calendar', 'C', 'create', '--title', 'Point', '--start', '2030-01-02T10:00:00', '--end', '2030-01-02T11:00:00', '--category', 'Internal', '--category', 'Board,Travel'])[1].categories,
+        ['Internal', 'Board', 'Travel']);
+    /* none clears on update */
+    assert.deepEqual(read(['calendar', 'C', 'update', 'E1', '--category', 'none'])[1].categories, []);
+    /* a single filter on list */
+    assert.equal(read(['calendar', 'C', 'list', '--category', 'Travel'])[1].category, 'Travel');
+    /* the categories subverb */
+    assert.deepEqual(read(['calendar', 'C', 'categories'])[1], { target: 'C' });
+});

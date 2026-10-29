@@ -79,6 +79,7 @@ export const VERBS = Object.freeze({
     'calendar.delete': { reads: false, kinds: ['calendar'], needs: ['id'] },
     'calendar.respond': { reads: false, kinds: ['calendar'], needs: ['id', 'answer'] },
     'calendar.update': { reads: false, kinds: ['calendar'], needs: ['id'] },
+    'calendar.categories': { reads: true, kinds: ['calendar'], needs: [] },
     'contacts.list': { reads: true, kinds: ['contacts'], needs: [] },
     'contacts.search': { reads: true, kinds: ['contacts'], needs: ['text'] },
     'contacts.read': { reads: true, kinds: ['contacts'], needs: ['id'] },
@@ -121,6 +122,9 @@ export function check(verb, a = {}) {
     };
     /* Which granted tab a browser verb acts on (optional: none means the agent's active one). */
     const tab = () => { if (a.tab !== undefined && a.tab !== null && a.tab !== '') out.tab = typeof a.tab === 'number' ? Math.trunc(a.tab) : oneLine(a.tab, 100); };
+    /* Event categories: a clean list, up to 25, each short. An empty list is kept
+       (it clears the categories on an update); undefined leaves them untouched. */
+    const cats = () => { if (a.categories === undefined || a.categories === null) return; out.categories = (Array.isArray(a.categories) ? a.categories : [a.categories]).map((c) => oneLine(c, 200)).filter(Boolean).slice(0, 25); };
     const num = (k) => { if (a[k] !== undefined && a[k] !== null && a[k] !== '') { const n = Number(a[k]); if (Number.isFinite(n)) out[k] = Math.trunc(n); } };
     switch (verb) {
         case 'terminal.read': if (a.lines !== undefined) out.lines = Math.max(1, Math.min(2000, Math.trunc(Number(a.lines)) || 0)); break;
@@ -177,15 +181,15 @@ export function check(verb, a = {}) {
             }
             break;
         }
-        case 'calendar.list': str('from', 64); str('to', 64); break;
+        case 'calendar.list': str('from', 64); str('to', 64); str('category', 200); break;
         case 'calendar.read': str('id', 1024); break;
         case 'calendar.freebusy': str('who', 2000); str('from', 64); str('to', 64); break;
-        case 'calendar.create': str('title', 400); str('start', 64); str('end', 64); str('where', 400); str('notes', TEXT_MAX, true); str('with', 1000); break;
+        case 'calendar.create': str('title', 400); str('start', 64); str('end', 64); str('where', 400); str('notes', TEXT_MAX, true); str('with', 1000); cats(); break;
         case 'calendar.attach': str('id', 1024); str('attach', TEXT_MAX, true); str('attachName', 200); if (a.share === true || a.share === 'true') out.share = true; break;
         case 'calendar.detach': str('id', 1024); str('which', 400); break;
         case 'calendar.delete': str('id', 1024); break;
         case 'calendar.respond': str('id', 1024); str('answer', 40); str('comment', 400); break;
-        case 'calendar.update': str('id', 1024); str('title', 400); str('start', 64); str('end', 64); str('where', 400); str('notes', TEXT_MAX, true); str('with', 1000); break;
+        case 'calendar.update': str('id', 1024); str('title', 400); str('start', 64); str('end', 64); str('where', 400); str('notes', TEXT_MAX, true); str('with', 1000); cats(); break;
         case 'contacts.attach': str('id', 1024); str('attach', TEXT_MAX, true); str('attachName', 200); break;
         case 'contacts.search': str('text', 200); break;
         case 'contacts.read': str('id', 1024); break;

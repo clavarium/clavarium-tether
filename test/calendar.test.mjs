@@ -272,3 +272,46 @@ test('calendar refuses a target with no provider, and create without times', asy
     await assert.rejects(c.run('calendar.list', { id: 'x', title: 'X', config: {}, secrets: { refresh: 'r' } }, {}, ctx()), /google or microsoft/);
     await assert.rejects(c.run('calendar.create', G, { title: 'x' }, ctx()), /start and an end/);
 });
+
+test('calendar.categories lists the mailbox categories by name and colour (Microsoft), and is Microsoft-only', async () => {
+    const fetch = async (url) => {
+        if (url.includes('login.microsoftonline.com')) return json({ access_token: 'T', expires_in: 3600 });
+        if (url.includes('/me/outlook/masterCategories')) return json({ value: [{ displayName: 'Internal', color: 'preset7' }, { displayName: 'Travel', color: 'preset4' }] });
+        return json({ error: { message: 'no' } }, 404);
+    };
+    const r = await calendar({ fetch }).run('calendar.categories', M, {}, ctx());
+    assert.match(r.text, /Internal {2}\(blue\)/);
+    assert.match(r.text, /Travel {2}\(green\)/);
+    await assert.rejects(calendar({ fetch }).run('calendar.categories', G, {}, ctx()), /Microsoft-only/);
+});
+
+test('calendar.create sends categories; calendar.update sets them and clears them with an empty list (Microsoft)', async () => {
+    const s = server();
+    await calendar({ fetch: s.fetch }).run('calendar.create', M, { title: 'Point', start: '2030-01-02T10:00:00', end: '2030-01-02T11:00:00', categories: ['Internal'] }, ctx());
+    const created = JSON.parse(s.calls.find((c) => c.method === 'POST' && c.url.includes('/me/events')).body);
+    assert.deepEqual(created.categories, ['Internal'], 'the event carries its category');
+    await calendar({ fetch: s.fetch }).run('calendar.update', M, { id: 'm1', categories: ['Travel', 'External'] }, ctx());
+    const patched = JSON.parse(s.calls.find((c) => c.method === 'PATCH').body);
+    assert.deepEqual(patched.categories, ['Travel', 'External']);
+    const s2 = server();
+    await calendar({ fetch: s2.fetch }).run('calendar.update', M, { id: 'm1', categories: [] }, ctx());
+    assert.deepEqual(JSON.parse(s2.calls.find((c) => c.method === 'PATCH').body).categories, [], 'an empty list clears them');
+    await assert.rejects(calendar({ fetch: s.fetch }).run('calendar.create', G, { title: 'x', start: '2030-01-02T10:00:00', end: '2030-01-02T11:00:00', categories: ['Internal'] }, ctx()), /Microsoft-only/);
+});
+
+test('calendar.list shows each event categories and can keep only one (Microsoft, case-insensitive)', async () => {
+    const fetch = async (url) => {
+        if (url.includes('login.microsoftonline.com')) return json({ access_token: 'T', expires_in: 3600 });
+        return json({ value: [
+            { id: 'm1', subject: 'Internal sync', start: { dateTime: '2030-01-02T10:00:00' }, categories: ['Internal'] },
+            { id: 'm2', subject: 'Client call', start: { dateTime: '2030-01-03T10:00:00' }, categories: ['External'] },
+            { id: 'm3', subject: 'No tag', start: { dateTime: '2030-01-04T10:00:00' } },
+        ] });
+    };
+    const all = await calendar({ fetch }).run('calendar.list', M, {}, ctx());
+    assert.match(all.text, /Internal sync {2}\[Internal\]/);
+    assert.match(all.text, /\[External\]/);
+    const only = await calendar({ fetch }).run('calendar.list', M, { category: 'external' }, ctx());
+    assert.match(only.text, /Client call/);
+    assert.doesNotMatch(only.text, /Internal sync|No tag/, 'kept only the one category');
+});

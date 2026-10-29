@@ -36,20 +36,33 @@ const API = {
         /* calendarView, not /events: /events orders over the WHOLE calendar, so it
            returns the oldest events, not the next ones. calendarView takes a window
            (from now on) and expands recurrences, so "list" means what is coming. */
-        list: (n, { from, to } = {}) => `https://graph.microsoft.com/v1.0/me/calendarView?startDateTime=${encodeURIComponent(from)}&endDateTime=${encodeURIComponent(to)}&$top=${n}&$orderby=start/dateTime&$select=id,subject,start,end,location`,
+        list: (n, { from, to } = {}) => `https://graph.microsoft.com/v1.0/me/calendarView?startDateTime=${encodeURIComponent(from)}&endDateTime=${encodeURIComponent(to)}&$top=${n}&$orderby=start/dateTime&$select=id,subject,start,end,location,categories`,
         event: (id) => `https://graph.microsoft.com/v1.0/me/events/${encodeURIComponent(id)}`,
         create: 'https://graph.microsoft.com/v1.0/me/events',
         items: (j) => j.value ?? [],
-        brief: (e) => `${e.id}\n  ${shortWhen(e.start?.dateTime)} — ${e.subject ?? '(no title)'}${e.location?.displayName ? `  @ ${e.location.displayName}` : ''}`,
-        body: ({ title, start, end, where, notes, attendees }) => ({
+        brief: (e) => `${e.id}\n  ${shortWhen(e.start?.dateTime)} — ${e.subject ?? '(no title)'}${e.location?.displayName ? `  @ ${e.location.displayName}` : ''}${e.categories?.length ? `  [${e.categories.join(', ')}]` : ''}`,
+        body: ({ title, start, end, where, notes, attendees, categories }) => ({
             subject: title,
             start: { dateTime: start, timeZone: TZ }, end: { dateTime: end, timeZone: TZ },
             ...(where ? { location: { displayName: where } } : {}),
             ...(notes ? { body: { contentType: 'text', content: String(notes) } } : {}),
             ...(attendees?.length ? { attendees: attendees.map((a) => ({ emailAddress: { address: a }, type: 'required' })) } : {}),
+            ...(categories?.length ? { categories } : {}),
         }),
     },
 };
+
+/* Outlook's own category colours (Graph preset ids), shown by name when the
+ * mailbox's categories are listed. Reference data, not a setting. */
+const COLOR_NAME = {
+    none: 'no colour', preset0: 'red', preset1: 'orange', preset2: 'brown', preset3: 'yellow', preset4: 'green',
+    preset5: 'teal', preset6: 'olive', preset7: 'blue', preset8: 'purple', preset9: 'cranberry', preset10: 'steel',
+    preset11: 'dark steel', preset12: 'grey', preset13: 'dark grey', preset14: 'black', preset15: 'dark red',
+    preset16: 'dark orange', preset17: 'dark brown', preset18: 'dark yellow', preset19: 'dark green', preset20: 'dark teal',
+    preset21: 'dark olive', preset22: 'dark blue', preset23: 'dark purple', preset24: 'dark cranberry',
+};
+/* The categories asked for, as a clean list (empty array clears them). */
+const catsOf = (a) => (Array.isArray(a.categories) ? a.categories.map((c) => String(c).trim()).filter(Boolean) : (a.categories ? [String(a.categories).trim()].filter(Boolean) : null));
 
 export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
     const tokens = new Map();
@@ -155,12 +168,15 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
                 return { text, size: Buffer.byteLength(text) };
             };
             /* Google over CalDAV (the REST API its client cannot use); Microsoft over Graph. */
-            if (provider === 'google') return pack(await googleList(target, ctx, { from, to }));
+            if (provider === 'google') { if (a.category) no(`${target.title}: filtering by category is Microsoft-only`); return pack(await googleList(target, ctx, { from, to })); }
             const api = API[provider];
             const res = await call(target, ctx, 'GET', api.list(LIST_MAX, { from, to }));
             if (!res.ok) no(`${target.title}: ${res.status} ${await bodyError(res)}`.trim());
             const json = await res.json();
-            return pack(api.items(json).map(api.brief), Boolean(json['@odata.nextLink']));
+            let items = api.items(json);
+            /* Only one category's events, matched by name without case: all this month's travel, say. */
+            if (a.category) { const want = String(a.category).toLowerCase(); items = items.filter((e) => (e.categories ?? []).some((c) => String(c).toLowerCase() === want)); }
+            return pack(items.map(api.brief), Boolean(json['@odata.nextLink']));
         },
         /* One event in full, by its id. */
         async 'calendar.read'(target, a, ctx) {
@@ -212,11 +228,14 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
         },
         /* Create an event. An act: the start and end are ISO times (a bare date is all-day). */
         async 'calendar.create'(target, a, ctx) {
-            const api = API[providerOf(target)];
+            const provider = providerOf(target);
+            const api = API[provider];
             if (!a.title) no('an event needs a title');
             if (!a.start || !a.end) no('an event needs a start and an end (local ISO times, e.g. 2026-11-10T16:00:00)');
+            const categories = catsOf(a);
+            if (categories && provider !== 'microsoft') no(`${target.title}: event categories are Microsoft-only`);
             const attendees = String(a.with ?? '').split(',').map((x) => x.trim()).filter(Boolean);
-            const res = await call(target, ctx, 'POST', api.create, api.body({ title: a.title, start: a.start, end: a.end, where: a.where, notes: a.notes, attendees }));
+            const res = await call(target, ctx, 'POST', api.create, api.body({ title: a.title, start: a.start, end: a.end, where: a.where, notes: a.notes, attendees, categories: categories ?? undefined }));
             if (!res.ok) no(`${target.title}: the event was not created (${res.status} ${await bodyError(res)})`.trim());
             const made = await res.json().catch(() => ({}));
             return { text: `Created: ${a.title} (${a.start}). Its id is ${made.id ?? '(unknown)'}.`, size: 0 };
@@ -320,11 +339,25 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
             if (a.where !== undefined) patch.location = { displayName: String(a.where) };
             if (a.notes !== undefined) patch.body = { contentType: 'text', content: String(a.notes) };
             if (a.with !== undefined) patch.attendees = String(a.with).split(',').map((x) => x.trim()).filter(Boolean).map((e) => ({ emailAddress: { address: e }, type: 'required' }));
-            if (!Object.keys(patch).length) no('update needs at least one of: title, start, end, where, notes, with');
+            if (a.categories !== undefined) patch.categories = catsOf(a) ?? []; /* --category none clears them */
+            if (!Object.keys(patch).length) no('update needs at least one of: title, start, end, where, notes, with, category');
             const res = await call(target, ctx, 'PATCH', API.microsoft.event(String(a.id)), patch);
             if (res.status === 404) no('no such event');
             if (!res.ok) no(`${target.title}: the event was not changed (${res.status} ${await bodyError(res)})`.trim());
             return { text: 'Updated the event.', size: 0 };
+        },
+        /* The mailbox's own categories (name and colour), so the agent knows which
+           ones exist before it tags an event. A read. Microsoft only; a category is
+           a personal label, invisible to the other participants. */
+        async 'calendar.categories'(target, a, ctx) {
+            const provider = providerOf(target);
+            if (provider !== 'microsoft') no(`${target.title}: calendar categories are Microsoft-only`);
+            const res = await call(target, ctx, 'GET', 'https://graph.microsoft.com/v1.0/me/outlook/masterCategories');
+            if (!res.ok) no(`${target.title}: the categories could not be read (${res.status} ${await bodyError(res)})`.trim());
+            const cats = (await res.json()).value ?? [];
+            if (!cats.length) return { text: 'No category set in this mailbox yet (add them in Outlook, then tag events with --category).', size: 0 };
+            const text = cats.map((c) => `${c.displayName}  (${COLOR_NAME[c.color] ?? c.color ?? 'no colour'})`).join('\n');
+            return { text, size: Buffer.byteLength(text) };
         },
     };
 

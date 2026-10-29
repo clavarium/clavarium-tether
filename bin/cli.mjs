@@ -45,8 +45,10 @@ export const HELP = `${NAME}: act on the targets you were given (machines, folde
   ${NAME} calendar TARGET list [--from DATE] [--to DATE]   events in a window (default: from now on)
   ${NAME} calendar TARGET read ID
   ${NAME} calendar TARGET freebusy "a@b,c@d" [--from DATE] [--to DATE]   when others are busy (Microsoft)
-  ${NAME} calendar TARGET create --title "..." --start ISO --end ISO [--where "..."] [--notes "..."] [--with "a@b,c@d"]
-  ${NAME} calendar TARGET update EVENT_ID [--title] [--start] [--end] [--where] [--notes] [--with]  (Microsoft)
+  ${NAME} calendar TARGET create --title "..." --start ISO --end ISO [--where "..."] [--notes "..."] [--with "a@b,c@d"] [--category "Internal"]
+  ${NAME} calendar TARGET update EVENT_ID [--title] [--start] [--end] [--where] [--notes] [--with] [--category NAME|none]  (Microsoft)
+  ${NAME} calendar TARGET categories                      the mailbox's categories (name, colour; Microsoft)
+  ${NAME} calendar TARGET list --category "Travel"        only the events of one category (Microsoft)
   ${NAME} calendar TARGET attach EVENT_ID FILE [--share]   join a file to an event (Microsoft); --share if a participant is external
   ${NAME} calendar TARGET detach EVENT_ID NAME|N           remove an attachment from an event (Microsoft)
   ${NAME} calendar TARGET delete EVENT_ID                  delete an event
@@ -70,7 +72,7 @@ ${NAME} ${VERSION}`;
 const FILE_VERBS = ['list', 'read', 'search', 'write', 'move', 'delete'];
 const BROWSER_VERBS = ['tabs', 'open', 'shot', 'html', 'console', 'eval', 'click', 'type', 'key', 'scroll', 'drag'];
 const MAIL_VERBS = ['list', 'read', 'source', 'attachment', 'search', 'move', 'flag', 'delete', 'send'];
-const CAL_VERBS = ['list', 'read', 'freebusy', 'create', 'update', 'attach', 'detach', 'delete', 'respond'];
+const CAL_VERBS = ['list', 'read', 'freebusy', 'create', 'update', 'attach', 'detach', 'delete', 'respond', 'categories'];
 const CONTACT_VERBS = ['list', 'search', 'read', 'create', 'update', 'delete', 'attach'];
 const baseName = (p) => String(p).split('/').pop();
 const readB64 = (p) => { try { return readFileSync(p).toString('base64'); } catch { return null; } };
@@ -86,6 +88,7 @@ export function read(argv) {
         if (a === '--share') { flags.share = true; continue; }
         /* --attach may be given several times, and each value may list files with commas. */
         if (a === '--attach') { if (argv[i + 1] === undefined) return { refused: '--attach needs a file' }; (flags.attach ??= []).push(...String(argv[++i]).split(',').map((x) => x.trim()).filter(Boolean)); continue; }
+        if (a === '--category') { if (argv[i + 1] === undefined) return { refused: '--category needs a name (or none)' }; (flags.category ??= []).push(...String(argv[++i]).split(',').map((x) => x.trim()).filter(Boolean)); continue; }
         if (a.startsWith('--')) { if (argv[i + 1] === undefined) return { refused: `${a} needs a value` }; flags[a.slice(2)] = argv[++i]; continue; }
         words.push(a);
     }
@@ -160,8 +163,11 @@ export function read(argv) {
         case 'calendar': {
             const [what, ...p] = rest;
             if (!target || !CAL_VERBS.includes(what)) return { refused: `${NAME} calendar TARGET ${CAL_VERBS.join('|')} ...` };
+            /* --category is repeatable (an event may wear several); "--category none" clears them. */
+            const catArr = flags.category ? (flags.category.length === 1 && flags.category[0].toLowerCase() === 'none' ? [] : flags.category) : undefined;
             switch (what) {
-                case 'list': return ['calendar.list', { target, ...(flags.from !== undefined ? { from: flags.from } : {}), ...(flags.to !== undefined ? { to: flags.to } : {}) }];
+                case 'categories': return ['calendar.categories', { target }];
+                case 'list': return ['calendar.list', { target, ...(flags.from !== undefined ? { from: flags.from } : {}), ...(flags.to !== undefined ? { to: flags.to } : {}), ...(catArr && catArr.length ? { category: catArr[0] } : {}) }];
                 case 'read': return need(p[0], 'calendar TARGET read ID') ?? ['calendar.read', { target, id: p[0] }];
                 case 'freebusy': return need(p[0], 'calendar TARGET freebusy "a@b,c@d" [--from DATE] [--to DATE]') ?? ['calendar.freebusy', { target, who: p.join(','), ...(flags.from !== undefined ? { from: flags.from } : {}), ...(flags.to !== undefined ? { to: flags.to } : {}) }];
                 case 'attach': {
@@ -172,8 +178,8 @@ export function read(argv) {
                 case 'detach': return need(p.length >= 2, 'calendar TARGET detach EVENT_ID NAME|N') ?? ['calendar.detach', { target, id: p[0], which: p.slice(1).join(' '), ...why }];
                 case 'delete': return need(p[0], 'calendar TARGET delete EVENT_ID') ?? ['calendar.delete', { target, id: p[0], ...why }];
                 case 'respond': return need(p.length >= 2, 'calendar TARGET respond EVENT_ID accept|decline|tentative [--comment "..."]') ?? ['calendar.respond', { target, id: p[0], answer: p[1], ...(flags.comment !== undefined ? { comment: flags.comment } : {}), ...why }];
-                case 'update': return need(p[0], 'calendar TARGET update EVENT_ID [--title] [--start] [--end] [--where] [--notes] [--with]') ?? ['calendar.update', { target, id: p[0], ...(flags.title !== undefined ? { title: flags.title } : {}), ...(flags.start !== undefined ? { start: flags.start } : {}), ...(flags.end !== undefined ? { end: flags.end } : {}), ...(flags.where !== undefined ? { where: flags.where } : {}), ...(flags.notes !== undefined ? { notes: flags.notes } : {}), ...(flags.with !== undefined ? { with: flags.with } : {}), ...why }];
-                default: return need(flags.title !== undefined && flags.start !== undefined && flags.end !== undefined, 'calendar TARGET create --title "..." --start ISO --end ISO [--where "..."] [--notes "..."] [--with "a@b,c@d"]') ?? ['calendar.create', { target, title: flags.title, start: flags.start, end: flags.end, ...(flags.where !== undefined ? { where: flags.where } : {}), ...(flags.notes !== undefined ? { notes: flags.notes } : {}), ...(flags.with !== undefined ? { with: flags.with } : {}), ...why }];
+                case 'update': return need(p[0], 'calendar TARGET update EVENT_ID [--title] [--start] [--end] [--where] [--notes] [--with] [--category NAME|none]') ?? ['calendar.update', { target, id: p[0], ...(flags.title !== undefined ? { title: flags.title } : {}), ...(flags.start !== undefined ? { start: flags.start } : {}), ...(flags.end !== undefined ? { end: flags.end } : {}), ...(flags.where !== undefined ? { where: flags.where } : {}), ...(flags.notes !== undefined ? { notes: flags.notes } : {}), ...(flags.with !== undefined ? { with: flags.with } : {}), ...(catArr !== undefined ? { categories: catArr } : {}), ...why }];
+                default: return need(flags.title !== undefined && flags.start !== undefined && flags.end !== undefined, 'calendar TARGET create --title "..." --start ISO --end ISO [--where "..."] [--notes "..."] [--with "a@b,c@d"] [--category NAME]') ?? ['calendar.create', { target, title: flags.title, start: flags.start, end: flags.end, ...(flags.where !== undefined ? { where: flags.where } : {}), ...(flags.notes !== undefined ? { notes: flags.notes } : {}), ...(flags.with !== undefined ? { with: flags.with } : {}), ...(catArr && catArr.length ? { categories: catArr } : {}), ...why }];
             }
         }
         case 'contacts': {
