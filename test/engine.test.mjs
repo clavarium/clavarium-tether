@@ -193,6 +193,19 @@ test('the keeper: a call that needs a person waits; Accept runs it, Refuse refus
     assert.equal(j[1].by.name, 'Owner'); assert.equal(j[1].exit, 0); assert.equal(j[1].size, 3);
 });
 
+test('the keeper tells its page (onChange) when an approval opens and when it ends -- so a screen watching it sees them all, not one at a time', async () => {
+    const { k } = setup('propose');
+    const seen = [];
+    k.onChange((w) => { if (w && w.approvals) seen.push('approvals'); });
+    const p = k.act('terminal.run', { target: 'web', command: 'sudo apt upgrade -y', why: 'updates' }, BOT);
+    await tick();
+    assert.ok(seen.length >= 1, 'an approval opening is told to the page');
+    const before = seen.length;
+    k.decide(k.approvals()[0].id, 'no', ME, 'no');
+    await p.catch(() => {});
+    assert.ok(seen.length > before, 'the decision is told too');
+});
+
 test('the keeper: an agent lists its own waiting requests (pending) and withdraws one -- its own only; the person can no longer approve it', async () => {
     const { k, conn } = setup('propose');
     const p = k.act('terminal.run', { target: 'web', command: 'sudo rm -rf /tmp/x', why: 'clean up' }, BOT);
