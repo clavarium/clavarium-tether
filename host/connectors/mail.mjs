@@ -599,9 +599,25 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
         },
     };
 
+    /* What a waiting act is about, for the card a person approves from: the message
+       answered, forwarded, moved or deleted -- who sent it, its subject, when. A read. */
+    async function describe(verb, target, a, ctx) {
+        if (!a.uid || !['mail.reply', 'mail.forward', 'mail.move', 'mail.flag', 'mail.delete'].includes(verb)) return null;
+        if (isGraph(target)) return gmail.about(target, a, ctx);
+        const uid = numUid(a.uid);
+        return withImap(target, ctx, async (imap) => {
+            await imap.command(`EXAMINE ${quoted(boxOf(target, verb === 'mail.move' ? undefined : a.mailbox))}`, 'that mailbox could not be opened');
+            const lines = await imap.command(`UID FETCH ${uid} (BODY.PEEK[HEADER.FIELDS (FROM SUBJECT DATE)])`, 'that message could not be read');
+            const l = lines.find((x) => /^\* \d+ FETCH/i.test(x)) ?? '';
+            const block = l.slice(l.indexOf('\n') + 1);
+            return { from: decodeWords(headerOf(block, 'From')), subject: decodeWords(headerOf(block, 'Subject')), date: headerOf(block, 'Date') };
+        });
+    }
+
     return {
         name: 'mail',
         verbs: Object.keys(verbs),
+        describe,
         /* The keeper's hand, for messages sent later: its store folder, a target by
            id, a ctx for its secrets, the journal, the clock, who is stopped. */
         wake(h) {

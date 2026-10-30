@@ -34,6 +34,7 @@ import { decide as rightsOf, ruleFrom, LEVELS } from '../server/rights.mjs';
 import { lines } from '../server/mcp.mjs';
 import { openJournal, hide } from './journal.mjs';
 import { approvals as openApprovals, TIMEOUT_MS } from './approvals.mjs';
+import { cardOf } from '../server/cards.mjs';
 import { local as localConnector } from './connectors/local.mjs';
 import { ssh as sshConnector } from './connectors/ssh.mjs';
 import { webdav as webdavConnector } from './connectors/webdav.mjs';
@@ -66,6 +67,9 @@ export function sayTargets(list) {
     out.push('Say why in one short line when you act: a person may read it before deciding.');
     return out.join('\n');
 }
+
+/* How long a connector may take to say what a request is about, before it is asked anyway. */
+const DESCRIBE_MS = 6000;
 
 export function keeper(dir, { sides = () => [], ask, secrets = async () => { throw new Refused('no secret store was given'); }, connectors = {}, local = false, timeout = TIMEOUT_MS, now = () => Date.now() } = {}) {
     const store = openStore(dir, { now });
@@ -158,7 +162,16 @@ export function keeper(dir, { sides = () => [], ask, secrets = async () => { thr
         let outcome = { decision: 'auto' };
         if (d.go === 'ask') {
             const rule = ruleFrom(verb, a);
-            const { request, decision } = queue.open({ ...base, level: g.level, ...(rule ? { rule } : {}) });
+            /* What a person approves, as facts for a card; and what it is about (the mail
+               answered, the invitation), when the connector can tell -- a read, briefly. */
+            const card = cardOf(verb, a, t);
+            if (typeof conn.describe === 'function') {
+                try {
+                    const about = await Promise.race([conn.describe(verb, t, a, ctxOf(t, who.id)), new Promise((r) => { setTimeout(() => r(null), DESCRIBE_MS).unref?.(); })]);
+                    if (about && typeof about === 'object') card.about = about;
+                } catch { /* the card says less, the request still goes */ }
+            }
+            const { request, decision } = queue.open({ ...base, card, level: g.level, ...(rule ? { rule } : {}) });
             try { held?.(request); } catch { /* the folder's */ }
             if (ask) {
                 Promise.resolve().then(() => ask(request)).then((v) => {

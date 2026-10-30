@@ -166,6 +166,15 @@ export function graphMail({ fetch: fetchImpl = globalThis.fetch, token }) {
             await call(target, ctx, 'PATCH', `/me/messages/${encodeURIComponent(id)}`, body);
             return { text: `Marked ${id} ${f}.`, size: 0 };
         },
+        /* What a message is, for an approval card: who, subject, when, its files' names. */
+        async about(target, a, ctx) {
+            const id = encodeURIComponent(String(a.uid ?? '').trim());
+            const m = await call(target, ctx, 'GET', `/me/messages/${id}?$select=from,subject,receivedDateTime,hasAttachments`);
+            let files;
+            if (m?.hasAttachments) files = ((await call(target, ctx, 'GET', `/me/messages/${id}/attachments?$select=name,size`))?.value ?? []).map((x) => ({ name: x.name, kb: Math.max(1, Math.round((x.size || 0) / 1024)) }));
+            const who = m?.from?.emailAddress;
+            return { from: who ? (who.name && who.name !== who.address ? `${who.name} <${who.address}>` : who.address) : '', subject: m?.subject ?? '', date: m?.receivedDateTime ?? '', ...(files ? { files } : {}) };
+        },
         /* Send a message (or, with draft, keep it in Drafts). The body is the
            composed HTML (Markdown) or the text as written. */
         async send(target, a, ctx) {

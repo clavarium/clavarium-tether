@@ -524,3 +524,15 @@ test('what the agent writes is refused when too long, never cut in the middle (#
     assert.throws(() => check('mail.send', { target: 'x', to: 'a@b.c', subject: 's'.repeat(401) }), /subject is 401 characters/);
     assert.equal(check('terminal.type', { target: 'x', text: 'ls', why: 'list the folder' }).why, 'list the folder', 'within the limit, kept whole');
 });
+
+test('a waiting call carries a card: plain facts for a person, and what it is about when the connector can tell', async () => {
+    const { k, conn } = setup('propose');
+    k.act('terminal.run', { target: 'web', command: 'sudo apt upgrade -y', why: 'updates' }, BOT);
+    await tick();
+    assert.deepEqual(k.approvals()[0].card, { kind: 'terminal', action: 'run', command: 'sudo apt upgrade -y' });
+    k.decide(k.approvals()[0].id, 'no', ME);
+    conn.describe = async (verb, t, a) => ({ title: 'Comité', start: '2030-11-05 14:00', clashes: ['Point banque (14:00)'], asked: verb, id: a.id });
+    k.act('terminal.run', { target: 'web', command: 'ls', why: 'look' }, BOT);
+    await tick(); await tick();
+    assert.deepEqual(k.approvals()[0].card.about, { title: 'Comité', start: '2030-11-05 14:00', clashes: ['Point banque (14:00)'], asked: 'terminal.run', id: undefined });
+});

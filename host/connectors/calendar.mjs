@@ -635,9 +635,44 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
         return found.id;
     }
 
+    /* What a waiting act is about, for the card a person approves from: the event
+       answered, changed or deleted -- its title, when, where, who organises and who
+       comes -- and, for an invitation, what else already stands at that time. A read. */
+    async function describe(verb, target, a, ctx) {
+        if (!a.id || !['calendar.respond', 'calendar.update', 'calendar.delete', 'calendar.attach', 'calendar.detach'].includes(verb)) return null;
+        const provider = providerOf(target);
+        let ev;
+        if (provider === 'microsoft') {
+            const res = await call(target, ctx, 'GET', `${API.microsoft.event(String(a.id))}?$select=subject,start,end,location,organizer,attendees,isOnlineMeeting`);
+            if (!res.ok) return null;
+            const j = await res.json();
+            ev = { title: j.subject ?? '', start: shortWhen(j.start?.dateTime), end: shortWhen(j.end?.dateTime), where: j.location?.displayName ?? '', organizer: j.organizer?.emailAddress?.address ?? '',
+                attendees: (j.attendees ?? []).map((x) => x.emailAddress?.address).filter(Boolean), online: Boolean(j.isOnlineMeeting), startIso: j.start?.dateTime, endIso: j.end?.dateTime };
+        } else {
+            const { text, url } = await davGet(target, ctx, a.id);
+            const e = eventOf(text);
+            ev = { title: e.summary, start: e.start, end: e.end, where: e.location, organizer: e.organizer, attendees: e.attendees.map((x) => x.email), url };
+        }
+        /* What already stands at that time (an invitation answered): other events overlapping. */
+        if (verb === 'calendar.respond') {
+            try {
+                if (provider === 'microsoft' && ev.startIso && ev.endIso) {
+                    const res = await call(target, ctx, 'GET', API.microsoft.list(20, { from: `${ev.startIso.slice(0, 19)}`, to: `${ev.endIso.slice(0, 19)}` }));
+                    if (res.ok) ev.clashes = API.microsoft.items(await res.json()).filter((x) => x.id !== a.id && x.subject !== ev.title).map((x) => `${x.subject ?? ''} (${shortWhen(x.start?.dateTime).slice(11)})`).slice(0, 3);
+                } else if (provider !== 'microsoft' && ev.start && ev.end && ev.start.includes(' ')) {
+                    const from = localToUtc(ev.start.replace(' ', 'T')).toISOString(); const to = localToUtc(ev.end.replace(' ', 'T')).toISOString();
+                    ev.clashes = (await davEvents(target, ctx, { from, to })).filter((x) => x.summary !== ev.title).map((x) => `${x.summary} (${x.start.slice(11)})`).slice(0, 3);
+                }
+            } catch { /* no clash said */ }
+        }
+        delete ev.startIso; delete ev.endIso; delete ev.url;
+        return ev;
+    }
+
     return {
         name: 'calendar',
         verbs: Object.keys(verbs),
+        describe,
         run(verb, target, a, ctx) {
             if (!verbs[verb]) no(`${verb} is not done by this connector`);
             return verbs[verb](target, a, ctx);
