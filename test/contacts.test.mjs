@@ -129,11 +129,6 @@ test('contacts.create / update / delete (Microsoft) hit the right Graph endpoint
     assert.ok(calls.some((x) => x.method === 'DELETE' && x.url.includes('/me/contacts/m1')), 'DELETE to the contact');
 });
 
-test('contacts write is Microsoft-only for now', async () => {
-    const s = server();
-    await assert.rejects(contacts({ fetch: s.fetch }).run('contacts.create', G, { name: 'X' }, ctx()), /Microsoft-only/);
-});
-
 test('contacts.attach (Microsoft) PUTs the photo bytes to the contact', async () => {
     const s = server();
     const r = await contacts({ fetch: s.fetch }).run('contacts.attach', M, { id: 'm1', attach: Buffer.from('img').toString('base64') }, ctx());
@@ -143,7 +138,3 @@ test('contacts.attach (Microsoft) PUTs the photo bytes to the contact', async ()
     assert.ok(Buffer.isBuffer(put.body) || put.body, 'sends the decoded bytes');
 });
 
-test('contacts.attach is Microsoft-only for now', async () => {
-    const s = server();
-    await assert.rejects(contacts({ fetch: s.fetch }).run('contacts.attach', G, { id: 'x', attach: 'SGk=' }, ctx()), /Microsoft-only/);
-});

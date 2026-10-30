@@ -47,24 +47,24 @@ export const HELP = `${NAME}: act on the targets you were given (machines, folde
   ${NAME} mail TARGET send --to "a@b,c@d" --subject "..." --body "..." [--cc "..."] [--attach FILE ...]   (--attach repeats, or --attach A,B)
   ${NAME} calendar TARGET list [--from DATE] [--to DATE]   events in a window (default: from now on)
   ${NAME} calendar TARGET read ID
-  ${NAME} calendar TARGET freebusy "a@b,c@d" [--from DATE] [--to DATE]   when others are busy (Microsoft)
+  ${NAME} calendar TARGET freebusy "a@b,c@d" [--from DATE] [--to DATE]   when others are busy (where the calendar shares it)
   ${NAME} calendar TARGET create --title "..." --start ISO --end ISO [--where "..."] [--notes "..."] [--with "a@b,c@d"] [--category "Internal"]
-  ${NAME} calendar TARGET update EVENT_ID [--title] [--start] [--end] [--where] [--notes] [--with] [--category NAME|none]  (Microsoft)
-  ${NAME} calendar TARGET categories                      the mailbox's categories (name, colour; Microsoft)
-  ${NAME} calendar TARGET category add "Internal" --color blue        create a category (Microsoft)
+  ${NAME} calendar TARGET update EVENT_ID [--title] [--start] [--end] [--where] [--notes] [--with] [--category NAME|none]
+  ${NAME} calendar TARGET categories                      the mailbox's categories (name, colour on Microsoft; labels in use elsewhere)
+  ${NAME} calendar TARGET category add "Internal" --color blue        create a category with a colour (Microsoft)
   ${NAME} calendar TARGET category rename "Old" --to "New" [--color C] | category delete "Name"
-  ${NAME} calendar TARGET list --category "Travel"        only the events of one category (Microsoft)
-  ${NAME} calendar TARGET attach EVENT_ID FILE [--share]   join a file to an event (Microsoft); --share if a participant is external
-  ${NAME} calendar TARGET detach EVENT_ID NAME|N           remove an attachment from an event (Microsoft)
+  ${NAME} calendar TARGET list --category "Travel"        only the events of one category
+  ${NAME} calendar TARGET attach EVENT_ID FILE [--share]   join a file to an event; --share if a participant is external
+  ${NAME} calendar TARGET detach EVENT_ID NAME|N           remove an attachment from an event
   ${NAME} calendar TARGET delete EVENT_ID                  delete an event
-  ${NAME} calendar TARGET respond EVENT_ID accept|decline|tentative   answer an invitation (Microsoft)
+  ${NAME} calendar TARGET respond EVENT_ID accept|decline|tentative   answer an invitation
   ${NAME} contacts TARGET list                          name, emails, phones
   ${NAME} contacts TARGET search "name"                 contacts matching a name
   ${NAME} contacts TARGET read ID
-  ${NAME} contacts TARGET create --name "..." [--email "..."] [--phone "..."]   (Microsoft)
-  ${NAME} contacts TARGET update ID [--name "..."] [--email "..."] [--phone "..."]   (Microsoft)
-  ${NAME} contacts TARGET delete ID                     (Microsoft)
-  ${NAME} contacts TARGET attach CONTACT_ID FILE           set a contact's photo (Microsoft)
+  ${NAME} contacts TARGET create --name "..." [--email "..."] [--phone "..."]
+  ${NAME} contacts TARGET update ID [--name "..."] [--email "..."] [--phone "..."]
+  ${NAME} contacts TARGET delete ID
+  ${NAME} contacts TARGET attach CONTACT_ID FILE           set a contact's photo
   ${NAME} serve [--store DIR] [--port N] [--side FOLDER=NAME] [--local FOLDER[=TITLE]]
                                        keep targets yourself, with their page (no application)
 

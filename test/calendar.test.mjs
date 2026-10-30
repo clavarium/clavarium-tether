@@ -49,7 +49,7 @@ test('calendar.list (Google) over CalDAV: minted token as Bearer, briefs the eve
     const s = server();
     const r = await calendar({ fetch: s.fetch }).run('calendar.list', G, {}, ctx());
     assert.ok(r.text.includes('Standup'), 'shows the event');
-    assert.ok(r.text.includes('2030-01-02 09:00'), 'with its start, readable');
+    assert.ok(r.text.includes('2030-01-02 10:00'), 'with its start, readable, in the person\'s time (09:00 UTC is 10:00 in Paris)');
     const rep = s.calls.find((c) => c.method === 'REPORT');
     assert.ok(rep.url.includes('apidata.googleusercontent.com/caldav/v2/me%40example.com/events/'), 'the CalDAV collection for the account');
     assert.equal(rep.auth, 'Bearer CAL-Tok', 'Bearer the minted token, never a password');
@@ -68,14 +68,15 @@ test('calendar.read (Google) GETs the event over CalDAV', async () => {
     assert.ok(r.text.includes('Standup'));
 });
 
-test('calendar.create posts the event body (REST)', async () => {
+test('calendar.create (Google) PUTs a new event over CalDAV, never over REST', async () => {
     const s = server();
     const r = await calendar({ fetch: s.fetch }).run('calendar.create', G, { title: 'Lunch', start: '2030-01-02T12:00:00Z', end: '2030-01-02T13:00:00Z' }, ctx());
     assert.ok(r.text.includes('Created: Lunch'), 'confirms creation');
-    const post = s.calls.find((c) => c.method === 'POST' && c.url.includes('/events'));
-    const body = JSON.parse(post.body);
-    assert.equal(body.summary, 'Lunch');
-    assert.equal(body.start.dateTime, '2030-01-02T12:00:00Z');
+    const put = s.calls.find((c) => c.method === 'PUT');
+    assert.ok(put.url.startsWith('https://apidata.googleusercontent.com/caldav/v2/me%40example.com/events/') && put.url.endsWith('.ics'));
+    assert.match(put.body, /SUMMARY:Lunch/);
+    assert.match(put.body, /DTSTART:20300102T120000Z/);
+    assert.ok(!s.calls.some((c) => c.url.includes('googleapis.com/calendar')), 'no REST call');
 });
 
 test('calendar.list (Microsoft) via Graph briefs events', async () => {
@@ -107,11 +108,6 @@ test('calendar.attach (Microsoft) posts a fileAttachment to the event', async ()
     const body = JSON.parse(post.body);
     assert.equal(body['@odata.type'], '#microsoft.graph.fileAttachment');
     assert.equal(body.contentBytes, 'SGk=');
-});
-
-test('calendar.attach is Microsoft-only for now (Google uses Drive links)', async () => {
-    const s = server();
-    await assert.rejects(calendar({ fetch: s.fetch }).run('calendar.attach', G, { id: 'g1', attach: 'SGk=' }, ctx()), /Microsoft-only/);
 });
 
 test('calendar.create (Microsoft) sends notes, invitees, and the local timezone', async () => {
@@ -217,12 +213,10 @@ test('calendar.update PATCHes only the fields given (Microsoft)', async () => {
     assert.equal(body.location.displayName, 'Room 9');
     assert.equal(body.start, undefined, 'untouched fields are not sent');
     await assert.rejects(calendar({ fetch }).run('calendar.update', M, { id: 'm1' }, ctx()), /at least one of/);
-    await assert.rejects(calendar({ fetch }).run('calendar.update', G, { id: 'g1', title: 'x' }, ctx()), /Microsoft-only/);
 });
 
-test('calendar.respond is Microsoft-only, and rejects an unknown answer', async () => {
+test('calendar.respond rejects an unknown answer', async () => {
     const s = server();
-    await assert.rejects(calendar({ fetch: s.fetch }).run('calendar.respond', G, { id: 'g1', answer: 'accept' }, ctx()), /Microsoft-only/);
     await assert.rejects(calendar({ fetch: s.fetch }).run('calendar.respond', M, { id: 'm1', answer: 'whatever' }, ctx()), /accept, decline or tentative/);
 });
 
@@ -260,9 +254,8 @@ test('calendar.freebusy (Microsoft) queries getSchedule and briefs each person\'
     assert.match(r.text, /c@example\.org\n  could not be read/, 'c could not be read (no access)');
 });
 
-test('calendar.freebusy is Microsoft-only for now, and needs at least one address', async () => {
+test('calendar.freebusy needs at least one address', async () => {
     const s = server();
-    await assert.rejects(calendar({ fetch: s.fetch }).run('calendar.freebusy', G, { who: 'a@example.com' }, ctx()), /Microsoft-only/);
     await assert.rejects(calendar({ fetch: s.fetch }).run('calendar.freebusy', M, { who: '  ' }, ctx()), /at least one address/);
 });
 
@@ -273,7 +266,7 @@ test('calendar refuses a target with no provider, and create without times', asy
     await assert.rejects(c.run('calendar.create', G, { title: 'x' }, ctx()), /start and an end/);
 });
 
-test('calendar.categories lists the mailbox categories by name and colour (Microsoft), and is Microsoft-only', async () => {
+test('calendar.categories lists the mailbox categories by name and colour (Microsoft)', async () => {
     const fetch = async (url) => {
         if (url.includes('login.microsoftonline.com')) return json({ access_token: 'T', expires_in: 3600 });
         if (url.includes('/me/outlook/masterCategories')) return json({ value: [{ displayName: 'Internal', color: 'preset7' }, { displayName: 'Travel', color: 'preset4' }] });
@@ -282,7 +275,6 @@ test('calendar.categories lists the mailbox categories by name and colour (Micro
     const r = await calendar({ fetch }).run('calendar.categories', M, {}, ctx());
     assert.match(r.text, /Internal {2}\(blue\)/);
     assert.match(r.text, /Travel {2}\(green\)/);
-    await assert.rejects(calendar({ fetch }).run('calendar.categories', G, {}, ctx()), /Microsoft-only/);
 });
 
 test('calendar.create sends categories; calendar.update sets them and clears them with an empty list (Microsoft)', async () => {
@@ -296,7 +288,6 @@ test('calendar.create sends categories; calendar.update sets them and clears the
     const s2 = server();
     await calendar({ fetch: s2.fetch }).run('calendar.update', M, { id: 'm1', categories: [] }, ctx());
     assert.deepEqual(JSON.parse(s2.calls.find((c) => c.method === 'PATCH').body).categories, [], 'an empty list clears them');
-    await assert.rejects(calendar({ fetch: s.fetch }).run('calendar.create', G, { title: 'x', start: '2030-01-02T10:00:00', end: '2030-01-02T11:00:00', categories: ['Internal'] }, ctx()), /Microsoft-only/);
 });
 
 test('calendar.list shows each event categories and can keep only one (Microsoft, case-insensitive)', async () => {
@@ -328,7 +319,6 @@ test('calendar.category-add creates a category with a named colour (Microsoft), 
     assert.match(r.text, /Created the category "Internal" \(blue\)/);
     assert.deepEqual(JSON.parse(calls.find((c) => c.method === 'POST' && c.url.includes('masterCategories')).body), { displayName: 'Internal', color: 'preset7' });
     await assert.rejects(calendar({ fetch }).run('calendar.category-add', M, { name: 'X', color: 'chartreuse' }, ctx()), /unknown colour/);
-    await assert.rejects(calendar({ fetch }).run('calendar.category-add', G, { name: 'X', color: 'red' }, ctx()), /Microsoft-only/);
 });
 
 test('calendar.category-rename and -delete resolve the category by name (Microsoft)', async () => {
