@@ -519,6 +519,8 @@ test('a screen target: a slot with no built-in engine; a plugged engine runs, an
 test('what the agent writes is refused when too long, never cut in the middle (#51)', () => {
     assert.throws(() => check('terminal.type', { target: 'x', text: 'a'.repeat(4001) }), /text is 4001 characters; 4000 at most -- nothing was done/);
     assert.throws(() => check('terminal.type', { target: 'x', text: 'ls', why: 'w'.repeat(301) }), /why is 301 characters; 300 at most -- nothing was done/);
+    const files = Array.from({ length: 51 }, (_, i) => ({ name: `f${i}.txt`, bytes: 'aGk=' }));
+    assert.throws(() => check('mail.send', { target: 'm', to: 'a@example.org', subject: 's', body: 'b', attachments: files }), /51 attachments; 50 at most -- nothing was done/, 'none dropped in silence');
     assert.throws(() => check('mail.send', { target: 'x', to: 'a@b.c', subject: 's'.repeat(401) }), /subject is 401 characters/);
     assert.equal(check('terminal.type', { target: 'x', text: 'ls', why: 'list the folder' }).why, 'list the folder', 'within the limit, kept whole');
 });

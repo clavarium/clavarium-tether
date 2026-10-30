@@ -182,7 +182,9 @@ export function check(verb, a = {}) {
             str('to', 1000); str('subject', 400); str('body', TEXT_MAX, true); str('cc', 1000); str('attach', TEXT_MAX, true); str('attachName', 200);
             if (Array.isArray(a.attachments)) {
                 let total = 0;
-                const files = a.attachments.slice(0, 50).map((f) => ({ name: oneLine(f?.name, 200) || 'attachment', bytes: String(f?.bytes ?? '') })).filter((f) => f.bytes);
+                /* More than kept: refused whole, never some dropped in silence (#51). */
+                if (a.attachments.length > 50) no(`${a.attachments.length} attachments; 50 at most -- nothing was done: send them in several mails`);
+                const files = a.attachments.map((f) => ({ name: oneLine(f?.name, 200) || 'attachment', bytes: String(f?.bytes ?? '') })).filter((f) => f.bytes);
                 for (const f of files) total += f.bytes.length;
                 if (total > ATTACH_MAX) no(`the attachments are too large to send together (over ${Math.round(ATTACH_MAX / 1024 / 1024)} MB of files)`);
                 if (files.length) out.attachments = files;
