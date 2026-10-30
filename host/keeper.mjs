@@ -92,6 +92,24 @@ export function keeper(dir, { sides = () => [], ask, secrets = async () => { thr
     if (!('mail' in conns)) conns.mail = mailConnector();
     if (!('calendar' in conns)) conns.calendar = calendarConnector();
     if (!('contacts' in conns)) conns.contacts = contactsConnector();
+    /* What a connector is handed for one target: who asks, and its secrets by the
+       name the target gives them (the host keeps the values). */
+    const ctxOf = (t, agent) => ({
+        agent,
+        secret: async (key) => {
+            const name = t.secrets?.[key];
+            if (!name) no(`${t.title} names no secret "${key}"`);
+            const value = await secrets(name);
+            if (typeof value === 'string' && value) known.add(value);
+            return value;
+        },
+    });
+    /* A connector with work of its own at a set time (a mail sent later) is woken
+       once with the keeper's hand, then ticked each minute. */
+    const tickers = Object.values(conns).filter((c) => typeof c?.tick === 'function');
+    for (const c of tickers) c.wake?.({ dir, now, target: (id) => store.target(id), ctx: ctxOf, stopped: (id) => store.stopped(id), note: (line) => journal.append({ ...line, ...(line.agent ? { agent: { id: line.agent.id, name: nameOf(line.agent.id) } } : {}) }) });
+    const ticker = tickers.length ? setInterval(() => { for (const c of tickers) Promise.resolve(c.tick()).catch(() => { /* tried again next minute */ }); }, 60_000) : null;
+    ticker?.unref?.();
     store.onChange((w) => changed({ store: w }));
     journal.onAppend((l) => changed({ journal: l }));
 
@@ -172,17 +190,7 @@ export function keeper(dir, { sides = () => [], ask, secrets = async () => { thr
             if (store.stopped(who.id)) no('a person stopped everything for you: nothing was done');
         }
         const started = now();
-        const ctx = {
-            agent: who.id,
-            /* A connector's secret, by the name the target gives it; the host keeps the value. */
-            secret: async (key) => {
-                const name = t.secrets?.[key];
-                if (!name) no(`${t.title} names no secret "${key}"`);
-                const value = await secrets(name);
-                if (typeof value === 'string' && value) known.add(value);
-                return value;
-            },
-        };
+        const ctx = ctxOf(t, who.id);
         let res; let ok = true; let error;
         try { res = await conn.run(verb, t, a, ctx); } catch (e) {
             ok = false; error = e instanceof Refused ? e.message : `failed: ${e?.message ?? e}`;
@@ -286,7 +294,7 @@ export function keeper(dir, { sides = () => [], ask, secrets = async () => { thr
         onChange(fn) { listeners.add(fn); return () => listeners.delete(fn); },
         connectors: conns,
         /* Every connector taken down: terminals, running commands. */
-        async close() { queue.stop('*'); for (const c of Object.values(conns)) { try { await (c.shutdown ?? c.close)?.call(c, '*'); } catch { /* down anyway */ } } },
+        async close() { clearInterval(ticker); queue.stop('*'); for (const c of Object.values(conns)) { try { await (c.shutdown ?? c.close)?.call(c, '*'); } catch { /* down anyway */ } } },
     };
     return api;
 }

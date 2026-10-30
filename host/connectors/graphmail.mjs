@@ -13,6 +13,7 @@
  * "uid" for read/move/flag.
  */
 import { no, asDate } from '../../server/verbs.mjs';
+import { compose, keptFiles, listOf, sendAt, wallClock } from '../compose.mjs';
 
 const GRAPH = 'https://graph.microsoft.com/v1.0';
 const TZ = 'Europe/Paris';   /* answer in the person's timezone, not UTC */
@@ -165,24 +166,98 @@ export function graphMail({ fetch: fetchImpl = globalThis.fetch, token }) {
             await call(target, ctx, 'PATCH', `/me/messages/${encodeURIComponent(id)}`, body);
             return { text: `Marked ${id} ${f}.`, size: 0 };
         },
+        /* Send a message (or, with draft, keep it in Drafts). The body is the
+           composed HTML (Markdown) or the text as written. */
         async send(target, a, ctx) {
-            const to = String(a.to ?? '').split(',').map((x) => x.trim()).filter(Boolean);
+            const to = listOf(a.to);
             if (!to.length) no('send needs a recipient (to)');
-            const cc = String(a.cc ?? '').split(',').map((x) => x.trim()).filter(Boolean);
-            /* Files joined to the message: bytes already base64 (what Graph wants)
-               and a name. Several possible: an `attachments` array, or one
-               `attach`+`attachName` (back-compat). */
-            const files = (Array.isArray(a.attachments) ? a.attachments : (a.attach ? [{ name: a.attachName, bytes: a.attach }] : []))
-                .map((f) => ({ name: String(f?.name || 'attachment'), bytes: String(f?.bytes ?? '') })).filter((f) => f.bytes);
-            const message = {
-                subject: String(a.subject ?? ''),
-                body: { contentType: 'text', content: String(a.body ?? '') },
-                toRecipients: to.map((address) => ({ emailAddress: { address } })),
-                ...(cc.length ? { ccRecipients: cc.map((address) => ({ emailAddress: { address } })) } : {}),
-                ...(files.length ? { attachments: files.map((f) => ({ '@odata.type': '#microsoft.graph.fileAttachment', name: f.name, contentBytes: f.bytes })) } : {}),
-            };
+            const files = filesOf(a);
+            const at = later(a);
+            const message = { subject: String(a.subject ?? ''), body: bodyOf(target, a), ...people(to, listOf(a.cc), listOf(a.bcc)),
+                ...(files.length ? { attachments: files.map(fileOf) } : {}), ...deferred(at) };
+            if (drafted(a)) {
+                await call(target, ctx, 'POST', '/me/messages', message);
+                return { text: `Draft saved in Drafts, to ${to.join(', ')}${withNames(files)} — not sent.`, size: 0 };
+            }
             await call(target, ctx, 'POST', '/me/sendMail', { message, saveToSentItems: true });
-            return { text: `Sent to ${to.join(', ')}${files.length ? ` with ${files.map((f) => f.name).join(', ')}` : ''}.`, size: 0 };
+            if (at) return { text: scheduled(at, to, withNames(files)), size: 0 };
+            return { text: `Sent to ${to.join(', ')}${copies(listOf(a.cc))}${withNames(files)}.`, size: 0 };
+        },
+        /* Reply in the thread: Graph drafts the reply (its recipients, its quoted
+           original), the answer is put above the quote, new files joined, then it
+           is sent -- or left in Drafts. */
+        async reply(target, a, ctx) {
+            const id = String(a.uid ?? '').trim();
+            if (!id) no('reply needs the message id');
+            const all = a.all === true || a.all === 'true';
+            later(a);
+            const d = await call(target, ctx, 'POST', `/me/messages/${encodeURIComponent(id)}/${all ? 'createReplyAll' : 'createReply'}`, {});
+            const cc = [...(d?.ccRecipients ?? []).map((r) => r?.emailAddress?.address).filter(Boolean), ...listOf(a.cc)];
+            return finish(target, ctx, a, d, { to: (d?.toRecipients ?? []).map((r) => r?.emailAddress?.address).filter(Boolean), cc, keepAll: true });
+        },
+        /* Forward: Graph drafts it with the original's files; those not kept are
+           taken off, the note goes above, then it is sent -- or left in Drafts. */
+        async forward(target, a, ctx) {
+            const id = String(a.uid ?? '').trim();
+            if (!id) no('forward needs the message id');
+            const to = listOf(a.to);
+            if (!to.length) no('forward needs a recipient (to)');
+            later(a);
+            const d = await call(target, ctx, 'POST', `/me/messages/${encodeURIComponent(id)}/createForward`, { toRecipients: to.map((address) => ({ emailAddress: { address } })) });
+            return finish(target, ctx, a, d, { to, cc: listOf(a.cc), keep: a.keep });
         },
     };
+
+    /* A drafted reply or forward, finished: files kept or taken off, the words
+       above the quote, Cc/Bcc, new files, then sent unless a draft is asked. */
+    async function finish(target, ctx, a, d, { to, cc, keep, keepAll }) {
+        if (!d?.id) no(`${target.title}: the mailbox did not prepare the message`);
+        const did = encodeURIComponent(d.id);
+        let kept = [];
+        if (!keepAll) {
+            const have = (await call(target, ctx, 'GET', `/me/messages/${did}/attachments?$select=id,name`))?.value ?? [];
+            let keepList;
+            try { keepList = keptFiles(have.map((x) => ({ ...x, name: x.name || '' })), keep); }
+            catch (e) { await call(target, ctx, 'DELETE', `/me/messages/${did}`).catch(() => {}); throw e; }
+            const ids = new Set(keepList.map((x) => x.id));
+            for (const x of have) if (!ids.has(x.id)) await call(target, ctx, 'DELETE', `/me/messages/${did}/attachments/${encodeURIComponent(x.id)}`);
+            kept = keepList.map((x) => x.name);
+        }
+        const mine = bodyOf(target, a);
+        const theirs = d.body?.content ?? '';
+        const html = mine.contentType === 'html' ? mine.content.replace(/^[\s\S]*?<body[^>]*>|<\/body>[\s\S]*$/gi, '') : esc(mine.content).replace(/\n/g, '<br>');
+        const content = /<body[^>]*>/i.test(theirs) ? theirs.replace(/<body[^>]*>/i, (m) => `${m}${html}<br>`) : `${html}<br>${theirs}`;
+        const at = later(a);
+        await call(target, ctx, 'PATCH', `/me/messages/${did}`, { body: { contentType: 'html', content }, ...people(to, [...new Set(cc)], listOf(a.bcc)), ...deferred(at) });
+        const files = filesOf(a);
+        for (const f of files) await call(target, ctx, 'POST', `/me/messages/${did}/attachments`, fileOf(f));
+        const names = [...kept, ...files.map((f) => f.name)];
+        const joined = names.length ? ` with ${names.join(', ')}` : '';
+        if (drafted(a)) return { text: `Draft saved in Drafts, to ${to.join(', ')}${joined} — not sent.`, size: 0 };
+        await call(target, ctx, 'POST', `/me/messages/${did}/send`);
+        if (at) return { text: scheduled(at, to, joined), size: 0 };
+        return { text: `Sent to ${to.join(', ')}${copies(cc)}${joined}.`, size: 0 };
+    }
+}
+
+const esc = (t) => String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+const drafted = (a) => a.draft === true || a.draft === 'true';
+/* Sent later: Exchange itself holds the message in the Outbox until its time
+   (the deferred-send property), so nothing here needs to be running then. */
+const later = (a) => { const at = sendAt(a.at); if (at && drafted(a)) no('give at or draft, not both'); return at; };
+const deferred = (at) => (at ? { singleValueExtendedProperties: [{ id: 'SystemTime 0x3FEF', value: at.toISOString() }] } : {});
+const scheduled = (at, to, files) => `Scheduled for ${wallClock(at)}, to ${to.join(', ')}${files} — it waits in the Outbox until then (delete it there to cancel).`;
+const copies = (cc) => (cc.length ? ` (cc ${cc.join(', ')})` : '');
+const withNames = (files) => (files.length ? ` with ${files.map((f) => f.name).join(', ')}` : '');
+const recipients = (list) => list.map((address) => ({ emailAddress: { address } }));
+const people = (to, cc, bcc) => ({ toRecipients: recipients(to), ...(cc.length ? { ccRecipients: recipients(cc) } : {}), ...(bcc.length ? { bccRecipients: recipients(bcc) } : {}) });
+/* Files joined: bytes already base64 (what Graph wants) and a name. An
+   `attachments` array, or one `attach`+`attachName` (back-compat). */
+const filesOf = (a) => (Array.isArray(a.attachments) ? a.attachments : (a.attach ? [{ name: a.attachName, bytes: a.attach }] : []))
+    .map((f) => ({ name: String(f?.name || 'attachment'), bytes: String(f?.bytes ?? '') })).filter((f) => f.bytes);
+const fileOf = (f) => ({ '@odata.type': '#microsoft.graph.fileAttachment', name: f.name, contentBytes: f.bytes });
+/* The body Graph is given: the composed HTML from Markdown, or the text as written. */
+function bodyOf(target, a) {
+    const c = compose({ body: a.body, format: a.format, signature: a.signature === false || a.signature === 'false' ? '' : target.config?.signature });
+    return c.html ? { contentType: 'html', content: c.html } : { contentType: 'text', content: c.text };
 }

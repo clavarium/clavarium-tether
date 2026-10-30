@@ -82,7 +82,8 @@ test('send posts a well-formed Graph message from the fields', async () => {
     const sent = calls[0];
     assert.equal(sent.method, 'POST');
     assert.deepEqual(sent.body.message.toRecipients.map((r) => r.emailAddress.address), ['c@example.com', 'e@example.org']);
-    assert.equal(sent.body.message.body.content, 'text');
+    assert.equal(sent.body.message.body.contentType, 'html', 'the Markdown body goes as HTML');
+    assert.match(sent.body.message.body.content, /<p>text<\/p>/);
     assert.equal(sent.body.message.attachments, undefined, 'no attachments key without a file');
 });
 
@@ -169,4 +170,72 @@ test('a 401 says to reconnect (scope may be missing)', async () => {
     const fetch = async () => ({ ok: false, status: 401, json: async () => ({}) });
     const g = graphMail({ fetch, token: mint });
     await assert.rejects(() => g.list(target, {}, ctx), /reconnect the account/);
+});
+
+test('send with format "text" keeps the body as written; bcc goes as bccRecipients', async () => {
+    const { fetch, calls } = fakeGraph({ 'POST /me/sendMail': { _status: 202 } });
+    const g = graphMail({ fetch, token: mint });
+    await g.send(target, { to: 'c@example.com', bcc: 'h@example.com', subject: 'Yo', body: '**as is**', format: 'text' }, ctx);
+    assert.deepEqual(calls[0].body.message.body, { contentType: 'text', content: '**as is**' });
+    assert.deepEqual(calls[0].body.message.bccRecipients.map((r) => r.emailAddress.address), ['h@example.com']);
+});
+
+test('send with draft keeps it in Drafts, never sends', async () => {
+    const { fetch, calls } = fakeGraph({ 'POST /me/messages': { id: 'D1' } });
+    const r = await graphMail({ fetch, token: mint }).send(target, { to: 'c@example.com', subject: 'Yo', body: 'b', draft: true }, ctx);
+    assert.match(r.text, /Draft saved/);
+    assert.ok(!calls.some((c) => /sendMail|\/send$/.test(c.path)), 'nothing sent');
+});
+
+test('reply drafts in the thread, puts the answer above the quote, then sends', async () => {
+    const { fetch, calls } = fakeGraph({
+        'POST /me/messages/AAA/createReply': { id: 'R1', toRecipients: [{ emailAddress: { address: 'x@example.com' } }], body: { contentType: 'html', content: '<html><body><div>original</div></body></html>' } },
+        'PATCH /me/messages/R1': {}, 'POST /me/messages/R1/send': { _status: 202 },
+    });
+    const r = await graphMail({ fetch, token: mint }).reply(target, { uid: 'AAA', body: 'Thanks **a lot**' }, ctx);
+    const patch = calls.find((c) => c.method === 'PATCH');
+    assert.match(patch.body.body.content, /<body>\s*<p>Thanks <strong>a lot<\/strong><\/p>[\s\S]*<div>original<\/div>/, 'answer first, quote kept');
+    assert.ok(calls.some((c) => c.path === '/me/messages/R1/send'));
+    assert.match(r.text, /Sent to x@example\.com/);
+});
+
+test('reply with all uses createReplyAll and adds a cc', async () => {
+    const { fetch, calls } = fakeGraph({
+        'POST /me/messages/AAA/createReplyAll': { id: 'R2', toRecipients: [{ emailAddress: { address: 'x@example.com' } }], ccRecipients: [{ emailAddress: { address: 'y@example.com' } }], body: { content: '' } },
+        'PATCH /me/messages/R2': {}, 'POST /me/messages/R2/send': { _status: 202 },
+    });
+    await graphMail({ fetch, token: mint }).reply(target, { uid: 'AAA', body: 'ok', all: true, cc: 'z@example.com' }, ctx);
+    const patch = calls.find((c) => c.method === 'PATCH');
+    assert.deepEqual(patch.body.ccRecipients.map((r) => r.emailAddress.address), ['y@example.com', 'z@example.com']);
+});
+
+const fwdRoutes = (extra = {}) => ({
+    'POST /me/messages/AAA/createForward': { id: 'F1', body: { content: '<html><body>orig</body></html>' } },
+    'GET /me/messages/F1/attachments': { value: [{ id: 'a1', name: 'plan.pdf' }, { id: 'a2', name: 'photo.png' }] },
+    'DELETE /me/messages/F1/attachments/a1': { _status: 204 }, 'DELETE /me/messages/F1/attachments/a2': { _status: 204 },
+    'PATCH /me/messages/F1': {}, 'POST /me/messages/F1/send': { _status: 202 }, 'POST /me/messages/F1/attachments': {}, ...extra,
+});
+
+test('forward keeps every file of the original by default', async () => {
+    const { fetch, calls } = fakeGraph(fwdRoutes());
+    const r = await graphMail({ fetch, token: mint }).forward(target, { uid: 'AAA', to: 'c@example.com', body: 'FYI' }, ctx);
+    assert.ok(!calls.some((c) => c.method === 'DELETE'), 'no file taken off');
+    assert.match(r.text, /with plan\.pdf, photo\.png/);
+});
+
+test('forward with keep "none" takes every file off; with a name keeps only it', async () => {
+    let f = fakeGraph(fwdRoutes());
+    await graphMail({ fetch: f.fetch, token: mint }).forward(target, { uid: 'AAA', to: 'c@example.com', keep: 'none' }, ctx);
+    assert.equal(f.calls.filter((c) => c.method === 'DELETE').length, 2);
+    f = fakeGraph(fwdRoutes());
+    const r = await graphMail({ fetch: f.fetch, token: mint }).forward(target, { uid: 'AAA', to: 'c@example.com', keep: 'plan' }, ctx);
+    assert.deepEqual(f.calls.filter((c) => c.method === 'DELETE').map((c) => c.path), ['/me/messages/F1/attachments/a2']);
+    assert.match(r.text, /with plan\.pdf\./);
+});
+
+test('forward naming a file the original lacks is refused, and the half-made draft removed', async () => {
+    const f = fakeGraph(fwdRoutes({ 'DELETE /me/messages/F1': { _status: 204 } }));
+    await assert.rejects(graphMail({ fetch: f.fetch, token: mint }).forward(target, { uid: 'AAA', to: 'c@example.com', keep: 'budget' }, ctx), /no attachment "budget"/);
+    assert.ok(f.calls.some((c) => c.method === 'DELETE' && c.path === '/me/messages/F1'));
+    assert.ok(!f.calls.some((c) => c.path.endsWith('/send')));
 });

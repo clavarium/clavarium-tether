@@ -76,7 +76,7 @@ ${NAME} ${VERSION}`;
 
 const FILE_VERBS = ['list', 'read', 'search', 'write', 'move', 'delete'];
 const BROWSER_VERBS = ['tabs', 'open', 'shot', 'html', 'console', 'eval', 'click', 'type', 'key', 'scroll', 'drag'];
-const MAIL_VERBS = ['list', 'read', 'source', 'attachment', 'search', 'move', 'flag', 'delete', 'send'];
+const MAIL_VERBS = ['list', 'read', 'source', 'attachment', 'search', 'move', 'flag', 'delete', 'send', 'reply', 'forward'];
 const CAL_VERBS = ['list', 'read', 'freebusy', 'create', 'update', 'attach', 'detach', 'delete', 'respond', 'categories', 'category'];
 const CONTACT_VERBS = ['list', 'search', 'read', 'create', 'update', 'delete', 'attach'];
 const baseName = (p) => String(p).split('/').pop();
@@ -91,6 +91,9 @@ export function read(argv) {
         if (a === '--enter') { flags.enter = true; continue; }
         if (a === '--readable') { flags.readable = true; continue; }
         if (a === '--share') { flags.share = true; continue; }
+        if (a === '--all') { flags.all = true; continue; }
+        if (a === '--draft') { flags.draft = true; continue; }
+        if (a === '--no-signature') { flags.signature = false; continue; }
         /* --attach may be given several times, and each value may list files with commas. */
         if (a === '--attach') { if (argv[i + 1] === undefined) return { refused: '--attach needs a file' }; (flags.attach ??= []).push(...String(argv[++i]).split(',').map((x) => x.trim()).filter(Boolean)); continue; }
         if (a === '--category') { if (argv[i + 1] === undefined) return { refused: '--category needs a name (or none)' }; (flags.category ??= []).push(...String(argv[++i]).split(',').map((x) => x.trim()).filter(Boolean)); continue; }
@@ -155,15 +158,21 @@ export function read(argv) {
                 case 'flag': return need(p.length === 2, 'mail TARGET flag UID FLAG') ?? ['mail.flag', { target, uid: p[0], flag: p[1], ...why }];
                 case 'delete': return need(p[0], 'mail TARGET delete UID') ?? ['mail.delete', { target, uid: p[0], ...box, ...why }];
                 default: {
-                    const bad = need(flags.to !== undefined && flags.subject !== undefined && flags.body !== undefined, 'mail TARGET send --to "a@b" --subject "..." --body "..." [--cc "..."] [--attach FILE]');
-                    if (bad) return bad;
+                    const usage = { send: 'mail TARGET send --to "a@b" --subject "..." --body "..."', reply: 'mail TARGET reply UID --body "..." [--all]', forward: 'mail TARGET forward UID --to "a@b" [--body "..."] [--keep all|none|NAMES]' }[what];
+                    const bad = what === 'send' ? need(flags.to !== undefined && flags.subject !== undefined && flags.body !== undefined, usage)
+                        : what === 'reply' ? need(p[0] && flags.body !== undefined, usage) : need(p[0] && flags.to !== undefined, usage);
+                    if (bad) return { refused: `${bad.refused} [--cc "..."] [--bcc "..."] [--format text] [--draft | --at 2026-11-02T08:30] [--no-signature] [--attach FILE]` };
                     let att = {};
                     if (flags.attach !== undefined) {
                         const files = [];
                         for (const path of flags.attach) { const b = readB64(path); if (b === null) return { refused: `cannot read the file to attach: ${path}` }; files.push({ name: baseName(path), bytes: b }); }
                         att = { attachments: files };
                     }
-                    return ['mail.send', { target, to: flags.to, subject: flags.subject, body: flags.body, ...(flags.cc !== undefined ? { cc: flags.cc } : {}), ...att, ...why }];
+                    const opt = (k) => (flags[k] !== undefined ? { [k]: flags[k] } : {});
+                    const common = { ...opt('cc'), ...opt('bcc'), ...opt('format'), ...opt('draft'), ...opt('at'), ...opt('signature'), ...att, ...why };
+                    if (what === 'reply') return ['mail.reply', { target, uid: p[0], body: flags.body, ...box, ...opt('all'), ...common }];
+                    if (what === 'forward') return ['mail.forward', { target, uid: p[0], to: flags.to, ...opt('body'), ...opt('keep'), ...box, ...common }];
+                    return ['mail.send', { target, to: flags.to, subject: flags.subject, body: flags.body, ...common }];
                 }
             }
         }

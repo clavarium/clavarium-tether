@@ -78,6 +78,20 @@ export class Exchange {
         if (!new RegExp(`^${tag} OK`, 'i').test(lines.at(-1) ?? '')) throw new Error(failure);
         return lines;
     }
+    /* APPEND a whole message to a folder (a draft): the command announces the
+       literal's size, the server answers "+" when ready, then the bytes go. */
+    async append(box, flags, message, failure) {
+        const tag = `c${++this.#n}`;
+        const bytes = Buffer.from(message, 'utf8');
+        this.#socket.write(`${tag} APPEND ${quoted(box)} (${flags}) {${bytes.length}}\r\n`);
+        let lines = await this.#until((l) => l.startsWith(`${tag} `) || l.startsWith('+'));
+        if ((lines.at(-1) ?? '').startsWith('+')) {
+            this.#socket.write(Buffer.concat([bytes, Buffer.from('\r\n')]));
+            lines = await this.#until((l) => l.startsWith(`${tag} `));
+        }
+        if (!new RegExp(`^${tag} OK`, 'i').test(lines.at(-1) ?? '')) throw new Error(failure);
+        return lines;
+    }
     /* AUTHENTICATE XOAUTH2 with the base64 SASL response inline (initial response,
        which Gmail and Outlook accept). On failure the server first sends a `+ <error>`
        challenge and waits for an empty line before the tagged NO, so we finish that

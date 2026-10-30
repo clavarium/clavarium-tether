@@ -15,7 +15,11 @@
  *   target.secrets.password  the NAME of the password in the host's secret store
  *
  * Reads (level watch): mail.list, mail.read, mail.search. Acts (above watch):
- * mail.move, mail.flag; mail.send (SMTP) follows. `fetch` and `connect` are injected
+ * mail.move, mail.flag, mail.delete, and mail.send / mail.reply / mail.forward
+ * (SMTP; a draft or a message sent later waits in Drafts over IMAP). The body is
+ * Markdown, sent as text + HTML (host/compose.mjs).
+ *   target.config.signature  optional: Markdown added under what is sent
+ *   target.config.lang       optional: 'fr' (default) or 'en', for the quote lines `fetch` and `connect` are injected
  * for tests. Inspired by the open-source Google/Microsoft MCP servers (all MIT), the
  * verbs reimplemented here so the token stays host-side and the levels gate them.
  */
@@ -23,7 +27,10 @@ import { connect as tlsConnect } from 'node:tls';
 import { no, Refused, asDate } from '../../server/verbs.mjs';
 import { refreshAccess, thunderbird, xoauth2, PROVIDERS } from '../oauth.mjs';
 import { Exchange, quoted, imapDate } from '../imap.mjs';
-import { send as smtpSend } from '../smtp.mjs';
+import { send as smtpSend, buildMessage, address } from '../smtp.mjs';
+import { compose, quoteReply, quoteForward, replySubject, forwardSubject, keptFiles, listOf, sendAt, wallClock } from '../compose.mjs';
+import { readFileSync, writeFileSync, renameSync } from 'node:fs';
+import { join } from 'node:path';
 import { graphMail } from './graphmail.mjs';
 
 const IMAP_HOST = { google: 'imap.gmail.com', microsoft: 'outlook.office365.com' };
@@ -32,7 +39,8 @@ const PORT = 993;
 const LIST_MAX = 30;            /* messages a list returns at most */
 const READ_MAX = 512 * 1024;    /* bytes of one message read at once */
 const SOURCE_MAX = 4 * 1024 * 1024; /* bytes of a raw source or attachment download */
-const SESSION_MAX = 8 * 1024 * 1024; /* bytes a whole IMAP session may receive */
+const FORWARD_MAX = 24 * 1024 * 1024; /* bytes of an original forwarded with its files */
+const SESSION_MAX = 32 * 1024 * 1024; /* bytes a whole IMAP session may receive */
 const SINCE_DAYS = 30;          /* a bare list looks back this far */
 
 /* A header's unfolded value from a BODY.PEEK[HEADER.FIELDS (...)] block. */
@@ -143,6 +151,32 @@ const numUid = (u) => { const n = Number(u); if (!Number.isInteger(n) || n <= 0)
 const FLAGS = { read: ['+', '\\Seen'], seen: ['+', '\\Seen'], unread: ['-', '\\Seen'], unseen: ['-', '\\Seen'], flagged: ['+', '\\Flagged'], starred: ['+', '\\Flagged'], unflagged: ['-', '\\Flagged'] };
 const flagOf = (f) => { const e = FLAGS[String(f ?? '').toLowerCase().trim()]; if (!e) no('flag is one of: read, unread, flagged, unflagged'); return { op: e[0], flag: e[1] }; };
 
+/* A header's encoded words (=?UTF-8?B?...?= / ?Q?) back to letters. */
+export function decodeWords(v) {
+    return String(v ?? '').replace(/=\?([^?]+)\?([bq])\?([^?]*)\?=(\s+(?==\?))?/gi, (m, cs, enc, data) => {
+        try {
+            const buf = enc.toLowerCase() === 'b' ? Buffer.from(data, 'base64')
+                : Buffer.from(data.replace(/_/g, ' ').replace(/=([0-9A-Fa-f]{2})/g, (_, h) => String.fromCharCode(parseInt(h, 16))), 'binary');
+            return new TextDecoder(cs).decode(buf);
+        } catch { return m; }
+    });
+}
+/* The bare addresses of a header (display names dropped), in order, once each. */
+export const emailsOf = (v) => [...new Set((String(v ?? '').match(/[^\s<>,;:"()]+@[^\s<>,;:"()]+\.[^\s<>,;:"()]+/g) ?? []).map((x) => x.toLowerCase()))];
+/* What a reply or a forward needs of its original: who, when, about what, the
+   thread ids, its readable text, and its files (still encoded). */
+export function originalOf(raw) {
+    const head = splitHead(raw)[0];
+    const h = (n) => decodeWords(headerOf(head, n));
+    const out = { text: '', html: '', attachments: [] };
+    try { walk(raw, out); } catch { /* text stays empty */ }
+    return {
+        from: h('From'), replyTo: h('Reply-To'), to: h('To'), cc: h('Cc'), date: h('Date'), subject: h('Subject'),
+        messageId: headerOf(head, 'Message-ID'), references: headerOf(head, 'References'),
+        text: out.text || (out.html ? stripHtml(out.html) : ''),
+        files: attachmentsOf(raw),
+    };
+}
 export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect, smtpConnect, smtpSecure } = {}) {
     const tokens = new Map(); // target.id -> { value, exp }
 
@@ -256,6 +290,144 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
             byUid.set(uid, `#${uid}  ${when}\n  From: ${headerOf(block, 'From')}\n  Subject: ${headerOf(block, 'Subject')}`);
         }
         return uids.map((u) => byUid.get(u)).filter(Boolean);
+    }
+
+    const langOf = (target) => String(target.config?.lang ?? 'fr');
+    /* The words of a message: Markdown to text + HTML (or text as written), the
+       mailbox's signature, then the quoted original of a reply or a forward. */
+    const words = (target, a, quote) => compose({ body: a.body, format: a.format, signature: a.signature === false || a.signature === 'false' ? '' : target.config?.signature, quote });
+    const added = (a) => (Array.isArray(a.attachments) ? a.attachments : (a.attach ? [{ name: a.attachName, bytes: a.attach }] : []));
+
+    /* The original of a reply or a forward, whole: its size is asked first, so one
+       too large is refused rather than cut. */
+    async function original(target, ctx, a, max) {
+        const uid = numUid(a.uid);
+        return withImap(target, ctx, async (imap) => {
+            await imap.command(`EXAMINE ${quoted(boxOf(target, a.mailbox))}`, 'that mailbox could not be opened');
+            const sized = await imap.command(`UID FETCH ${uid} (RFC822.SIZE)`, 'that message could not be read');
+            const size = Number(/RFC822\.SIZE (\d+)/i.exec(sized.find((l) => /^\* \d+ FETCH/i.test(l)) ?? '')?.[1]);
+            if (!Number.isFinite(size)) no('no such message');
+            if (size > max) no(max === FORWARD_MAX ? `the original is too large (${Math.round(size / 1024 / 1024)} MB) to forward with its files -- forward it with keep "none", or fewer files` : 'the original is too large to quote');
+            const lines = await imap.command(`UID FETCH ${uid} (BODY.PEEK[])`, 'that message could not be read');
+            const fetched = lines.find((l) => /^\* \d+ FETCH/i.test(l)) ?? '';
+            const cut = fetched.indexOf('\n'); if (cut < 0) no('no such message');
+            return originalOf(fetched.slice(cut + 1).replace(/\)\s*$/, ''));
+        });
+    }
+    /* The folder drafts live in: the one the server marks \\Drafts, else one named
+       like it, else "Drafts". */
+    async function draftsOf(imap) {
+        const lines = await imap.command('LIST "" "*"', 'the folders could not be listed');
+        const boxes = lines.filter((l) => /^\* LIST/i.test(l)).map((l) => ({ flags: /^\* LIST \(([^)]*)\)/i.exec(l)?.[1] ?? '', name: (/"((?:[^"\\]|\\.)*)"\s*$/.exec(l)?.[1] ?? /\s(\S+)$/.exec(l)?.[1] ?? '').replace(/\\(.)/g, '$1') }));
+        return (boxes.find((b) => /\\Drafts/i.test(b.flags)) ?? boxes.find((b) => /(^|\/)(drafts|brouillons)$/i.test(b.name)))?.name ?? 'Drafts';
+    }
+    /* Send the built message, or keep it as a draft. */
+    async function deliver(target, ctx, a, m) {
+        const user = userOf(target);
+        const names = m.attachments.map((f) => f?.name || 'attachment');
+        const files = names.length ? ` with ${names.join(', ')}` : '';
+        const at = sendAt(a.at);
+        const draft = a.draft === true || a.draft === 'true';
+        if (at && draft) no('a scheduled mail waits in Drafts already: give at or draft, not both');
+        if (at || draft) for (const x of [...m.to, ...m.cc, ...m.bcc]) try { address(x); } catch (e) { no(e.message); }
+        if (at) {
+            /* No mail server keeps a message for later over IMAP/SMTP: it waits in
+               Drafts (where a person sees it, and deletes it to cancel), and the
+               keeper sends it at its time. */
+            if (!host) no('sending later needs the keeper running');
+            const messageId = `<${Date.now().toString(36)}.${Math.random().toString(36).slice(2)}@${user.split('@')[1] || 'tether'}>`;
+            const raw = buildMessage({ ...m, from: user, messageId });
+            const box = await withImap(target, ctx, async (imap) => {
+                const drafts = await draftsOf(imap);
+                await imap.append(drafts, '\\Draft \\Seen', raw, 'the message could not be kept for later');
+                return drafts;
+            });
+            later.push({ id: messageId, target: target.id, agent: ctx.agent, when: at.getTime(), box, to: m.to, cc: m.cc, bcc: m.bcc, subject: String(m.subject ?? ''), tries: 0 });
+            keep();
+            return { text: `Scheduled for ${wallClock(at)}, to ${m.to.join(', ')}${files} — it waits in ${box} until then (delete it there to cancel). The keeper must be running at that time; if not, it leaves as soon as it is back.`, size: 0 };
+        }
+        if (draft) {
+            const raw = buildMessage({ ...m, from: user });
+            const box = await withImap(target, ctx, async (imap) => {
+                const drafts = await draftsOf(imap);
+                await imap.append(drafts, '\\Draft \\Seen', raw, 'the draft could not be saved');
+                return drafts;
+            });
+            return { text: `Draft saved in ${box}, to ${m.to.join(', ')}${files} — not sent.`, size: 0 };
+        }
+        let server; let port = 587; let auth;
+        if (isOAuth(target)) {
+            server = SMTP_HOST[providerOf(target)];
+            auth = { xoauth2: xoauth2(user, await access(target, ctx)) };
+        } else {
+            server = String(target.config?.smtpHost ?? '').trim().toLowerCase();
+            if (!server || !server.includes('.')) no(`${target.title}: set its SMTP server (smtpHost) to send`);
+            const password = await ctx.secret('password');
+            if (!password) no(`${target.title}: its password is empty`);
+            auth = { user, password };
+        }
+        if (Number(target.config?.smtpPort) > 0) port = Number(target.config.smtpPort);
+        try {
+            await smtpSend({ host: server, port, auth, from: user, ...m,
+                ...(smtpConnect ? { connect: smtpConnect } : {}), ...(smtpSecure ? { secure: smtpSecure } : {}) });
+        } catch (e) { if (e instanceof Refused) throw e; no(`${target.title}: ${e?.message ?? 'the message could not be sent'}`); }
+        const copies = m.cc.length ? ` (cc ${m.cc.join(', ')})` : '';
+        return { text: `Sent to ${m.to.join(', ')}${copies}${files}.`, size: 0 };
+    }
+
+    /* ---------- messages to send later (IMAP/SMTP) ----------
+       Kept in a file of the keeper's store: which draft (by its Message-ID),
+       for whom, when. Each minute the keeper wakes the connector; a message
+       due is fetched from Drafts, sent as it is, then taken out of Drafts. A
+       draft no longer there was cancelled by a person: nothing is sent. An
+       agent a person stopped has nothing sent until it is resumed. */
+    let host = null; let later = [];
+    const laterFile = () => join(host.dir, 'mail-later.json');
+    function keep() {
+        if (!host) return;
+        const tmp = `${laterFile()}.tmp`;
+        writeFileSync(tmp, JSON.stringify(later, null, 1), { mode: 0o600 });
+        renameSync(tmp, laterFile());
+    }
+    async function sendDue(rec) {
+        const target = host.target(rec.target);
+        if (!target) return 'its mailbox is gone';
+        const ctx = host.ctx(target, rec.agent);
+        const found = await withImap(target, ctx, async (imap) => {
+            await imap.command(`SELECT ${quoted(rec.box)}`, 'the drafts folder could not be opened');
+            const uid = searchUids(await imap.command(`UID SEARCH HEADER Message-ID ${quoted(rec.id)}`, 'the drafts could not be searched'))[0];
+            if (!uid) return null;
+            const lines = await imap.command(`UID FETCH ${uid} (BODY.PEEK[])`, 'the scheduled message could not be read');
+            const fetched = lines.find((l) => /^\* \d+ FETCH/i.test(l)) ?? '';
+            const cut = fetched.indexOf('\n');
+            return cut < 0 ? null : { uid, raw: fetched.slice(cut + 1).replace(/\)\s*$/, '') };
+        });
+        if (!found) return 'cancelled';
+        const raw = found.raw.replace(/^Date: .*$/m, `Date: ${new Date(host.now()).toUTCString()}`);
+        await deliver(target, ctx, {}, { to: rec.to, cc: rec.cc, bcc: rec.bcc, raw, attachments: [] });
+        await withImap(target, ctx, async (imap) => {
+            await imap.command(`SELECT ${quoted(rec.box)}`, 'the drafts folder could not be opened');
+            await imap.command(`UID STORE ${found.uid} +FLAGS (\\Deleted)`, 'the sent draft could not be removed');
+            await imap.command(`UID EXPUNGE ${found.uid}`, 'the sent draft could not be removed');
+        }).catch(() => { /* sent; a leftover draft is only clutter */ });
+        return 'sent';
+    }
+    let ticking = false;
+    async function tick() {
+        if (!host || ticking) return;
+        ticking = true;
+        try {
+            for (const rec of later.filter((r) => r.when <= host.now())) {
+                if (host.stopped(rec.agent)) continue;
+                const target = host.target(rec.target);
+                let outcome; let error;
+                try { outcome = await sendDue(rec); } catch (e) { error = e?.message ?? String(e); }
+                if (error && ++rec.tries < 30) { keep(); continue; }   /* a server away: tried again next minute */
+                later = later.filter((r) => r !== rec); keep();
+                host.note({ agent: { id: rec.agent, name: rec.agent }, target: { id: rec.target, title: target?.title }, verb: 'mail.send', detail: `later, to ${rec.to.join(', ')}: ${rec.subject}`,
+                    decision: 'yes', because: 'later', ok: outcome === 'sent', ...(outcome === 'sent' ? {} : { error: error ?? (outcome === 'cancelled' ? 'cancelled: the draft was deleted' : outcome) }) });
+            }
+        } finally { ticking = false; }
     }
 
     const verbs = {
@@ -385,37 +557,59 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
         },
         /* Send a message. A provider signs in to SMTP with XOAUTH2; a classic box with
            LOGIN on its SMTP server. The message is built from the fields -- nothing an
-           agent wrote becomes a header or a command. */
+           agent wrote becomes a header or a command. With draft, it is kept in the
+           Drafts folder instead, for a person to look at and send. */
         async 'mail.send'(target, a, ctx) {
             if (isGraph(target)) return gmail.send(target, a, ctx);
-            const user = userOf(target);
-            const to = String(a.to ?? '').split(',').map((x) => x.trim()).filter(Boolean);
+            const to = listOf(a.to);
             if (!to.length) no('send needs a recipient (to)');
-            let host; let port = 587; let auth;
-            if (isOAuth(target)) {
-                host = SMTP_HOST[providerOf(target)];
-                auth = { xoauth2: xoauth2(user, await access(target, ctx)) };
-            } else {
-                host = String(target.config?.smtpHost ?? '').trim().toLowerCase();
-                if (!host || !host.includes('.')) no(`${target.title}: set its SMTP server (smtpHost) to send`);
-                const password = await ctx.secret('password');
-                if (!password) no(`${target.title}: its password is empty`);
-                auth = { user, password };
+            return deliver(target, ctx, a, { to, cc: listOf(a.cc), bcc: listOf(a.bcc), subject: a.subject, ...words(target, a), attachments: added(a) });
+        },
+        /* Reply to a message, in its thread: to its sender (Reply-To first), or with
+           all, also to everyone it went to but this mailbox. The original is quoted
+           under the answer. Files of the original are not sent back; new ones may be. */
+        async 'mail.reply'(target, a, ctx) {
+            if (isGraph(target)) return gmail.reply(target, a, ctx);
+            const user = userOf(target).toLowerCase();
+            const o = await original(target, ctx, a, READ_MAX);
+            const self = (x) => x === user;
+            let to = emailsOf(o.replyTo || o.from);
+            if (to.every(self)) to = emailsOf(o.to);   /* a reply to one's own sent message */
+            let cc = [];
+            if (a.all === true || a.all === 'true') {
+                cc = [...emailsOf(o.to), ...emailsOf(o.cc)].filter((x) => !self(x) && !to.includes(x));
             }
-            if (Number(target.config?.smtpPort) > 0) port = Number(target.config.smtpPort);
-            let sent;
-            try {
-                sent = await smtpSend({ host, port, auth, from: user, to, subject: a.subject, body: a.body, attach: a.attach, attachName: a.attachName, attachments: a.attachments,
-                    ...(smtpConnect ? { connect: smtpConnect } : {}), ...(smtpSecure ? { secure: smtpSecure } : {}) });
-            } catch (e) { if (e instanceof Refused) throw e; no(`${target.title}: ${e?.message ?? 'the message could not be sent'}`); }
-            const names = Array.isArray(a.attachments) ? a.attachments.map((f) => f.name) : (a.attach ? [a.attachName || 'an attachment'] : []);
-            return { text: `Sent to ${sent.join(', ')}${names.length ? ` with ${names.join(', ')}` : ''}.`, size: 0 };
+            to = to.filter((x) => !self(x));
+            cc = [...new Set([...cc, ...listOf(a.cc).map((x) => x.toLowerCase())])].filter((x) => !to.includes(x));
+            if (!to.length) no('the original has no sender to reply to');
+            const thread = { inReplyTo: o.messageId, references: [o.references, o.messageId].filter(Boolean).join(' ') };
+            return deliver(target, ctx, a, { to, cc, bcc: listOf(a.bcc), subject: replySubject(o.subject), ...words(target, a, quoteReply(o, langOf(target))), attachments: added(a), ...thread });
+        },
+        /* Forward a message: the note, then the original's headers and text, and its
+           files -- all of them by default, none with keep "none", or some by name.
+           Too large to carry whole: refused, never forwarded with files missing. */
+        async 'mail.forward'(target, a, ctx) {
+            if (isGraph(target)) return gmail.forward(target, a, ctx);
+            const to = listOf(a.to);
+            if (!to.length) no('forward needs a recipient (to)');
+            const none = /^(none|false|no)$/i.test(String(a.keep ?? '').trim());
+            const o = await original(target, ctx, a, none ? READ_MAX : FORWARD_MAX);
+            const files = keptFiles(o.files, a.keep).map((f) => ({ name: f.name, type: f.type, bytes: decodeBytes(f.headers, f.body).toString('base64') }));
+            return deliver(target, ctx, a, { to, cc: listOf(a.cc), bcc: listOf(a.bcc), subject: forwardSubject(o.subject), ...words(target, a, quoteForward(o, langOf(target))), attachments: [...files, ...added(a)] });
         },
     };
 
     return {
         name: 'mail',
         verbs: Object.keys(verbs),
+        /* The keeper's hand, for messages sent later: its store folder, a target by
+           id, a ctx for its secrets, the journal, the clock, who is stopped. */
+        wake(h) {
+            host = { now: () => Date.now(), stopped: () => false, note: () => {}, ...h };
+            try { later = JSON.parse(readFileSync(laterFile(), 'utf8')); if (!Array.isArray(later)) later = []; } catch { later = []; }
+        },
+        tick,
+        later: () => later.map((r) => ({ ...r })),
         run(verb, target, a, ctx) {
             if (!verbs[verb]) no(`${verb} is not done by this connector`);
             return verbs[verb](target, a, ctx);

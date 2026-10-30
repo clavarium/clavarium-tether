@@ -72,6 +72,8 @@ export const VERBS = Object.freeze({
     'mail.flag': { reads: false, kinds: ['mail'], needs: ['uid', 'flag'] },
     'mail.delete': { reads: false, kinds: ['mail'], needs: ['uid'] },
     'mail.send': { reads: false, kinds: ['mail'], needs: ['to', 'subject', 'body'] },
+    'mail.reply': { reads: false, kinds: ['mail'], needs: ['uid', 'body'] },
+    'mail.forward': { reads: false, kinds: ['mail'], needs: ['uid', 'to'] },
     'calendar.list': { reads: true, kinds: ['calendar'], needs: [] },
     'calendar.read': { reads: true, kinds: ['calendar'], needs: ['id'] },
     'calendar.freebusy': { reads: true, kinds: ['calendar'], needs: ['who'] },
@@ -178,8 +180,21 @@ export function check(verb, a = {}) {
         case 'mail.move': str('uid', 1024); str('mailbox', 200); break;
         case 'mail.flag': str('uid', 1024); str('flag', 40); break;
         case 'mail.delete': str('uid', 1024); str('mailbox', 200); break;
-        case 'mail.send': {
-            str('to', 1000); str('subject', 400); str('body', TEXT_MAX, true); str('cc', 1000); str('attach', TEXT_MAX, true); str('attachName', 200);
+        case 'mail.send': case 'mail.reply': case 'mail.forward': {
+            if (verb !== 'mail.send') { str('uid', 1024); str('mailbox', 200); }
+            if (verb !== 'mail.reply') str('to', 1000);
+            if (verb === 'mail.send') str('subject', 400);
+            if (verb === 'mail.reply' && (a.all === true || a.all === 'true')) out.all = true;
+            if (verb === 'mail.forward') str('keep', 1000);
+            str('body', TEXT_MAX, true); str('cc', 1000); str('bcc', 1000); str('attach', TEXT_MAX, true); str('attachName', 200);
+            if (a.format !== undefined && a.format !== null && a.format !== '') {
+                const f = oneLine(a.format, 20).toLowerCase();
+                if (f !== 'markdown' && f !== 'text') no('format is markdown (the default) or text');
+                out.format = f;
+            }
+            if (a.draft === true || a.draft === 'true') out.draft = true;
+            str('at', 64);
+            if (a.signature === false || a.signature === 'false') out.signature = false;
             if (Array.isArray(a.attachments)) {
                 let total = 0;
                 /* More than kept: refused whole, never some dropped in silence (#51). */
@@ -248,10 +263,19 @@ export function detail(verb, a = {}) {
         case 'mail.move': return `move a message → ${a.mailbox}`;
         case 'mail.flag': return `mark a message ${a.flag}`;
         case 'mail.delete': return 'delete a message';
-        case 'mail.send': {
+        case 'mail.send': case 'mail.reply': case 'mail.forward': {
             const kb = (b64) => Math.max(1, Math.round((String(b64).length * 3 / 4) / 1024));
             const files = Array.isArray(a.attachments) ? a.attachments.map((f) => `${f.name} (${kb(f.bytes)} KB)`) : (a.attach ? [`${a.attachName || 'a file'} (${kb(a.attach)} KB)`] : []);
-            return `to ${a.to}: ${a.subject ?? ''}${files.length ? ` + ${files.join(', ')}` : ''}`;
+            const copies = `${a.cc ? `, cc ${a.cc}` : ''}${a.bcc ? `, bcc ${a.bcc}` : ''}`;
+            const draft = a.draft ? 'draft: ' : a.at ? `at ${a.at}: ` : '';
+            const plus = files.length ? ` + ${files.join(', ')}` : '';
+            if (verb === 'mail.reply') return `${draft}reply${a.all ? ' to all' : ''} to a message${copies}${plus}`;
+            if (verb === 'mail.forward') {
+                const k = String(a.keep ?? '').trim();
+                const kept = !k || /^(all|true|yes)$/i.test(k) ? 'with its files' : /^(none|false|no)$/i.test(k) ? 'without its files' : `keeping ${k}`;
+                return `${draft}forward a message to ${a.to}${copies} (${kept})${plus}`;
+            }
+            return `${draft}to ${a.to}${copies}: ${a.subject ?? ''}${plus}`;
         }
         case 'calendar.read': return a.id;
         case 'calendar.freebusy': return a.who;
