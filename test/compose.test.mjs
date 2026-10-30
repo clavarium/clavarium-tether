@@ -367,3 +367,11 @@ test('send later (Microsoft): Exchange holds it -- the deferred-send property, n
     assert.deepEqual(calls[0].body.message.singleValueExtendedProperties, [{ id: 'SystemTime 0x3FEF', value: at }]);
     assert.match(r.text, /Scheduled for .* Outbox/);
 });
+
+test('a mailbox signature keeps its lines in the store', async () => {
+    const { openStore } = await import('../server/store.mjs');
+    const { mkdtempSync } = await import('node:fs'); const { tmpdir } = await import('node:os'); const { join } = await import('node:path');
+    const st = openStore(mkdtempSync(join(tmpdir(), 'sig-')));
+    st.putTarget({ id: 'm', title: 'Mail', kind: 'mail', connector: 'mail', config: { user: 'a@example.com', signature: 'Marc\r\n**ACME**' } });
+    assert.equal(st.target('m').config.signature, 'Marc\n**ACME**');
+});

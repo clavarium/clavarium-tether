@@ -57,7 +57,8 @@ export function openStore(dir, { now = () => Date.now() } = {}) {
             const conf = {};
             for (const [k, v] of Object.entries(config ?? {})) {
                 if (SECRET_NAME.test(k)) no(`"${k}" looks like a secret: name it in secrets, never in config`);
-                conf[oneLine(k, 40)] = typeof v === 'number' || typeof v === 'boolean' ? v : oneLine(v, 1000);
+                /* A mailbox's signature keeps its lines (Markdown); every other value is one line. */
+                conf[oneLine(k, 40)] = typeof v === 'number' || typeof v === 'boolean' ? v : k === 'signature' ? String(v ?? '').replace(/\r\n?/g, '\n').replace(/[\0\x01-\x08\x0b-\x1f\x7f]/g, '').slice(0, 2000) : oneLine(v, 1000);
             }
             const sec = Object.fromEntries(Object.entries(secrets ?? {}).map(([k, v]) => [oneLine(k, 40), oneLine(v, 200)]));
             const before = s.targets[key];
