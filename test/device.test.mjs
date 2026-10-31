@@ -98,3 +98,10 @@ test('an image handed over by the agent: kept for the job, given to the page, ne
     const none = await k.act('device.flash', { target: 'box', name: 'x' }, BOT);
     assert.equal(none.ok, false);
 });
+
+test('on Android, the flash goes through WebUSB: Chrome\'s own serial ports there are Bluetooth ones', async () => {
+    const { android } = await import('../ui/device-flash.js');
+    assert.equal(android({ userAgent: 'Mozilla/5.0 (Linux; Android 14; SM-X710) Chrome/141.0 Safari/537.36' }), true);
+    assert.equal(android({ userAgentData: { platform: 'Android' }, userAgent: '' }), true);
+    assert.equal(android({ userAgent: 'Mozilla/5.0 (X11; Linux x86_64) Chrome/141.0 Safari/537.36' }), false);
+});

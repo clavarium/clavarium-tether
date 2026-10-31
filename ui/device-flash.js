@@ -17,7 +17,7 @@
  */
 import { command, reader, result, TYPE, STATE, ERROR, CMD } from './improv.js';
 
-const ESPRESSIF = 0x303a;   // the USB vendor of ESP32-S3's own USB port
+/* Any port: a board reached through a USB bridge chip is listed too, not only ESP32-S3's own USB. */
 const WORDS = {
     'choose-port': 'Choose the device in the list the browser shows.',
     'no-serial': 'This browser cannot reach a USB device: use Chrome or Edge on a computer, or Chrome on Android.',
@@ -48,7 +48,7 @@ export async function run(args = {}, { root = null, words = {}, image: given = n
         const serial = await serialApi();
         if (!serial) return fail(w('no-serial'));
         say(w('choose-port'));
-        port = await serial.requestPort({ filters: [{ usbVendorId: ESPRESSIF }] });
+        port = await serial.requestPort();
 
         say(w('download'));
         let image;
@@ -91,10 +91,17 @@ export async function run(args = {}, { root = null, words = {}, image: given = n
     function fail(text) { view.line(text, true); return { ok: false, text }; }
 }
 
-/* navigator.serial, or the same API over WebUSB (Chrome on Android). */
+/* navigator.serial, or the same API over WebUSB. On Android, Chrome's own serial ports are
+   Bluetooth ones only (found 31-10: "no compatible device" with the box plugged in): there,
+   WebUSB first. */
+export function android(nav = globalThis.navigator) {
+    return nav?.userAgentData?.platform === 'Android' || /Android/i.test(nav?.userAgent ?? '');
+}
 async function serialApi() {
+    const usb = async () => (await import('./vendor/web-serial-polyfill-1.0.15.js')).serial;
+    if (android() && globalThis.navigator?.usb) return usb();
     if (globalThis.navigator?.serial) return navigator.serial;
-    if (globalThis.navigator?.usb) return (await import('./vendor/web-serial-polyfill-1.0.15.js')).serial;
+    if (globalThis.navigator?.usb) return usb();
     return null;
 }
 
@@ -107,7 +114,7 @@ async function reopen(port, serial, view, w) {
     }
     view.line(w('reopen'));
     await view.button(w('reopen-button'));
-    const again = await serial.requestPort({ filters: [{ usbVendorId: ESPRESSIF }] });
+    const again = await serial.requestPort();
     await again.open({ baudRate: 115200 });
     return again;
 }
