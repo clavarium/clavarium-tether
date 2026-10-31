@@ -116,6 +116,13 @@ test('a voice box: its volume and an alert, through the application\'s own conne
     assert.equal((await k.act('voicebox.volume', { target: 'box-salon', level: 140 }, BOT)).ok, false);
     await k.act('voicebox.alert', { target: 'box-salon', text: 'Dinner is ready' }, BOT);
     assert.deepEqual(done, [['voicebox.volume', 'b-1', 85], ['voicebox.alert', 'b-1', 'Dinner is ready']]);
+    /* A radio, a podcast: an internet address the application reads and sends on; stopped by a verb. */
+    const heard = [];
+    voicebox.run = async (verb, t, a) => { heard.push([verb, a.url ?? null]); return { text: 'ok' }; };
+    assert.equal((await k.act('voicebox.listen', { target: 'box-salon', url: 'https://radio.example.org/live.mp3', name: 'Radio' }, BOT)).text, 'ok');
+    assert.equal((await k.act('voicebox.listen', { target: 'box-salon', url: 'file:///etc/passwd' }, BOT)).ok, false);
+    await k.act('voicebox.stop', { target: 'box-salon' }, BOT);
+    assert.deepEqual(heard, [['voicebox.listen', 'https://radio.example.org/live.mp3'], ['voicebox.stop', null]]);
 });
 
 test('a voice box updated with a program image the agent hands over', async () => {

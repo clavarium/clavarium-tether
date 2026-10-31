@@ -63,6 +63,8 @@ export const VERBS = Object.freeze({
     'voicebox.alert': { reads: false, kinds: ['voicebox'], needs: [] },
     'voicebox.update': { reads: false, kinds: ['voicebox'], needs: [] },
     'voicebox.play': { reads: false, kinds: ['voicebox'], needs: [] },
+    'voicebox.listen': { reads: false, kinds: ['voicebox'], needs: ['url'] },
+    'voicebox.stop': { reads: false, kinds: ['voicebox'], needs: [] },
     'screen.shot': { reads: true, kinds: ['screen'], needs: [] },
     'screen.move': { reads: false, kinds: ['screen'], needs: ['x', 'y'] },
     'screen.click': { reads: false, kinds: ['screen'], needs: [] },
@@ -167,6 +169,12 @@ export function check(verb, a = {}) {
         }
         case 'voicebox.volume': { const n = Math.round(Number(a.level)); if (!Number.isFinite(n) || n < 0 || n > 100) no('level is a number from 0 to 100'); out.level = n; break; }
         case 'voicebox.alert': str('text', 300); break;
+        case 'voicebox.listen': {
+            const u = String(a.url ?? '').trim();
+            if (!/^https?:\/\/[^\s]{3,2000}$/.test(u)) no('url: an http(s) address of a sound -- a radio stream, a podcast episode, a music file, a playlist (.m3u, .pls)');
+            out.url = u; str('name', 120);
+            break;
+        }
         case 'voicebox.play': {
             const b64 = String(a.image ?? '').replace(/\s+/g, '');
             if (!b64) no('give the sound: a .wav file of your machine (path)');
@@ -286,6 +294,8 @@ export function detail(verb, a = {}) {
         case 'browser.drag': return `${a.from} → ${a.to}`;
         case 'voicebox.volume': return `volume ${a.level}`;
         case 'voicebox.alert': return a.text ?? 'alert';
+        case 'voicebox.listen': return a.name ? `${a.name} (${a.url})` : a.url;
+        case 'voicebox.stop': return 'stop what it plays';
         case 'voicebox.play': return `a sound (${Math.round(String(a.image ?? '').length * 3 / 4 / 1024)} KB)`;
         case 'voicebox.update': return `firmware ${a.version ?? ''} (${Math.round(String(a.image ?? '').length * 3 / 4 / 1024)} KB)`.replace('  ', ' ');
         case 'device.flash': return `${a.name ? `${a.name}: ` : ''}${a.image !== undefined ? `${Math.round(String(a.image).length * 3 / 4 / 1024)} KB` : a.firmware}${a.pair ? ', then paired' : ''}`;
