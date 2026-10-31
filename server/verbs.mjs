@@ -10,7 +10,7 @@
  * nothing. Everything else ACTS.
  */
 
-export const KINDS = ['computer', 'ssh', 'browser', 'files', 'screen', 'mail', 'calendar', 'contacts', 'device'];
+export const KINDS = ['computer', 'ssh', 'browser', 'files', 'screen', 'mail', 'calendar', 'contacts', 'device', 'voicebox'];
 const SHELLS = ['computer', 'ssh'];
 const FOLDERS = ['computer', 'ssh', 'files'];
 
@@ -58,6 +58,9 @@ export const VERBS = Object.freeze({
        connector is off. See docs/protocol.md, "Plug in a screen engine". */
     /* A device plugged into a person's computer: done in that person's browser (connectors/device.mjs). */
     'device.flash': { reads: false, kinds: ['device'], needs: [] },
+    /* A voice box in a room (an application's own device): its volume, an alert it sounds. */
+    'voicebox.volume': { reads: false, kinds: ['voicebox'], needs: ['level'] },
+    'voicebox.alert': { reads: false, kinds: ['voicebox'], needs: [] },
     'screen.shot': { reads: true, kinds: ['screen'], needs: [] },
     'screen.move': { reads: false, kinds: ['screen'], needs: ['x', 'y'] },
     'screen.click': { reads: false, kinds: ['screen'], needs: [] },
@@ -160,6 +163,8 @@ export function check(verb, a = {}) {
             if (a.app && typeof a.app === 'object') out.app = { url: oneLine(a.app.url, 200), room: oneLine(a.app.room ?? '', 40), code: oneLine(a.app.code, 20) };
             break;
         }
+        case 'voicebox.volume': { const n = Math.round(Number(a.level)); if (!Number.isFinite(n) || n < 0 || n > 100) no('level is a number from 0 to 100'); out.level = n; break; }
+        case 'voicebox.alert': str('text', 300); break;
         case 'browser.tabs': break;
         case 'browser.open': tab(); str('url', PATH_MAX); break;
         case 'browser.shot': tab(); break;
@@ -262,6 +267,8 @@ export function detail(verb, a = {}) {
         case 'browser.key': return a.selector ? `${a.selector}: ${a.key}` : a.key;
         case 'browser.scroll': return `${a.dx ?? 0},${a.dy ?? 0}`;
         case 'browser.drag': return `${a.from} → ${a.to}`;
+        case 'voicebox.volume': return `volume ${a.level}`;
+        case 'voicebox.alert': return a.text ?? 'alert';
         case 'device.flash': return `${a.name ? `${a.name}: ` : ''}${a.image !== undefined ? `${Math.round(String(a.image).length * 3 / 4 / 1024)} KB` : a.firmware}${a.pair ? ', then paired' : ''}`;
         case 'screen.move': return `${a.x},${a.y}`;
         case 'screen.click': return a.x !== undefined ? `${a.x},${a.y}` : 'click';

@@ -105,3 +105,15 @@ test('on Android, the flash goes through WebUSB: Chrome\'s own serial ports ther
     assert.equal(android({ userAgentData: { platform: 'Android' }, userAgent: '' }), true);
     assert.equal(android({ userAgent: 'Mozilla/5.0 (X11; Linux x86_64) Chrome/141.0 Safari/537.36' }), false);
 });
+
+test('a voice box: its volume and an alert, through the application\'s own connector', async () => {
+    const done = [];
+    const voicebox = { run: async (verb, t, a) => { done.push([verb, t.config.box, a.level ?? a.text]); return { text: 'done' }; } };
+    const k = keeper(tmp(), { connectors: { voicebox }, ask: () => undefined });
+    k.store.putTarget({ id: 'box-salon', title: 'Voice box Salon', kind: 'voicebox', connector: 'voicebox', config: { box: 'b-1' } });
+    k.store.grant('box-salon', BOT.id, 'free');
+    assert.equal((await k.act('voicebox.volume', { target: 'box-salon', level: 85 }, BOT)).text, 'done');
+    assert.equal((await k.act('voicebox.volume', { target: 'box-salon', level: 140 }, BOT)).ok, false);
+    await k.act('voicebox.alert', { target: 'box-salon', text: 'Dinner is ready' }, BOT);
+    assert.deepEqual(done, [['voicebox.volume', 'b-1', 85], ['voicebox.alert', 'b-1', 'Dinner is ready']]);
+});

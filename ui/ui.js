@@ -20,7 +20,7 @@ export const LEVELS = ['watch', 'propose', 'frame', 'free'];
 export const KEYS = Object.freeze(['requests', 'access', 'journal', 'nothing-waits', 'no-agent', 'no-targets', 'no-journal',
     'accept', 'refuse', 'always', 'always-for', 'always-under', 'level-of', 'until',
     'level-watch', 'level-propose', 'level-frame', 'level-free', 'means-watch', 'means-propose', 'means-frame', 'means-free',
-    'kind-computer', 'kind-ssh', 'kind-browser', 'kind-files', 'kind-screen', 'kind-device',
+    'kind-computer', 'kind-ssh', 'kind-browser', 'kind-files', 'kind-screen', 'kind-device', 'kind-voicebox',
     'ask-terminal.run', 'ask-terminal.type', 'ask-terminal.open', 'ask-files.write', 'ask-files.move', 'ask-files.delete', 'ask-device.flash', 'ask-other', 'job', 'job-run', 'job-cancel',
     'did-yes', 'did-always', 'did-no', 'did-timeout', 'did-stopped', 'did-refused', 'did-read', 'did-rule', 'did-free', 'did-failed',
     'op-level', 'op-allow', 'op-unallow', 'op-stop', 'op-resume',

@@ -65,5 +65,6 @@
   "ask-device.flash": "Flasher {target} depuis ce navigateur ?",
   "job": "À faire dans ce navigateur",
   "job-run": "Brancher et lancer",
-  "job-cancel": "Annuler"
+  "job-cancel": "Annuler",
+  "kind-voicebox": "Boîtier vocal"
 }

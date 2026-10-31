@@ -65,5 +65,6 @@
   "ask-device.flash": "Flash {target} from this browser?",
   "job": "To do in this browser",
   "job-run": "Plug it in and start",
-  "job-cancel": "Cancel"
+  "job-cancel": "Cancel",
+  "kind-voicebox": "Voice box"
 }
