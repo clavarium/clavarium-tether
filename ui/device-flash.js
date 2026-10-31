@@ -64,9 +64,21 @@ export async function run(args = {}, { root = null, words = {}, image: given = n
 
         say(w('connect'));
         const { ESPLoader, Transport } = await import('./vendor/esptool-0.6.1.js');
-        const transport = new Transport(port, false);
-        const loader = new ESPLoader({ transport, baudrate: 460800, terminal: { clean() {}, writeLine() {}, write() {} } });
-        const chip = await loader.main();
+        /* Android refuses the first claim of a device whose own program runs, then lets the second
+           one through (found 31-10 on a tablet, every time): once more, on the same device, by
+           itself -- getPorts asks nobody. */
+        let transport; let loader; let chip;
+        for (let attempt = 0; ; attempt++) {
+            transport = new Transport(port, false);
+            loader = new ESPLoader({ transport, baudrate: 460800, terminal: { clean() {}, writeLine() {}, write() {} } });
+            try { chip = await loader.main(); break; } catch (error) {
+                if (attempt > 0 || !/claim/i.test(String(error?.message ?? error))) throw error;
+                try { await transport.disconnect(); } catch { /* not open */ }
+                await sleep(1500);
+                const known = await serial.getPorts?.() ?? [];
+                port = known.includes(port) ? port : known[0] ?? port;
+            }
+        }
         await loader.writeFlash({
             fileArray: [{ data: image, address: 0 }], flashSize: 'keep', flashMode: 'keep', flashFreq: 'keep',
             eraseAll: false, compress: true,
