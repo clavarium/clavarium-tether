@@ -305,6 +305,8 @@ export function keeper(dir, { sides = () => [], ask, secrets = async () => { thr
         act,
         pump,
         approvals: (agent) => queue.list(agent),
+        /* Approved calls that wait for a person's browser (a device to flash). */
+        jobs: () => conns.device?.jobs?.() ?? [],
         decide: (id, decision, by = PERSON, word = '') => queue.decide(oneLine(id, 100), decision, byRef(by), word),
         async stop(agent, by = PERSON) {
             const who = oneLine(agent, 100) || '*';
