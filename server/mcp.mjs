@@ -57,17 +57,19 @@ export async function ask(dir, verb, args = {}, { wait = WAIT_MS, grace = GRACE_
     const id = randomUUID();
     appendFileSync(join(dir, 'asks.jsonl'), `${JSON.stringify({ id, at: new Date().toISOString(), op: verb, args })}\n`);
     let until = Date.now() + wait;
-    let held = false;
+    let held = false; let heldUntil = null;
     for (;;) {
         const mine = lines(join(dir, 'answers.jsonl')).filter((a) => a.ask === id);
         const answer = mine.find((a) => a.held !== true);
         if (answer) return { ok: answer.ok === true, text: String(answer.text ?? ''), ...(answer.data !== undefined ? { data: answer.data } : {}), ...(held ? { held } : {}) };
-        const hold = mine.find((a) => a.held === true);
-        if (hold && !held) {
-            held = true;
+        /* The latest hold counts: a job run in a person's browser holds the ask again, longer. */
+        const hold = mine.filter((a) => a.held === true).at(-1);
+        if (hold && hold.until !== heldUntil) {
+            const first = !held;
+            held = true; heldUntil = hold.until;
             const end = Date.parse(hold.until);
             until = (Number.isFinite(end) ? end : Date.now()) + grace;
-            try { onHeld?.(hold.until); } catch { /* the caller's */ }
+            if (first) { try { onHeld?.(hold.until); } catch { /* the caller's */ } }
         }
         if (Date.now() >= until) return held ? { ok: false, text: NOT_ANSWERED, held, late: true } : { ok: false, text: NO_KEEPER, nokeeper: true };
         await new Promise((r) => setTimeout(r, every));
@@ -147,6 +149,7 @@ export const TOOLS = [
     tool('contacts-create', 'Create a contact. A person may approve: say why.', { target: TARGET, name: S('the full name'), email: S('an email address, optional'), phone: S('a phone number, optional'), why: WHY }, ['target']),
     tool('contacts-update', 'Change a contact — name, email or phone; the rest of the card is kept. A person may approve: say why.', { target: TARGET, id: S('the contact id from a list'), name: S('new name, optional'), email: S('new email, optional'), phone: S('new phone, optional'), why: WHY }, ['target', 'id']),
     tool('contacts-delete', 'Delete a contact. A person may approve: say why.', { target: TARGET, id: S('the contact id from a list'), why: WHY }, ['target', 'id']),
+    tool('device-flash', 'Flash a device plugged by USB into a person\'s computer or Android phone (a target of kind device), from that person\'s browser: they approve, plug it in and click; then they give it its Wi-Fi over the cable. Waits until it is done, up to 30 minutes. Say why.', { target: TARGET, firmware: S('the firmware image, an address on the application\'s own site starting with /'), name: S('what the device is called, shown to the person'), wifi: { type: 'boolean', description: 'false: flash only, no Wi-Fi asked' }, app: { type: 'object', description: '{ url, room, code }: the application the device joins after, with a one-use pairing code it gave', properties: { url: { type: 'string' }, room: { type: 'string' }, code: { type: 'string' } } }, why: WHY }, ['target', 'firmware']),
     tool('contacts-attach', "Set a contact's photo. A person may approve: say why.", { target: TARGET, id: S('the contact id from a list'), attach: S('the photo as base64 bytes'), attachName: S('the file name, optional'), why: WHY }, ['target', 'id', 'attach']),
 ];
 /* A tool's arguments as the keeper reads them: [verb, args], or null. */

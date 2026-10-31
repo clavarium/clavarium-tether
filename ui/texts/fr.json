@@ -60,5 +60,10 @@
   "stopped": "Tout est coupé.",
   "resume": "Rouvrir",
   "more": "Plus",
-  "agent": "Agent"
+  "agent": "Agent",
+  "kind-device": "Appareil USB (dans ton navigateur)",
+  "ask-device.flash": "Flasher {target} depuis ce navigateur ?",
+  "job": "À faire dans ce navigateur",
+  "job-run": "Brancher et lancer",
+  "job-cancel": "Annuler"
 }

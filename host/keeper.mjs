@@ -42,6 +42,7 @@ import { graph as graphConnector } from './connectors/graph.mjs';
 import { mail as mailConnector } from './connectors/mail.mjs';
 import { calendar as calendarConnector } from './connectors/calendar.mjs';
 import { contacts as contactsConnector } from './connectors/contacts.mjs';
+import { device as deviceConnector } from './connectors/device.mjs';
 
 export { openStore, Refused, LEVELS };
 /* Older than this when first seen, an ask is not done: its command stopped waiting a while ago. */
@@ -96,6 +97,8 @@ export function keeper(dir, { sides = () => [], ask, secrets = async () => { thr
     if (!('mail' in conns)) conns.mail = mailConnector();
     if (!('calendar' in conns)) conns.calendar = calendarConnector();
     if (!('contacts' in conns)) conns.contacts = contactsConnector();
+    /* Work done in a person's browser (a device to flash): it waits for a page to run it. */
+    if (!('device' in conns)) conns.device = deviceConnector({ now });
     /* What a connector is handed for one target: who asks, and its secrets by the
        name the target gives them (the host keeps the values). */
     const ctxOf = (t, agent) => ({
@@ -203,7 +206,8 @@ export function keeper(dir, { sides = () => [], ask, secrets = async () => { thr
             if (store.stopped(who.id)) no('a person stopped everything for you: nothing was done');
         }
         const started = now();
-        const ctx = ctxOf(t, who.id);
+        /* A connector whose work waits for a person (a job run in their browser) says how much longer: the agent's ask keeps waiting. */
+        const ctx = { ...ctxOf(t, who.id), hold: (until) => { try { held?.({ until, id: `${verb}:${t.id}` }); } catch { /* the folder's */ } } };
         let res; let ok = true; let error;
         try { res = await conn.run(verb, t, a, ctx); } catch (e) {
             ok = false; error = e instanceof Refused ? e.message : `failed: ${e?.message ?? e}`;
@@ -222,7 +226,9 @@ export function keeper(dir, { sides = () => [], ask, secrets = async () => { thr
             case 'approvals': return queue.list(a.agent);
             case 'journal': return journal.read(a);
             case 'stops': return store.stops();
-            case 'state': return { agents: agents(), targets: person('targets', {}, who), approvals: queue.list(), stops: store.stops(), journal: journal.read({ agent: a.agent, limit: a.limit ?? 50 }), timeout };
+            case 'state': return { agents: agents(), targets: person('targets', {}, who), approvals: queue.list(), jobs: conns.device?.jobs?.() ?? [], stops: store.stops(), journal: journal.read({ agent: a.agent, limit: a.limit ?? 50 }), timeout };
+            case 'jobs': return conns.device?.jobs?.() ?? [];
+            case 'job-done': { if (!conns.device) no('no device connector'); const r = conns.device.finish(a.id, a.ok, a.text); changed({ jobs: a.id }); return r; }
             case 'decide': return api.decide(a.id, a.decision, by, a.word);
             case 'stop': return api.stop(a.agent, by);
             case 'resume': return api.resume(a.agent, by);

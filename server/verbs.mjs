@@ -10,7 +10,7 @@
  * nothing. Everything else ACTS.
  */
 
-export const KINDS = ['computer', 'ssh', 'browser', 'files', 'screen', 'mail', 'calendar', 'contacts'];
+export const KINDS = ['computer', 'ssh', 'browser', 'files', 'screen', 'mail', 'calendar', 'contacts', 'device'];
 const SHELLS = ['computer', 'ssh'];
 const FOLDERS = ['computer', 'ssh', 'files'];
 
@@ -54,6 +54,8 @@ export const VERBS = Object.freeze({
        but Tether writes no engine for them. A host plugs one in (connectors: { screen }),
        speaking a standard such as VNC/RFB; without one, a screen target says its
        connector is off. See docs/protocol.md, "Plug in a screen engine". */
+    /* A device plugged into a person's computer: done in that person's browser (connectors/device.mjs). */
+    'device.flash': { reads: false, kinds: ['device'], needs: ['firmware'] },
     'screen.shot': { reads: true, kinds: ['screen'], needs: [] },
     'screen.move': { reads: false, kinds: ['screen'], needs: ['x', 'y'] },
     'screen.click': { reads: false, kinds: ['screen'], needs: [] },

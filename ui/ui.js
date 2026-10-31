@@ -20,8 +20,8 @@ export const LEVELS = ['watch', 'propose', 'frame', 'free'];
 export const KEYS = Object.freeze(['requests', 'access', 'journal', 'nothing-waits', 'no-agent', 'no-targets', 'no-journal',
     'accept', 'refuse', 'always', 'always-for', 'always-under', 'level-of', 'until',
     'level-watch', 'level-propose', 'level-frame', 'level-free', 'means-watch', 'means-propose', 'means-frame', 'means-free',
-    'kind-computer', 'kind-ssh', 'kind-browser', 'kind-files', 'kind-screen',
-    'ask-terminal.run', 'ask-terminal.type', 'ask-terminal.open', 'ask-files.write', 'ask-files.move', 'ask-files.delete', 'ask-other',
+    'kind-computer', 'kind-ssh', 'kind-browser', 'kind-files', 'kind-screen', 'kind-device',
+    'ask-terminal.run', 'ask-terminal.type', 'ask-terminal.open', 'ask-files.write', 'ask-files.move', 'ask-files.delete', 'ask-device.flash', 'ask-other', 'job', 'job-run', 'job-cancel',
     'did-yes', 'did-always', 'did-no', 'did-timeout', 'did-stopped', 'did-refused', 'did-read', 'did-rule', 'did-free', 'did-failed',
     'op-level', 'op-allow', 'op-unallow', 'op-stop', 'op-resume',
     'allowed', 'under', 'rule', 'rule-command', 'rule-path', 'add', 'cancel', 'remove', 'stop', 'stopped', 'resume', 'more', 'agent']);
@@ -66,7 +66,7 @@ function h(tag, props = {}, ...kids) {
 
 export function mount(root, { call, words = {}, lang = 'en', agent = null } = {}) {
     const w = (k) => words[k] ?? k;
-    const ui = { data: null, agent, adding: null, draft: { kind: 'command', value: '' }, limit: 30, error: '', busy: new Set() };
+    const ui = { data: null, agent, adding: null, draft: { kind: 'command', value: '' }, limit: 30, error: '', busy: new Set(), places: new Map() };
     const box = h('div', { class: 'tether' });
     root.replaceChildren(box);
     let alive = true;
@@ -123,12 +123,33 @@ export function mount(root, { call, words = {}, lang = 'en', agent = null } = {}
             h('h3', {}, h('span', { class: 'tether-dot', 'aria-hidden': 'true' }), `${w(o.key)} · ${time(l.at)}`),
             l.detail ? h('pre', { class: 'tether-code' }, l.detail) : h('p', { class: 'tether-why' }, fill(w(`ask-${l.verb}`), { target: l.target?.title ?? '' })));
     }
+    /* An approved act that only this browser can do: a click runs it (jobs.js). */
+    function job(j) {
+        /* The same element from one paint to the next: the module draws in it while it runs. */
+        if (!ui.places.has(j.id)) ui.places.set(j.id, h('div', { class: 'tether-job' }));
+        const place = ui.places.get(j.id);
+        const busy = ui.busy.has(j.id);
+        const go = async () => {
+            ui.busy.add(j.id);
+            const { runJob } = await import('./jobs.js');
+            await runJob(j, { call, root: place, words });
+            ui.busy.delete(j.id); ui.places.delete(j.id); await refresh();
+        };
+        return h('article', { class: 'tether-card tether-wait', 'data-job': j.id },
+            h('h3', {}, h('span', { class: 'tether-dot', 'aria-hidden': 'true' }), `${w('job')} · ${fill(w(`ask-${j.verb}`), { target: j.target.title })}`),
+            busy ? null : h('div', { class: 'tether-buttons' },
+                h('button', { type: 'button', class: 'tether-accept', 'data-act': 'run-job', onclick: () => { void go(); } }, w('job-run')),
+                h('button', { type: 'button', class: 'tether-plain', 'data-act': 'cancel-job', onclick: act('job-done', { id: j.id, ok: false, text: 'cancelled by a person' }) }, w('job-cancel'))),
+            place);
+    }
     function requests() {
+        const jobs = (ui.data?.jobs ?? []).filter((j) => !ui.agent || j.agent === ui.agent);
         const waiting = (ui.data?.approvals ?? []).filter((r) => !ui.agent || r.agent.id === ui.agent);
         const decided = (ui.data?.journal ?? []).filter((l) => !l.op && ['yes', 'always', 'no', 'timeout', 'stopped'].includes(l.decision) && l.verb).slice(0, 4);
         return h('section', { class: 'tether-col', 'aria-label': w('requests') },
             h('h2', {}, w('requests')),
-            waiting.length ? waiting.map(card) : h('p', { class: 'tether-empty' }, w('nothing-waits')),
+            jobs.map(job),
+            waiting.length ? waiting.map(card) : jobs.length ? null : h('p', { class: 'tether-empty' }, w('nothing-waits')),
             decided.map(ended));
     }
 

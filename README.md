@@ -129,6 +129,17 @@ Build the extension with WXT (`cd extension && npm install && npm run build`
 for Chrome, `npm run build:firefox` for Firefox); load the unpacked build from
 `extension/.output/`.
 
+## Flash a device from a browser
+
+A device plugged into a person's computer (or Android phone) by USB is a target of
+kind `device`. The MCP tool `device-flash` (a firmware address on the application's
+site) asks a person; once approved, the application's page shows a button, and Tether's own module
+(`ui/device-flash.js`, with esptool-js) writes the firmware over Web Serial, or WebUSB
+on Android, then gives the device its Wi-Fi over the same cable (Improv Wi-Fi,
+`ui/improv.js`). Nothing is installed, and the keeper never touches the cable: the
+page says how it ended (`job-done`), and that is the agent's answer. A page runs a job
+with `runJob` (`ui/jobs.js`).
+
 ## Without an application
 
     tether serve --store ~/tether-data --side ./.tether=Assistant --local ~/Projects

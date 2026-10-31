@@ -4,7 +4,7 @@
  * kept short), and, where the connector can tell, what the act is about (the mail
  * answered, the invitation). The page words it in its own language.
  *
- *   { kind: 'mail' | 'calendar' | 'contacts' | 'terminal' | 'files' | 'browser' | 'screen' | 'other',
+ *   { kind: 'mail' | 'calendar' | 'contacts' | 'terminal' | 'files' | 'browser' | 'screen' | 'device' | 'other',
  *     action: 'send' | 'reply' | 'forward' | 'create' | 'respond' | ...,  ...fields }
  */
 const BODY_MAX = 600;
@@ -41,6 +41,7 @@ export function cardOf(verb, a = {}, target = {}) {
         case 'terminal': return drop({ kind: 'terminal', action: act, command: a.command, text: a.text });
         case 'files': return drop({ kind: 'files', action: act, path: a.path, from: a.from, to: a.to, bytes: a.text !== undefined ? Buffer.byteLength(String(a.text)) : undefined });
         case 'browser': return drop({ kind: 'browser', action: act, url: a.url, selector: a.selector, text: a.text, key: a.key });
+        case 'device': return drop({ kind: 'device', action: act, firmware: a.firmware, name: a.name, wifi: a.wifi === false ? false : undefined, app: a.app?.url, room: a.app?.room });
         case 'screen': return drop({ kind: 'screen', action: act, text: a.text, key: a.key });
         default: return { kind: 'other', action: String(verb) };
     }
