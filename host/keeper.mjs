@@ -207,7 +207,7 @@ export function keeper(dir, { sides = () => [], ask, secrets = async () => { thr
         }
         const started = now();
         /* A connector whose work waits for a person (a job run in their browser) says how much longer: the agent's ask keeps waiting. */
-        const ctx = { ...ctxOf(t, who.id), hold: (until) => { try { held?.({ until, id: `${verb}:${t.id}` }); } catch { /* the folder's */ } } };
+        const ctx = { ...ctxOf(t, who.id), hold: (until) => { try { held?.({ until, id: `${verb}:${t.id}` }); } catch { /* the folder's */ } changed({ jobs: verb }); } };
         let res; let ok = true; let error;
         try { res = await conn.run(verb, t, a, ctx); } catch (e) {
             ok = false; error = e instanceof Refused ? e.message : `failed: ${e?.message ?? e}`;
