@@ -16,7 +16,7 @@
  * The keeper says who asks by the folder the ask came from: an agent cannot
  * speak as another one, nor as a person. See docs/protocol.md.
  */
-import { appendFileSync, readFileSync, mkdirSync, statSync, lstatSync, realpathSync } from 'node:fs';
+import { appendFileSync, readFileSync, writeFileSync, mkdirSync, statSync, lstatSync, realpathSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
@@ -149,7 +149,7 @@ export const TOOLS = [
     tool('contacts-create', 'Create a contact. A person may approve: say why.', { target: TARGET, name: S('the full name'), email: S('an email address, optional'), phone: S('a phone number, optional'), why: WHY }, ['target']),
     tool('contacts-update', 'Change a contact — name, email or phone; the rest of the card is kept. A person may approve: say why.', { target: TARGET, id: S('the contact id from a list'), name: S('new name, optional'), email: S('new email, optional'), phone: S('new phone, optional'), why: WHY }, ['target', 'id']),
     tool('contacts-delete', 'Delete a contact. A person may approve: say why.', { target: TARGET, id: S('the contact id from a list'), why: WHY }, ['target', 'id']),
-    tool('device-flash', 'Flash a device plugged by USB into a person\'s computer or Android phone (a target of kind device), from that person\'s browser: they approve, plug it in and click; then they give it its Wi-Fi over the cable. Waits until it is done, up to 30 minutes. Say why.', { target: TARGET, firmware: S('the firmware image, an address on the application\'s own site starting with /'), name: S('what the device is called, shown to the person'), wifi: { type: 'boolean', description: 'false: flash only, no Wi-Fi asked' }, app: { type: 'object', description: '{ url, room, code }: the application the device joins after, with a one-use pairing code it gave', properties: { url: { type: 'string' }, room: { type: 'string' }, code: { type: 'string' } } }, why: WHY }, ['target', 'firmware']),
+    tool('device-flash', 'Flash a device plugged by USB into a person\'s computer or Android phone (a target of kind device), with a firmware file of this machine: you hand the file over, the person approves, plugs the device in and clicks; it is flashed from their browser, then they choose its Wi-Fi. Waits until it is done, up to 30 minutes. Say why.', { target: TARGET, path: S('the firmware image to write at address 0, a file of this machine (for an ESP32: the merged .bin)'), name: S('what the device is called, shown to the person'), room: S('where it goes, e.g. Living room: its name once paired'), pair: { type: 'boolean', description: 'true: once on the Wi-Fi, the device is paired with the application whose page flashed it (a voice box)' }, wifi: { type: 'boolean', description: 'false: flash only, no Wi-Fi asked' }, why: WHY }, ['target', 'path']),
     tool('contacts-attach', "Set a contact's photo. A person may approve: say why.", { target: TARGET, id: S('the contact id from a list'), attach: S('the photo as base64 bytes'), attachName: S('the file name, optional'), why: WHY }, ['target', 'id', 'attach']),
 ];
 /* A tool's arguments as the keeper reads them: [verb, args], or null. */
@@ -172,6 +172,18 @@ export function serve(dir, { input = process.stdin, output = process.stdout, wai
             const { name, arguments: a = {} } = m.params ?? {};
             const what = asked(name, a);
             if (!what) return reply(m.id, undefined, { code: -32601, message: `no tool ${name}` });
+            /* A file handed over (a firmware): copied from the agent's machine into its folder's files/, where the keeper takes it. */
+            if (what[0] === 'device.flash' && what[1].path !== undefined) {
+                try {
+                    const bytes = readFileSync(resolve(String(what[1].path)));
+                    const name = `${randomUUID()}.bin`;
+                    mkdirSync(join(dir, 'files'), { recursive: true });
+                    writeFileSync(join(dir, 'files', name), bytes);
+                    what[1].imageFile = name; delete what[1].path;
+                } catch (e) {
+                    return reply(m.id, { content: [{ type: 'text', text: `Not done: the file could not be read (${e.code ?? e.message})` }], isError: true });
+                }
+            }
             const r = await ask(dir, what[0], what[1], wait ? { wait } : {});
             return reply(m.id, { content: [{ type: 'text', text: r.ok ? r.text : `Not done: ${r.text}` }], ...(r.ok ? {} : { isError: true }) });
         }

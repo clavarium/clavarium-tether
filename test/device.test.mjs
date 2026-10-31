@@ -79,3 +79,22 @@ test('a device card says what is flashed and where it goes', () => {
     assert.deepEqual(cardOf('device.flash', { firmware: '/f.bin', name: 'Salon', app: { url: 'https://c.example.org', room: 'Salon', code: 'X' } }),
         { kind: 'device', action: 'flash', firmware: '/f.bin', name: 'Salon', app: 'https://c.example.org', room: 'Salon' });
 });
+
+test('an image handed over by the agent: kept for the job, given to the page, never in the list', async () => {
+    const k = keeper(tmp(), { connectors: { device: device() }, ask: () => undefined });
+    k.store.putTarget({ id: 'box', title: 'Voice box', kind: 'device', connector: 'device' });
+    k.store.grant('box', BOT.id, 'free');
+    const image = Buffer.from([0xe9, 3, 2, 1]).toString('base64');
+    const p = k.act('device.flash', { target: 'box', image, name: 'Salon', room: 'Salon', pair: true }, BOT);
+    await tick();
+    const [job] = (await k.act('state', {}, ME)).data.jobs;
+    assert.equal(job.args.image.bytes, 4);
+    assert.equal(job.args.pair, true);
+    assert.equal(job.args.room, 'Salon');
+    assert.equal(JSON.stringify(job).includes(image), false);
+    assert.equal((await k.act('job-file', { id: job.id }, ME)).data.image, image);
+    await k.act('job-done', { id: job.id, ok: true, text: 'flashed' }, ME);
+    assert.equal((await p).text, 'flashed');
+    const none = await k.act('device.flash', { target: 'box', name: 'x' }, BOT);
+    assert.equal(none.ok, false);
+});

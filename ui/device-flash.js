@@ -3,10 +3,13 @@
  * cable. Nothing is installed: Web Serial (Chrome, Edge), or WebUSB where only
  * that exists (Chrome on Android), with esptool-js; then Improv Wi-Fi (improv.js).
  *
- *   const r = await run(args, { root, words })    // called from a click: the browser
- *                                                 // only lets a click choose a port
- *   args: { firmware: an address of this site, name, wifi: true|false,
+ *   const r = await run(args, { root, words, image, pair })   // called from a click: the
+ *                                                 // browser only lets a click choose a port
+ *   args: { name, wifi: true|false, room, pair: true|false,
+ *           firmware: an address of this site,    // or the bytes from image()
  *           app: { url, room, code } }            // optional: what the device joins
+ *   image() -> Uint8Array                         // the firmware the agent handed over
+ *   pair(room) -> { url, code }                   // the host pairs the device with itself
  *   r:    { ok, text }                            // said back to the agent as it is
  *
  * It draws its own few lines in `root`: the steps, a progress bar, the Wi-Fi to choose.
@@ -36,7 +39,7 @@ const WORDS = {
     'rescan': 'Look again',
 };
 
-export async function run(args = {}, { root = null, words = {} } = {}) {
+export async function run(args = {}, { root = null, words = {}, image: given = null, pair = null } = {}) {
     const w = (k, v = {}) => String(words[k] ?? WORDS[k] ?? k).replace(/\{(\w+)\}/g, (m, x) => v[x] ?? m);
     const view = paneIn(root);
     const say = (text) => view.line(text);
@@ -48,9 +51,14 @@ export async function run(args = {}, { root = null, words = {} } = {}) {
         port = await serial.requestPort({ filters: [{ usbVendorId: ESPRESSIF }] });
 
         say(w('download'));
-        const response = await fetch(String(args.firmware), { credentials: 'same-origin' });
-        if (!response.ok) return fail(`firmware not found (${response.status})`);
-        const image = new Uint8Array(await response.arrayBuffer());
+        let image;
+        if (given) image = await given();
+        else {
+            const response = await fetch(String(args.firmware), { credentials: 'same-origin' });
+            if (!response.ok) return fail(`firmware not found (${response.status})`);
+            image = new Uint8Array(await response.arrayBuffer());
+        }
+        if (!image?.length) return fail('no firmware was given');
 
         say(w('connect'));
         const { ESPLoader, Transport } = await import('./vendor/esptool-0.6.1.js');
@@ -69,8 +77,10 @@ export async function run(args = {}, { root = null, words = {} } = {}) {
 
         if (args.wifi === false) return done(`${args.name ?? 'The device'} (${chip}) flashed with ${image.length} bytes.`);
         port = await reopen(port, serial, view, w);
-        const joined = await provision(port, args, view, w);
-        return done(`${args.name ?? 'The device'} (${chip}) flashed with ${image.length} bytes${joined ? `; joined the Wi-Fi ${joined}${args.app ? ' and paired' : ''}` : '; Wi-Fi not given'}.`);
+        /* Paired with the host's application: it makes a one-use code for this device. */
+        const app = args.app ?? (args.pair && pair ? { ...(await pair(args.room ?? args.name ?? '')), room: args.room ?? args.name ?? '' } : null);
+        const joined = await provision(port, { ...args, app }, view, w);
+        return done(`${args.name ?? 'The device'} (${chip}) flashed with ${image.length} bytes${joined ? `; joined the Wi-Fi ${joined}${args.app || (args.pair && pair) ? ' and paired' : ''}` : '; Wi-Fi not given'}.`);
     } catch (error) {
         return fail(error?.name === 'NotFoundError' ? 'no device was chosen' : String(error?.message ?? error));
     } finally {

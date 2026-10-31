@@ -26,7 +26,7 @@
  * person deciding on the page (decide) ends the same request, whichever comes
  * first. Without `ask`, only decide does.
  */
-import { appendFileSync, mkdirSync } from 'node:fs';
+import { appendFileSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { openStore } from '../server/store.mjs';
 import { VERBS, Refused, check, detail as detailOf, no, oneLine } from '../server/verbs.mjs';
@@ -71,6 +71,16 @@ export function sayTargets(list) {
 
 /* How long a connector may take to say what a request is about, before it is asked anyway. */
 const DESCRIBE_MS = 6000;
+
+/* A file an agent handed over (a firmware to flash), put in its folder's files/ by its
+   command: read once into the call as base64, then removed. Only a plain name there. */
+function withFile(dir, a) {
+    if (typeof a.imageFile !== 'string') return a;
+    const { imageFile, ...rest } = a;
+    if (!/^[0-9a-f-]{36}\.bin$/.test(imageFile)) return rest;
+    const file = join(dir, 'files', imageFile);
+    try { const image = readFileSync(file).toString('base64'); rmSync(file, { force: true }); return { ...rest, image }; } catch { return rest; }
+}
 
 export function keeper(dir, { sides = () => [], ask, secrets = async () => { throw new Refused('no secret store was given'); }, connectors = {}, local = false, timeout = TIMEOUT_MS, now = () => Date.now() } = {}) {
     const store = openStore(dir, { now });
@@ -228,6 +238,7 @@ export function keeper(dir, { sides = () => [], ask, secrets = async () => { thr
             case 'stops': return store.stops();
             case 'state': return { agents: agents(), targets: person('targets', {}, who), approvals: queue.list(), jobs: conns.device?.jobs?.() ?? [], stops: store.stops(), journal: journal.read({ agent: a.agent, limit: a.limit ?? 50 }), timeout };
             case 'jobs': return conns.device?.jobs?.() ?? [];
+            case 'job-file': { if (!conns.device) no('no device connector'); return conns.device.file(a.id); }
             case 'job-done': { if (!conns.device) no('no device connector'); const r = conns.device.finish(a.id, a.ok, a.text); changed({ jobs: a.id }); return r; }
             case 'decide': return api.decide(a.id, a.decision, by, a.word);
             case 'stop': return api.stop(a.agent, by);
@@ -279,7 +290,7 @@ export function keeper(dir, { sides = () => [], ask, secrets = async () => { thr
                 if (holding.has(q.id)) { write(side, { ask: q.id, ok: false, text: 'not answered: its keeper restarted; nothing was done, ask again' }); continue; }
                 if (!(now() - Date.parse(q.at) < TOO_LATE_MS)) { write(side, { ask: q.id, ok: false, text: 'too late: this ask waited too long and was not done' }); continue; }
                 busy.add(key);
-                act(oneLine(q.op, 40), q.args && typeof q.args === 'object' ? q.args : {}, side.who, { held: (request) => write(side, { ask: q.id, held: true, until: request.until, request: request.id }) })
+                act(oneLine(q.op, 40), withFile(side.dir, q.args && typeof q.args === 'object' ? q.args : {}), side.who, { held: (request) => write(side, { ask: q.id, held: true, until: request.until, request: request.id }) })
                     .then((r) => write(side, { ask: q.id, ok: r.ok, text: r.text, ...(r.data && !Array.isArray(r.data) ? { data: r.data } : {}) }))
                     .catch((e) => write(side, { ask: q.id, ok: false, text: `failed: ${e?.message ?? e}` }))
                     .finally(() => busy.delete(key));

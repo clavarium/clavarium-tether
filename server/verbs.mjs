@@ -20,6 +20,8 @@ export const TEXT_MAX = 1_000_000;
 /* The total base64 of a message's attachments (~22 MB of real files). Over it, the send is refused, not sent short. */
 export const ATTACH_MAX = 30 * 1024 * 1024;
 export const PATH_MAX = 1000;
+/* A firmware handed over, as base64 (16 MB of image). */
+export const IMAGE_B64_MAX = Math.ceil(16 * 1024 * 1024 / 3) * 4;
 export const WHY_MAX = 300;
 
 /* name: { reads, kinds, needs: [arg names], done: false when declared only } */
@@ -55,7 +57,7 @@ export const VERBS = Object.freeze({
        speaking a standard such as VNC/RFB; without one, a screen target says its
        connector is off. See docs/protocol.md, "Plug in a screen engine". */
     /* A device plugged into a person's computer: done in that person's browser (connectors/device.mjs). */
-    'device.flash': { reads: false, kinds: ['device'], needs: ['firmware'] },
+    'device.flash': { reads: false, kinds: ['device'], needs: [] },
     'screen.shot': { reads: true, kinds: ['screen'], needs: [] },
     'screen.move': { reads: false, kinds: ['screen'], needs: ['x', 'y'] },
     'screen.click': { reads: false, kinds: ['screen'], needs: [] },
@@ -150,6 +152,14 @@ export function check(verb, a = {}) {
         case 'files.search': str('path', PATH_MAX); if (!out.path) out.path = '.'; str('text', 200); break;
         case 'files.write': str('path', PATH_MAX); str('text', TEXT_MAX, true); break;
         case 'files.move': str('from', PATH_MAX); str('to', PATH_MAX); break;
+        case 'device.flash': {
+            str('firmware', PATH_MAX); str('name', 60); str('room', 40);
+            if (a.image !== undefined && a.image !== null) { const b64 = String(a.image).replace(/\s+/g, ''); if (b64.length > IMAGE_B64_MAX) tooLong('image', b64.length, IMAGE_B64_MAX); out.image = b64; }
+            if (a.pair === true) out.pair = true;
+            if (a.wifi === false) out.wifi = false;
+            if (a.app && typeof a.app === 'object') out.app = { url: oneLine(a.app.url, 200), room: oneLine(a.app.room ?? '', 40), code: oneLine(a.app.code, 20) };
+            break;
+        }
         case 'browser.tabs': break;
         case 'browser.open': tab(); str('url', PATH_MAX); break;
         case 'browser.shot': tab(); break;
@@ -252,6 +262,7 @@ export function detail(verb, a = {}) {
         case 'browser.key': return a.selector ? `${a.selector}: ${a.key}` : a.key;
         case 'browser.scroll': return `${a.dx ?? 0},${a.dy ?? 0}`;
         case 'browser.drag': return `${a.from} → ${a.to}`;
+        case 'device.flash': return `${a.name ? `${a.name}: ` : ''}${a.image !== undefined ? `${Math.round(String(a.image).length * 3 / 4 / 1024)} KB` : a.firmware}${a.pair ? ', then paired' : ''}`;
         case 'screen.move': return `${a.x},${a.y}`;
         case 'screen.click': return a.x !== undefined ? `${a.x},${a.y}` : 'click';
         case 'screen.drag': return `${a.from} → ${a.to}`;
