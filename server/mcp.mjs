@@ -151,6 +151,7 @@ export const TOOLS = [
     tool('contacts-delete', 'Delete a contact. A person may approve: say why.', { target: TARGET, id: S('the contact id from a list'), why: WHY }, ['target', 'id']),
     tool('voicebox-volume', 'Set the volume of a voice box (a target of kind voicebox), 0 to 100: when the person asks it louder or softer ("a little": about 10, "a lot": about 25).', { target: TARGET, level: { type: 'number', description: '0 to 100' }, why: WHY }, ['target', 'level']),
     tool('voicebox-alert', 'Make a voice box sound an alert (chime, bright light) until someone presses its button: for what must not be missed.', { target: TARGET, text: S('what the alert is about, shown with it'), why: WHY }, ['target']),
+    tool('voicebox-play', 'Play a sound on a voice box: a .wav file of this machine (16-bit PCM, mono or stereo, any rate), at most about a minute. For a sound, a sample, a recorded message; to speak, tell with to instead.', { target: TARGET, path: S('the .wav file, a file of this machine'), why: WHY }, ['target', 'path']),
     tool('voicebox-update', 'Update a voice box over its Wi-Fi with a firmware you built (the program image alone, e.g. build/gambeli.bin, not a merged image): it downloads it, checks it, installs it and restarts. Say why.', { target: TARGET, path: S('the program image, a file of this machine'), version: S('its version, said in the journal'), why: WHY }, ['target', 'path']),
     tool('device-flash', 'Flash a device plugged by USB into a person\'s computer or Android phone (a target of kind device), with a firmware file of this machine: you hand the file over, the person approves, plugs the device in and clicks; it is flashed from their browser, then they choose its Wi-Fi. Waits until it is done, up to 30 minutes. Say why.', { target: TARGET, path: S('the firmware image to write at address 0, a file of this machine (for an ESP32: the merged .bin)'), name: S('what the device is called, shown to the person'), room: S('where it goes, e.g. Living room: its name once paired'), pair: { type: 'boolean', description: 'true: once on the Wi-Fi, the device is paired with the application whose page flashed it (a voice box)' }, wifi: { type: 'boolean', description: 'false: flash only, no Wi-Fi asked' }, why: WHY }, ['target', 'path']),
     tool('contacts-attach', "Set a contact's photo. A person may approve: say why.", { target: TARGET, id: S('the contact id from a list'), attach: S('the photo as base64 bytes'), attachName: S('the file name, optional'), why: WHY }, ['target', 'id', 'attach']),
@@ -176,7 +177,7 @@ export function serve(dir, { input = process.stdin, output = process.stdout, wai
             const what = asked(name, a);
             if (!what) return reply(m.id, undefined, { code: -32601, message: `no tool ${name}` });
             /* A file handed over (a firmware): copied from the agent's machine into its folder's files/, where the keeper takes it. */
-            if ((what[0] === 'device.flash' || what[0] === 'voicebox.update') && what[1].path !== undefined) {
+            if (['device.flash', 'voicebox.update', 'voicebox.play'].includes(what[0]) && what[1].path !== undefined) {
                 try {
                     const bytes = readFileSync(resolve(String(what[1].path)));
                     const name = `${randomUUID()}.bin`;

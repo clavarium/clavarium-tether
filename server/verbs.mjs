@@ -62,6 +62,7 @@ export const VERBS = Object.freeze({
     'voicebox.volume': { reads: false, kinds: ['voicebox'], needs: ['level'] },
     'voicebox.alert': { reads: false, kinds: ['voicebox'], needs: [] },
     'voicebox.update': { reads: false, kinds: ['voicebox'], needs: [] },
+    'voicebox.play': { reads: false, kinds: ['voicebox'], needs: [] },
     'screen.shot': { reads: true, kinds: ['screen'], needs: [] },
     'screen.move': { reads: false, kinds: ['screen'], needs: ['x', 'y'] },
     'screen.click': { reads: false, kinds: ['screen'], needs: [] },
@@ -166,6 +167,13 @@ export function check(verb, a = {}) {
         }
         case 'voicebox.volume': { const n = Math.round(Number(a.level)); if (!Number.isFinite(n) || n < 0 || n > 100) no('level is a number from 0 to 100'); out.level = n; break; }
         case 'voicebox.alert': str('text', 300); break;
+        case 'voicebox.play': {
+            const b64 = String(a.image ?? '').replace(/\s+/g, '');
+            if (!b64) no('give the sound: a .wav file of your machine (path)');
+            if (b64.length > 8 * 1024 * 1024) tooLong('sound', b64.length, 8 * 1024 * 1024);
+            out.image = b64;
+            break;
+        }
         case 'voicebox.update': {
             str('version', 40);
             const b64 = String(a.image ?? '').replace(/\s+/g, '');
@@ -278,6 +286,7 @@ export function detail(verb, a = {}) {
         case 'browser.drag': return `${a.from} → ${a.to}`;
         case 'voicebox.volume': return `volume ${a.level}`;
         case 'voicebox.alert': return a.text ?? 'alert';
+        case 'voicebox.play': return `a sound (${Math.round(String(a.image ?? '').length * 3 / 4 / 1024)} KB)`;
         case 'voicebox.update': return `firmware ${a.version ?? ''} (${Math.round(String(a.image ?? '').length * 3 / 4 / 1024)} KB)`.replace('  ', ' ');
         case 'device.flash': return `${a.name ? `${a.name}: ` : ''}${a.image !== undefined ? `${Math.round(String(a.image).length * 3 / 4 / 1024)} KB` : a.firmware}${a.pair ? ', then paired' : ''}`;
         case 'screen.move': return `${a.x},${a.y}`;
