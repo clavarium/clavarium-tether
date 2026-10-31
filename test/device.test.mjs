@@ -117,3 +117,14 @@ test('a voice box: its volume and an alert, through the application\'s own conne
     await k.act('voicebox.alert', { target: 'box-salon', text: 'Dinner is ready' }, BOT);
     assert.deepEqual(done, [['voicebox.volume', 'b-1', 85], ['voicebox.alert', 'b-1', 'Dinner is ready']]);
 });
+
+test('a voice box updated with a program image the agent hands over', async () => {
+    const got = [];
+    const voicebox = { run: async (verb, t, a) => { got.push([verb, a.version, Buffer.from(a.image, 'base64').length]); return { text: 'installed' }; } };
+    const k = keeper(tmp(), { connectors: { voicebox }, ask: () => undefined });
+    k.store.putTarget({ id: 'box-salon', title: 'Voice box Salon', kind: 'voicebox', connector: 'voicebox', config: { box: 'b-1' } });
+    k.store.grant('box-salon', BOT.id, 'free');
+    assert.equal((await k.act('voicebox.update', { target: 'box-salon', version: '0.1.4' }, BOT)).ok, false, 'no image, nothing');
+    assert.equal((await k.act('voicebox.update', { target: 'box-salon', version: '0.1.4', image: Buffer.from([0xe9, 1, 2]).toString('base64') }, BOT)).text, 'installed');
+    assert.deepEqual(got, [['voicebox.update', '0.1.4', 3]]);
+});
