@@ -27,6 +27,8 @@ const WORDS = {
     'restart': 'Restarting the device…',
     'reopen': 'The device restarted. Choose it again in the list.',
     'reopen-button': 'Choose the device',
+    'press-reset': 'Written. Press RESET on the device once, then Continue.',
+    'continue': 'Continue',
     'wifi': 'Which Wi-Fi should it use?',
     'password': 'Wi-Fi password',
     'join': 'Connect',
@@ -105,15 +107,16 @@ async function serialApi() {
     return null;
 }
 
-/* After its restart the device comes back on USB: the same port object when the browser
-   keeps it, else a person chooses it again (a click: the browser asks for one). */
+/* After the writing, a board started in its programming mode (BOOT held) stays in it: the
+   reset over the cable does not always start the new program (found 31-10 on a real board:
+   the LEDs stayed dark until RESET). So the person presses RESET, then Continue: the device
+   comes back on USB, the same port object when the browser keeps it, else chosen again --
+   that click lets the browser ask. */
 async function reopen(port, serial, view, w) {
-    for (let i = 0; i < 20; i++) {
-        await sleep(500);
-        try { await port.open({ baudRate: 115200 }); return port; } catch { /* not back yet */ }
-    }
+    view.line(w('press-reset'));
+    await view.button(w('continue'));
+    try { await port.open({ baudRate: 115200 }); return port; } catch { /* a new device for the browser */ }
     view.line(w('reopen'));
-    await view.button(w('reopen-button'));
     const again = await serial.requestPort();
     await again.open({ baudRate: 115200 });
     return again;
@@ -123,7 +126,7 @@ async function reopen(port, serial, view, w) {
 async function provision(port, args, view, w) {
     const link = improvLink(port);
     try {
-        await sleep(1500);   // its Wi-Fi starts
+        await sleep(3000);   // it starts, then its Wi-Fi
         let networks = await link.scan();
         for (;;) {
             const pick = await view.pickWifi(networks, w);
