@@ -77,6 +77,23 @@ const presetOf = (colour) => { const c = String(colour ?? '').trim().toLowerCase
 /* The categories asked for, as a clean list (empty array clears them). */
 const catsOf = (a) => (Array.isArray(a.categories) ? a.categories.map((c) => String(c).trim()).filter(Boolean) : (a.categories ? [String(a.categories).trim()].filter(Boolean) : null));
 
+
+/* Notes as HTML (03-11): plain text, escaped, its lines kept. */
+const notesHtml = (text) => `<div>${String(text ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]).replace(/\r?\n/g, '<br>')}</div>`;
+/* The Teams join block of an event's HTML body, as it was: from the line of underscores above its join link
+   to the end of the body; without one, a plain link to join (so no invitation is ever left without it). */
+export function teamsBlockOf(html, joinUrl) {
+    const body = String(html ?? '').replace(/<\/body>\s*<\/html>\s*$/i, '');
+    const inner = (/<body[^>]*>([\s\S]*)$/i.exec(body)?.[1]) ?? body;
+    const at = joinUrl ? inner.indexOf(joinUrl.replace(/&/g, '&amp;')) >= 0 ? inner.indexOf(joinUrl.replace(/&/g, '&amp;')) : inner.indexOf(joinUrl) : inner.search(/teams\.microsoft\.com\/l\/meetup-join/i);
+    if (at >= 0) {
+        const rule = inner.lastIndexOf('________________', at);
+        const from = rule >= 0 ? Math.max(0, inner.lastIndexOf('<div', rule)) : inner.lastIndexOf('<div', at);
+        if (from >= 0) return inner.slice(from);
+    }
+    return joinUrl ? `<div><br>________________________________________________________________________________<br><a href="${String(joinUrl).replace(/"/g, '&quot;')}">Microsoft Teams meeting — join</a><br>________________________________________________________________________________</div>` : '';
+}
+
 export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
     const tokens = new Map();
     /* 'google' or 'microsoft' by its provider; with none, a classic CalDAV calendar. */
@@ -559,16 +576,35 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
                 else no('--online is teams or none');
             }
             if (!Object.keys(patch).length) no('update needs at least one of: title, start, end, where, notes, with, category, online');
-            /* Never let a change to the notes erase a Teams meeting: if the event is an
-               online meeting and --online was not given, keep it on, so Graph keeps the
-               meeting and re-puts its join link in the body rather than dropping it. */
+            /* Never let a change to the notes erase a Teams meeting (03-11: it did, on an invitation -- Graph drops
+               the meeting when the new body loses its join block). If the event is an online meeting and --online
+               was not given: keep it on, and write the new notes ABOVE the meeting's own join block, kept as it was. */
+            let keepTeams = patch.isOnlineMeeting === true;
             if (patch.body !== undefined && a.online === undefined) {
-                const info = await call(target, ctx, 'GET', `${API.microsoft.event(String(a.id))}?$select=isOnlineMeeting,onlineMeetingProvider`);
-                if (info.ok) { const j = await info.json().catch(() => ({})); if (j.isOnlineMeeting) { patch.isOnlineMeeting = true; patch.onlineMeetingProvider = j.onlineMeetingProvider || 'teamsForBusiness'; } }
+                const info = await call(target, ctx, 'GET', `${API.microsoft.event(String(a.id))}?$select=isOnlineMeeting,onlineMeetingProvider,onlineMeeting,body`);
+                if (info.ok) {
+                    const j = await info.json().catch(() => ({}));
+                    if (j.isOnlineMeeting) {
+                        keepTeams = true;
+                        patch.isOnlineMeeting = true; patch.onlineMeetingProvider = j.onlineMeetingProvider || 'teamsForBusiness';
+                        patch.body = { contentType: 'html', content: `${notesHtml(a.notes)}${teamsBlockOf(j.body?.content ?? '', j.onlineMeeting?.joinUrl ?? '')}` };
+                    }
+                }
             }
             const res = await call(target, ctx, 'PATCH', API.microsoft.event(String(a.id)), patch);
             if (res.status === 404) no('no such event');
             if (!res.ok) no(`${target.title}: the event was not changed (${res.status} ${await bodyError(res)})`.trim());
+            /* Checked, not trusted: a meeting that should be there and is not is put back (a new link, said so). */
+            if (keepTeams) {
+                const after = await call(target, ctx, 'GET', `${API.microsoft.event(String(a.id))}?$select=isOnlineMeeting`);
+                const still = after.ok ? Boolean((await after.json().catch(() => ({}))).isOnlineMeeting) : true;
+                if (!still) {
+                    const again = await call(target, ctx, 'PATCH', API.microsoft.event(String(a.id)), { isOnlineMeeting: true, onlineMeetingProvider: patch.onlineMeetingProvider || 'teamsForBusiness' });
+                    if (!again.ok) no(`${target.title}: the event was changed, but its Teams meeting was lost and could not be put back (${again.status}); add it again with --online teams`);
+                    return { text: 'Updated the event. Its Teams meeting had been dropped by Microsoft and was put back: the join link is new.', size: 0 };
+                }
+                return { text: 'Updated the event; its Teams meeting is kept.', size: 0 };
+            }
             return { text: 'Updated the event.', size: 0 };
         },
         /* The mailbox's own categories (name and colour), so the agent knows which

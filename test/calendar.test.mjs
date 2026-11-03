@@ -362,18 +362,40 @@ test('update --notes keeps an existing Teams meeting (never erases it); --online
     const fetch = async (url, opts = {}) => {
         calls.push({ url, method: opts.method || 'GET', body: opts.body });
         if (url.includes('login.microsoftonline.com')) return json({ access_token: 'T', expires_in: 3600 });
-        if (url.includes('$select=isOnlineMeeting')) return json({ isOnlineMeeting: true, onlineMeetingProvider: 'teamsForBusiness' });
+        if (url.includes('$select=isOnlineMeeting')) return json({ isOnlineMeeting: true, onlineMeetingProvider: 'teamsForBusiness', onlineMeeting: { joinUrl: 'https://teams.microsoft.com/l/meetup-join/abc' }, body: { contentType: 'html', content: '<html><body><div>old notes</div><div>________________<br><a href="https://teams.microsoft.com/l/meetup-join/abc">Join</a><br>________________</div></body></html>' } });
         if (opts.method === 'PATCH') return json({ id: 'm1' });
         return json({ error: { message: 'no' } }, 404);
     };
-    await calendar({ fetch }).run('calendar.update', M, { id: 'm1', notes: 'maj' }, ctx());
+    const r = await calendar({ fetch }).run('calendar.update', M, { id: 'm1', notes: 'maj <1>\nline 2' }, ctx());
     const patch = JSON.parse(calls.find((c) => c.method === 'PATCH').body);
-    assert.equal(patch.body.content, 'maj');
+    assert.equal(patch.body.contentType, 'html');
+    assert.match(patch.body.content, /^<div>maj &lt;1&gt;<br>line 2<\/div>/, 'the new notes first, escaped, lines kept');
+    assert.match(patch.body.content, /meetup-join\/abc">Join<\/a>/, 'the join block kept as it was');
+    assert.doesNotMatch(patch.body.content, /old notes/, 'the old notes replaced');
     assert.equal(patch.isOnlineMeeting, true, 'the Teams meeting is preserved when the notes change');
+    assert.match(r.text, /Teams meeting is kept/);
     const mk = (calls2) => async (url, opts = {}) => { calls2.push({ url, method: opts.method || 'GET', body: opts.body }); if (url.includes('login.microsoftonline.com')) return json({ access_token: 'T', expires_in: 3600 }); if (opts.method === 'PATCH') return json({ id: 'm1' }); return json({ error: { message: 'no' } }, 404); };
     const a = []; await calendar({ fetch: mk(a) }).run('calendar.update', M, { id: 'm1', online: 'teams' }, ctx());
     assert.equal(JSON.parse(a.find((c) => c.method === 'PATCH').body).isOnlineMeeting, true);
-    assert.equal(a.some((c) => c.url.includes('$select=isOnlineMeeting')), false, 'no needless fetch when --online is explicit');
+    assert.equal(a.findIndex((c) => c.url.includes('$select=isOnlineMeeting')) > a.findIndex((c) => c.method === 'PATCH'), true, 'no needless fetch before the change when --online is explicit (only the check after)');
     const b = []; await calendar({ fetch: mk(b) }).run('calendar.update', M, { id: 'm1', online: 'none' }, ctx());
     assert.equal(JSON.parse(b.find((c) => c.method === 'PATCH').body).isOnlineMeeting, false);
+});
+
+test('update --notes: a Teams meeting Microsoft dropped anyway is checked and put back (03-11)', async () => {
+    const calls = []; let gets = 0;
+    const fetch = async (url, opts = {}) => {
+        calls.push({ url, method: opts.method || 'GET', body: opts.body });
+        if (url.includes('login.microsoftonline.com')) return json({ access_token: 'T', expires_in: 3600 });
+        if (url.includes('$select=isOnlineMeeting,onlineMeetingProvider')) return json({ isOnlineMeeting: true, onlineMeetingProvider: 'teamsForBusiness', onlineMeeting: { joinUrl: 'https://teams.microsoft.com/l/meetup-join/x' }, body: { content: '<p>no block here</p>' } });
+        if (url.endsWith('$select=isOnlineMeeting')) { gets++; return json({ isOnlineMeeting: false }); }
+        if (opts.method === 'PATCH') return json({ id: 'm1' });
+        return json({ error: { message: 'no' } }, 404);
+    };
+    const r = await calendar({ fetch }).run('calendar.update', M, { id: 'm1', notes: 'ordre du jour' }, ctx());
+    const patches = calls.filter((c) => c.method === 'PATCH').map((c) => JSON.parse(c.body));
+    assert.match(patches[0].body.content, /meetup-join\/x/, 'no block found: a plain join link is written');
+    assert.equal(gets, 1, 'checked after the change');
+    assert.deepEqual(patches[1], { isOnlineMeeting: true, onlineMeetingProvider: 'teamsForBusiness' }, 'put back');
+    assert.match(r.text, /put back: the join link is new/);
 });
