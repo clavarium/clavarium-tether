@@ -224,3 +224,15 @@ test('CalDAV attach says who receives the file only when the server schedules (l
     const r2 = await run(yes, 'calendar.attach', { id: '/cal/me/work/a.ics', attach: 'SGVsbG8=', attachName: 'plan.pdf', share: true });
     assert.match(r2.text, /The calendar server sends it with the event to boss@example\.com\./);
 });
+
+test('CalDAV: the answers of invitees are watched only on a server that schedules (they never come back otherwise) (loop 3)', async () => {
+    const { mkdtempSync } = await import('node:fs'); const { tmpdir } = await import('node:os'); const { join } = await import('node:path');
+    for (const yes of [false, true]) {
+        const s = scheduling(davServer(), yes);
+        const conn = calendar({ fetch: s.fetch });
+        conn.wake({ dir: mkdtempSync(join(tmpdir(), 'cw-')), now: () => Date.parse('2030-01-01T00:00:00Z'), target: () => T, ctx: () => ctx(), notice: () => {} });
+        const r = await conn.run('calendar.create', T, { title: 'RDV', start: '2030-11-04T10:00', end: '2030-11-04T11:00', with: 'client@example.org' }, { ...ctx(), agent: 'agent:a' });
+        assert.equal(conn.watched().length, yes ? 1 : 0);
+        assert.equal(/watches the answers/.test(r.text), yes);
+    }
+});

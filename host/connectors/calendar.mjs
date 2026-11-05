@@ -267,8 +267,10 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
             const uid = newUid();
             const url = new URL(`${uid}.ics`, await folderOf(target, ctx)).href;
             await davPut(target, ctx, url, newEvent({ uid, title: a.title, start: a.start, end: dayEnd(a.start, a.end), where: a.where, notes: a.notes, attendees, organizer: attendees.length ? userOf(target) : null, categories: categories ?? [] }), { create: true });
-            const told = attendees.length ? ((await schedules(target, ctx)) ? `, invitations to ${attendees.join(', ')} (sent by the calendar server)` : `, invitations to ${attendees.join(', ')}: ${NOT_TOLD}`) : '';
-            return { text: `Created: ${a.title} (${a.start})${told}. Its id is ${new URL(url).pathname}.`, size: 0, watch: attendees.length ? { id: new URL(url).pathname, title: a.title, start: a.start } : null };
+            const sched = attendees.length ? await schedules(target, ctx) : false;
+            const told = attendees.length ? (sched ? `, invitations to ${attendees.join(', ')} (sent by the calendar server)` : `, invitations to ${attendees.join(', ')}: ${NOT_TOLD}`) : '';
+            /* Answers come back only through scheduling: watched only then (loop 3). */
+            return { text: `Created: ${a.title} (${a.start})${told}. Its id is ${new URL(url).pathname}.`, size: 0, watch: sched ? { id: new URL(url).pathname, title: a.title, start: a.start } : null };
         },
         async update(target, a, ctx) {
             const { url, etag, text } = await davGet(target, ctx, a.id);
@@ -298,7 +300,7 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
             const gone = before.attendees.map((x) => x.email).filter((x) => !after.attendees.some((y) => y.email.toLowerCase() === x.toLowerCase()));
             const sched = (others.length || gone.length) && mine ? await schedules(target, ctx) : false;
             const told = !mine || !(others.length || gone.length) ? '' : sched ? ` The calendar server sends the change to ${others.join(', ') || 'nobody left'}${gone.length ? `, and a cancellation to ${gone.join(', ')} (removed)` : ''}.` : ` Invitees (${[...others, ...gone].join(', ')}): ${NOT_TOLD}.`;
-            return { text: `Updated the event.${told}`, size: 0, watch: a.with !== undefined && others.length ? { id: new URL(url).pathname, title: after.summary, start: after.start } : null };
+            return { text: `Updated the event.${told}`, size: 0, watch: a.with !== undefined && others.length && sched ? { id: new URL(url).pathname, title: after.summary, start: after.start } : null };
         },
         async remove(target, a, ctx) {
             const url = await urlOf(target, ctx, a.id);
