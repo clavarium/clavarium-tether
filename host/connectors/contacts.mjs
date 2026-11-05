@@ -282,6 +282,8 @@ export function contacts({ fetch: fetchImpl = globalThis.fetch } = {}) {
                 if (a.phone !== undefined) {
                     const want = typeOf(a.type, 'TEL') || 'cell';
                     const p = String(a.phone).trim();
+                    /* As on CardDAV: removing needs the type of the one to remove (loop 8). */
+                    if (!p && !a.type) no('to remove a phone, give its type (mobile, work or home)');
                     if (want === 'cell') {
                         body.mobilePhone = p;
                         said.push(p ? `mobile ${p}${c.mobilePhone && c.mobilePhone !== p ? ` (was ${c.mobilePhone})` : ''}` : `mobile removed${c.mobilePhone ? ` (was ${c.mobilePhone})` : ''}`);

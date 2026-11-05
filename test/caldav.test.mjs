@@ -216,13 +216,16 @@ test('CalDAV: a category renamed on several events that fails in the middle says
     await assert.rejects(run(flaky, 'calendar.category-rename', { name: 'client', to: 'Clients' }), /done on 1 of 2 events; asking again does the rest/);
 });
 
-test('CalDAV attach says who receives the file only when the server schedules (loop 2)', async () => {
-    const no = scheduling(davServer(), false);
-    const r = await run(no, 'calendar.attach', { id: '/cal/me/work/a.ics', attach: 'SGVsbG8=', attachName: 'plan.pdf', share: true });
-    assert.match(r.text, /Kept in the event on this calendar; boss@example\.com do NOT receive it/);
-    const yes = scheduling(davServer(), true);
-    const r2 = await run(yes, 'calendar.attach', { id: '/cal/me/work/a.ics', attach: 'SGVsbG8=', attachName: 'plan.pdf', share: true });
-    assert.match(r2.text, /The calendar server sends it with the event to boss@example\.com\./);
+test('CalDAV attach says who receives the file only when the server schedules (loop 2); an invitee\'s file stays on their copy (loop 8)', async () => {
+    for (const yes of [false, true]) {
+        const srv = scheduling(davServer(), yes);
+        const made = await run(srv, 'calendar.create', { title: 'RDV', start: '2030-11-04T10:00', end: '2030-11-04T11:00', with: 'client@example.org' });
+        const id = /Its id is (\S+)\./.exec(made.text)[1];
+        const r = await run(srv, 'calendar.attach', { id, attach: 'SGVsbG8=', attachName: 'plan.pdf', share: true });
+        assert.match(r.text, yes ? /The calendar server sends it with the event to client@example\.org\./ : /Kept in the event on this calendar; client@example\.org do NOT receive it/);
+    }
+    const r = await run(scheduling(davServer(), true), 'calendar.attach', { id: '/cal/me/work/a.ics', attach: 'SGVsbG8=', attachName: 'plan.pdf' });
+    assert.match(r.text, /You are not the organiser \(boss@example\.com\): the file stays on this calendar/);
 });
 
 test('CalDAV: the answers of invitees are watched only on a server that schedules (they never come back otherwise) (loop 3)', async () => {

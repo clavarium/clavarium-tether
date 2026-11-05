@@ -433,3 +433,9 @@ test('mail.move and mail.flag act in the folder the message was listed in, never
     assert.equal(check('mail.move', { target: 't', uid: '5', mailbox: 'INBOX', from: 'Archive' }).from, 'Archive');
     assert.equal(check('mail.flag', { target: 't', uid: '5', flag: 'read', mailbox: 'Archive' }).mailbox, 'Archive');
 });
+
+test('loop 8: an IMAP move tells the number the message has in its new folder', async () => {
+    const s = trashServer('', 'IMAP4rev1 MOVE');
+    const r = await mail({ fetch: okToken, connect: s.connect }).run('mail.move', TARGET, { uid: '6', mailbox: 'Archive' }, ctx());
+    assert.match(r.text, /there it has another number: list Archive to act on it/);
+});

@@ -296,3 +296,10 @@ test('loop 6: a send that timed out never says the message is still in Drafts (i
     const e = await graphMail({ fetch, token: mint }).reply(target, { uid: 'AAA', body: 'ok' }, ctx).catch((x) => x);
     assert.match(e.message, /may have been done: check before asking again$/);
 });
+
+test('loop 8: a move tells the new id; a delete whose folder cannot be checked says both outcomes', async () => {
+    const f = fakeGraph({ 'POST /me/messages/M/move': { id: 'M2' } });
+    assert.match((await graphMail({ fetch: f.fetch, token: mint }).move(target, { uid: 'M', mailbox: 'Trash' }, ctx)).text, /its id is now M2/);
+    const g = fakeGraph({ 'DELETE /me/messages/X': { _status: 204 }, 'GET /me/messages/X': { parentFolderId: 'P' }, 'GET /me/mailFolders/deleteditems': { _status: 503 } });
+    assert.match((await graphMail({ fetch: g.fetch, token: mint }).remove(target, { uid: 'X' }, ctx)).text, /unless it was in Deleted Items already \(that could not be checked\)/);
+});

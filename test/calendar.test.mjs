@@ -505,3 +505,12 @@ test('loop 7: on a public mailbox domain, a namesake address is outside -- a fil
     const s = graphCal(() => ORG({ organizer: { emailAddress: { address: at('me', 'outlook.com') } }, attendees: [{ emailAddress: { address: at('someone', 'outlook.com') } }] }));
     await assert.rejects(calendar({ fetch: s.fetch }).run('calendar.attach', M, { id: 'E1', attach: 'SGk=', attachName: 'a.pdf' }, ctx()), /1 external participant\(s\): someone@outlook\.com/);
 });
+
+test('loop 8: Microsoft -- categories alone go to nobody; an invitee\'s file stays on their copy; an unchecked Teams meeting is said', async () => {
+    let s = graphCal(() => ORG());
+    const r = await calendar({ fetch: s.fetch }).run('calendar.update', M, { id: 'E1', categories: ['Interne'] }, ctx());
+    assert.doesNotMatch(r.text, /sends the update/);
+    s = graphCal(() => ORG({ isOrganizer: false, organizer: { emailAddress: { address: 'boss@example.org' } } }));
+    const at = await calendar({ fetch: s.fetch }).run('calendar.attach', M, { id: 'E1', attach: 'SGk=', attachName: 'a.pdf' }, ctx());
+    assert.match(at.text, /You are not the organiser: the file stays on your copy/);
+});

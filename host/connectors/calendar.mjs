@@ -347,9 +347,11 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
             const name = String(a.attachName || 'attachment').replace(/[";:\r\n]/g, '');
             const { url, etag, text } = await davGet(target, ctx, a.id);
             const ev = eventOf(text);
-            const inside = insideOf(ev.organizer || userOf(target)); const me = userOf(target).toLowerCase();
-            const externals = ev.attendees.map((x) => x.email.toLowerCase()).filter((x) => x !== me && !inside(x));
-            if (externals.length && a.share !== true) no(`${externals.length} external participant(s): ${externals.join(', ')}. The file would reach them with the event. Add --share (CLI) or share:true (MCP) to attach anyway.`);
+            /* Inside or outside is judged from THIS account (loop 8: from the organiser, an outsider's colleagues counted inside). */
+            const me = userOf(target).toLowerCase(); const inside = insideOf(me);
+            const mine = !ev.organizer || ev.organizer.toLowerCase() === me;
+            const externals = [...ev.attendees.map((x) => x.email.toLowerCase()), ...(ev.organizer ? [ev.organizer.toLowerCase()] : [])].filter((x) => x !== me && !inside(x));
+            if (mine && externals.length && a.share !== true) no(`${externals.length} external participant(s): ${externals.join(', ')}. The file would reach them with the event. Add --share (CLI) or share:true (MCP) to attach anyway.`);
             const lines = [...props(text, 'ATTACH').map((p) => p.raw), `ATTACH;FMTTYPE=application/octet-stream;ENCODING=BASE64;VALUE=BINARY;X-FILENAME=${name}:${bytes}`];
             await davPut(target, ctx, url, setProps(text, 'ATTACH', lines), { etag });
             const back = await davGet(target, ctx, a.id);
@@ -357,6 +359,7 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
             /* It reaches the others only through the server's scheduling (loop 2: it was said sent regardless). */
             const others = ev.attendees.map((x) => x.email).filter((x) => x.toLowerCase() !== userOf(target).toLowerCase());
             const who = !others.length ? ' Visible to you alone (the event has no participants).'
+                : !mine ? ` You are not the organiser (${ev.organizer}): the file stays on this calendar, the others do not receive it.`
                 : (await schedules(target, ctx)) ? ` The calendar server sends it with the event to ${others.join(', ')}.` : ` Kept in the event on this calendar; ${others.join(', ')} do NOT receive it (this server does not schedule) -- send it by mail if they need it.`;
             return { text: `Attached ${name} to the event.${who}`, size: 0 };
         },
@@ -400,7 +403,7 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
                 n++;
             }
             if (!n) no(`${target.title}: no event wears the category "${a.name}"`);
-            return { text: `${to === null ? `Removed the category "${a.name}" from` : `Renamed "${a.name}" to "${String(to).trim()}" on`} ${n} event${n === 1 ? '' : 's'}.`, size: 0 };
+            return { text: `${to === null ? `Removed the category "${a.name}" from` : `Renamed "${a.name}" to "${String(to).trim()}" on`} ${n} event${n === 1 ? '' : 's'}, from a year ago to two years ahead (events outside that window keep it).`, size: 0 };
         },
         /* Others' availability: the scheduling outbox (RFC 6638), where the server
            has one; it answers busy blocks only. */
@@ -563,27 +566,30 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
                on the next invitation update or resend. Split internal from external by
                the organiser's domain, and refuse an external audience unless `share`. */
             const internals = []; const externals = [];
-            const info = await call(target, ctx, 'GET', `https://graph.microsoft.com/v1.0/me/events/${ev}?$select=attendees,organizer`);
+            const info = await call(target, ctx, 'GET', `https://graph.microsoft.com/v1.0/me/events/${ev}?$select=attendees,organizer,isOrganizer`);
+            let mine = true;
             /* Who would receive it must be known before: an unread list is never taken as "nobody" (loop 5). */
             if (info.status === 404) no('no such event');
             if (!info.ok) no(`${target.title}: its participants could not be read (${info.status}) -- nothing was attached`);
             {
                 const j = await info.json().catch(() => ({}));
                 const org = (j.organizer?.emailAddress?.address || target.config?.user || '').toLowerCase();
-                const inside = insideOf(org);
-                for (const at of (j.attendees ?? [])) {
-                    const addr = at.emailAddress?.address; if (!addr || addr.toLowerCase() === org) continue;
-                    (inside(addr) ? internals : externals).push(addr);
+                mine = j.isOrganizer !== false;
+                const me = String(target.config?.user || org).toLowerCase();
+                const inside = insideOf(me);
+                for (const at of [...(j.attendees ?? []).map((x) => x.emailAddress?.address), ...(mine ? [] : [org])]) {
+                    if (!at || at.toLowerCase() === me || at.toLowerCase() === org && mine) continue;
+                    (inside(at) ? internals : externals).push(at);
                 }
             }
-            if (externals.length && a.share !== true) {
+            if (mine && externals.length && a.share !== true) {
                 no(`${externals.length} external participant(s): ${externals.join(', ')}. The file would reach them on the next invitation update/resend. Add --share (CLI) or share:true (MCP) to attach anyway.`);
             }
             const att = { '@odata.type': '#microsoft.graph.fileAttachment', name: String(a.attachName || 'attachment'), contentBytes: String(a.attach) };
             const res = await call(target, ctx, 'POST', `https://graph.microsoft.com/v1.0/me/events/${ev}/attachments`, att);
             if (!res.ok) no(`${target.title}: the file was not attached (${res.status} ${await bodyError(res)})`.trim());
             const all = internals.length + externals.length;
-            const who = all
+            const who = !mine ? ' You are not the organiser: the file stays on your copy of the event, the others do not receive it.' : all
                 ? ` It will reach ${all} participant(s) on the next invitation update/resend:${internals.length ? ` ${internals.join(', ')} (internal)` : ''}${externals.length ? `${internals.length ? ';' : ''} ${externals.join(', ')} (external)` : ''}.`
                 : ' Visible to you alone (the event has no participants).';
             return { text: `Attached ${a.attachName || 'the file'} to the event.${who}`, size: 0 };
@@ -685,13 +691,14 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
             /* Checked, not trusted: a meeting that should be there and is not is put back (a new link, said so). */
             if (keepTeams) {
                 const after = await call(target, ctx, 'GET', `${API.microsoft.event(String(a.id))}?$select=isOnlineMeeting`);
-                const still = after.ok ? Boolean((await after.json().catch(() => ({}))).isOnlineMeeting) : true;
+                if (!after.ok) return { text: `Updated the event. Whether its Teams meeting is still there could not be checked (${after.status}): read the event.${when}${told(who, patch)}`, size: 0, watch: watchOf(a, who, patch) };
+                const still = Boolean((await after.json().catch(() => ({}))).isOnlineMeeting);
                 if (!still) {
                     const again = await call(target, ctx, 'PATCH', API.microsoft.event(String(a.id)), { isOnlineMeeting: true, onlineMeetingProvider: patch.onlineMeetingProvider || 'teamsForBusiness' });
                     if (!again.ok) no(`${target.title}: the event was changed, but its Teams meeting was lost and could not be put back (${again.status}); add it again with --online teams`);
                     return { text: `Updated the event. Its Teams meeting had been dropped by Microsoft and was put back: the join link is new.${when}${told(who, patch)}`, size: 0, watch: watchOf(a, who, patch) };
                 }
-                return { text: `Updated the event; its Teams meeting is kept.${when}${told(who, patch)}`, size: 0, watch: watchOf(a, who, patch) };
+                return { text: `Updated the event; ${a.online !== undefined && String(a.online).toLowerCase() === 'teams' ? 'it has a Teams meeting (read the event for its join link)' : 'its Teams meeting is kept'}.${when}${told(who, patch)}`, size: 0, watch: watchOf(a, who, patch) };
             }
             return { text: `Updated the event.${when}${told(who, patch)}`, size: 0, watch: watchOf(a, who, patch) };
         },
@@ -759,6 +766,8 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
        list is REPLACED -- one left out gets a cancellation. An invitee's change stays on this calendar. */
     function told(who, patch) {
         if (!who) return '';
+        /* Categories are personal on Microsoft: a change of them alone goes to nobody (loop 8). */
+        if (Object.keys(patch).every((k) => k === 'categories')) return '';
         const now = patch.attendees ? patch.attendees.map((x) => x.emailAddress.address) : who.attendees;
         const gone = patch.attendees ? who.attendees.filter((x) => !now.some((y) => y.toLowerCase() === x.toLowerCase())) : [];
         if (!who.isOrganizer) return now.length ? ' You are not the organiser: the change stays on this calendar, the others do not see it.' : '';
@@ -858,7 +867,8 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
             const now = a.with !== undefined ? String(a.with).split(',').map((x) => x.trim()).filter(Boolean) : ev.attendees;
             const gone = a.with !== undefined ? ev.attendees.filter((x) => !now.some((y) => y.toLowerCase() === x.toLowerCase())) : [];
             if (verb === 'calendar.delete' && ev.attendees.length) effects.push(ev.mine ? (sent ? `a cancellation goes to ${ev.attendees.join(', ')}` : `the invitees (${ev.attendees.join(', ')}) are NOT told`) : 'the organiser is not told that you will not come (decline tells them)');
-            if (verb === 'calendar.update' && ev.mine && (now.length || gone.length)) {
+            const seen = ['title', 'start', 'end', 'where', 'notes', 'with', 'online'].some((k) => a[k] !== undefined) || (provider !== 'microsoft' && a.categories !== undefined);
+            if (verb === 'calendar.update' && ev.mine && seen && (now.length || gone.length)) {
                 effects.push(sent ? `the update goes to ${now.join(', ') || 'nobody'}` : `the invitees (${[...now, ...gone].join(', ')}) are NOT told`);
                 if (gone.length && sent) effects.push(`removed: ${gone.join(', ')} (they get a cancellation)`);
             }

@@ -177,16 +177,18 @@ export function graphMail({ fetch: fetchImpl = globalThis.fetch, token }) {
             try {
                 const [m, bin] = await Promise.all([call(target, ctx, 'GET', `/me/messages/${encodeURIComponent(id)}?$select=parentFolderId`), call(target, ctx, 'GET', '/me/mailFolders/deleteditems?$select=id')]);
                 inTrash = Boolean(m?.parentFolderId && bin?.id && m.parentFolderId === bin.id);
-            } catch (e) { if (/no such|not found/i.test(e?.message ?? '')) throw e; /* else: said as a move to Deleted Items */ }
+            } catch (e) { if (/no such|not found/i.test(e?.message ?? '')) throw e; inTrash = null; /* unknown: said so (loop 8) */ }
             await call(target, ctx, 'DELETE', `/me/messages/${encodeURIComponent(id)}`);
+            if (inTrash === null) return { text: `Deleted ${id}: moved to Deleted Items, where it can be restored -- unless it was in Deleted Items already (that could not be checked), then it is gone for good.`, size: 0 };
             return { text: inTrash ? `Deleted ${id} for good: it was already in Deleted Items, so it cannot be restored.` : `Deleted ${id}: moved to Deleted Items, where it can be restored.`, size: 0 };
         },
         async move(target, a, ctx) {
             const id = String(a.uid ?? '').trim();
             if (!id) no('move needs the message id');
             if (!String(a.mailbox ?? '').trim()) no('move needs a destination folder');
-            await call(target, ctx, 'POST', `/me/messages/${encodeURIComponent(id)}/move`, { destinationId: await folderId(target, ctx, a.mailbox) });
-            return { text: `Moved ${id} to ${a.mailbox}.`, size: 0 };
+            const moved = await call(target, ctx, 'POST', `/me/messages/${encodeURIComponent(id)}/move`, { destinationId: await folderId(target, ctx, a.mailbox) });
+            /* Microsoft gives the moved message a new id: told, the old one names nothing now (loop 8). */
+            return { text: `Moved ${id} to ${a.mailbox}${moved?.id && moved.id !== id ? `; its id is now ${moved.id}` : ''}.`, size: 0 };
         },
         async flag(target, a, ctx) {
             const id = String(a.uid ?? '').trim();

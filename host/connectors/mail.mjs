@@ -638,7 +638,7 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
         ticking = true;
         try {
             for (const rec of later.filter((r) => r.when <= host.now())) {
-                if (host.stopped(rec.agent)) continue;
+                if (host.stopped(rec.agent)) { if (!rec.held) { rec.held = true; keep(); } continue; }
                 const target = host.target(rec.target);
                 let outcome; let error; let final = false; let unsure = false;
                 /* A server silent after taking the message may have sent it: never sent again blindly, said. */
@@ -650,7 +650,7 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
                     decision: 'yes', because: 'later', ok: outcome === 'sent', ...(outcome === 'sent' ? {} : { error: error ?? (outcome === 'cancelled' ? 'cancelled: the draft was deleted' : outcome) }) });
                 if (unsure) tell(rec, 'mail.later-unsure', `The mail "${rec.subject}" to ${rec.to.join(', ')} MAY have been sent: the server took it but never confirmed. It is not sent again; check Sent (its draft is still in ${rec.box}).`, rec.id);
                 else if (error) tell(rec, 'mail.later-failed', `The mail "${rec.subject}" to ${rec.to.join(', ')}, to leave at ${wallClock(new Date(rec.when))}, could NOT be sent: ${error}. It is still in ${rec.box}.`, rec.id);
-                else if (late) tell(rec, 'mail.later-late', `The mail "${rec.subject}" to ${rec.to.join(', ')}, due at ${wallClock(new Date(rec.when))}, left late, at ${wallClock(new Date(host.now()))} (the keeper was not running at its time).`, rec.id);
+                else if (late) tell(rec, 'mail.later-late', `The mail "${rec.subject}" to ${rec.to.join(', ')}, due at ${wallClock(new Date(rec.when))}, left late, at ${wallClock(new Date(host.now()))} (${rec.held ? 'the agent was stopped by a person until then' : rec.tries ? 'the mail server could not be reached until then' : 'the keeper was not running at its time'}).`, rec.id);
             }
             await scanBounces().catch(() => { /* looked again next minute */ });
         } finally { ticking = false; }
@@ -758,13 +758,16 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
                 await mustHave(imap, uid, boxOf(target, a.from));
                 /* A server without MOVE (RFC 6851; older Dovecot, Exchange 2010...): COPY, then that one uid expunged, as delete does. */
                 const caps = (await imap.command('CAPABILITY', 'the server capabilities could not be read')).find((l) => /^\* CAPABILITY/i.test(l)) ?? '';
-                if (/\sMOVE(\s|$)/i.test(caps)) await imap.command(`UID MOVE ${uid} ${quoted(String(a.mailbox))}`, 'that message could not be moved (the destination folder may not exist)');
+                let said;
+                if (/\sMOVE(\s|$)/i.test(caps)) said = await imap.command(`UID MOVE ${uid} ${quoted(String(a.mailbox))}`, 'that message could not be moved (the destination folder may not exist)');
                 else {
-                    await imap.command(`UID COPY ${uid} ${quoted(String(a.mailbox))}`, 'that message could not be moved (the destination folder may not exist)');
+                    said = await imap.command(`UID COPY ${uid} ${quoted(String(a.mailbox))}`, 'that message could not be moved (the destination folder may not exist)');
                     await imap.command(`UID STORE ${uid} +FLAGS (\\Deleted)`, 'that message was copied but could not be removed from its folder');
                     await imap.command(`UID EXPUNGE ${uid}`, 'that message was copied but could not be removed from its folder');
                 }
-                return { text: `Moved #${uid} to ${a.mailbox}.`, size: 0 };
+                /* Its number in the new folder (COPYUID, RFC 4315) is told: the old one names another message there (loop 8). */
+                const there = /\[COPYUID \d+ \S+ (\d+)\]/i.exec(said.join('\n'))?.[1];
+                return { text: `Moved #${uid} to ${a.mailbox}; ${there ? `there it is #${there} (mailbox ${a.mailbox})` : `there it has another number: list ${a.mailbox} to act on it`}.`, size: 0 };
             }, { write: true });
         },
         /* Mark a message read/unread or flagged/unflagged. */
