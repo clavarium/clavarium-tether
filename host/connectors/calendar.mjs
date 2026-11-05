@@ -186,6 +186,8 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
             let res;
             try { res = await fetchImpl(url, { method, headers: { Authorization: auth, ...headers }, ...(body !== undefined ? { body } : {}), signal: AbortSignal.timeout(TIMEOUT_MS) }); }
             catch (e) { if (e instanceof Refused) throw e; no(`${target.title}: ${e?.name === 'TimeoutError' ? 'the calendar did not answer in time' : 'cannot reach the calendar'}${['GET', 'PROPFIND', 'REPORT', 'OPTIONS'].includes(method) ? '' : ' -- it may have been done: check before asking again'}`); }
+            /* 403 on a signed-in account: not allowed (a read-only or shared calendar), never "the password" (loop 45). */
+            if (res.status === 403 && providerOf(target) !== 'google') no(`${target.title}: the calendar server does not allow this here (403: a read-only or shared calendar?) -- nothing was done`);
             if (res.status === 401 || res.status === 403) no(providerOf(target) === 'google' ? `${target.title}: not authorized -- reconnect the account (the calendar scope may be missing)` : `${target.title}: the calendar refused the user or the password`);
             return res;
         };

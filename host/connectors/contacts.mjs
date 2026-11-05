@@ -80,6 +80,7 @@ export function contacts({ fetch: fetchImpl = globalThis.fetch } = {}) {
         let res;
         try { res = await fetchImpl(url, { method, headers: { Authorization: auth, ...headers }, ...(body !== undefined ? { body } : {}), signal: AbortSignal.timeout(TIMEOUT_MS) }); }
         catch (e) { if (e instanceof Refused) throw e; no(`${target.title}: ${e?.name === 'TimeoutError' ? 'the address book did not answer in time' : 'cannot reach the address book'}${['GET', 'PROPFIND', 'REPORT'].includes(method) ? '' : ' -- it may have been done: check before asking again'}`); }
+        if (res.status === 403 && providerOf(target) === 'carddav') no(`${target.title}: the address book does not allow this here (403: a read-only or shared address book?) -- nothing was done`);
         if (res.status === 401 || res.status === 403) no(providerOf(target) === 'carddav' ? `${target.title}: the address book refused the user or the password` : `${target.title}: not authorized -- reconnect the account (the contacts scope may be missing)`);
         return res;
     }
@@ -355,11 +356,16 @@ export function contacts({ fetch: fetchImpl = globalThis.fetch } = {}) {
         }
         const res = await req(target, ctx, 'GET', `https://graph.microsoft.com/v1.0/me/contacts/${encodeURIComponent(id)}?$select=displayName,givenName,surname,emailAddresses,mobilePhone,businessPhones,homePhones`);
         if (!res.ok) return null;
-        const c = fromMs(await res.json());
+        const j = await res.json();
+        const c = fromMs(j);
+        /* A phone replaces the mobile (no type) or the first of its type: said on the card before (loop 45). */
+        const want = typeOf(a.type, 'TEL') || 'cell';
+        const had = want === 'cell' ? j.mobilePhone : (j[want === 'work' ? 'businessPhones' : 'homePhones'] ?? []).filter(Boolean)[0];
+        const phoneOut = verb === 'contacts.update' && a.phone !== undefined && String(a.phone).trim() && had && had !== String(a.phone).trim() ? [`replaces the ${want === 'cell' ? 'mobile' : `${want} phone`} ${had}`] : [];
         /* Microsoft keeps 3 emails: a new one pushes the last out -- on the card before it is approved (loop 43). */
         const e = String(a.email ?? '').trim().toLowerCase();
         const out = verb === 'contacts.update' && e && c.emails.length >= 3 && !c.emails.some((x) => x.toLowerCase() === e) ? c.emails.slice(2) : [];
-        return { name: c.name, email: c.emails[0] ?? '', emails: c.emails, phones: c.tels, ...(out.length ? { effects: [`removes ${out.join(', ')} (Microsoft keeps 3 emails)`] } : {}) };
+        return { name: c.name, email: c.emails[0] ?? '', emails: c.emails, phones: c.tels, ...(out.length || phoneOut.length ? { effects: [...(out.length ? [`removes ${out.join(', ')} (Microsoft keeps 3 emails)`] : []), ...phoneOut] } : {}) };
     }
 
     return {

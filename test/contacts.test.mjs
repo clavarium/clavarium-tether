@@ -241,3 +241,11 @@ test('loop 43: a 4th email on Microsoft is named on the card before (the last on
     const about = await contacts({ fetch }).describe('contacts.update', M, { id: 'm1', email: 'd@example.com' }, ctx());
     assert.deepEqual(about.effects, ['removes c@example.com (Microsoft keeps 3 emails)']);
 });
+
+test('loop 45: a phone on Microsoft names the mobile it replaces on the card; a 403 on CardDAV is "not allowed", never the password', async () => {
+    const fetch = async (url) => (url.includes('login.microsoftonline.com') ? json({ access_token: 'T', expires_in: 3600 }) : json({ displayName: 'C', mobilePhone: '+33 6 00' }));
+    assert.deepEqual((await contacts({ fetch }).describe('contacts.update', M, { id: 'm1', phone: '+33 6 11' }, ctx())).effects, ['replaces the mobile +33 6 00']);
+    const ro = async (url, o = {}) => ((o.method || 'GET') === 'PUT' ? new Response('', { status: 403 }) : new Response('BEGIN:VCARD\r\nVERSION:3.0\r\nUID:x\r\nFN:A\r\nEND:VCARD\r\n', { status: 200, headers: { etag: '"1"' } }));
+    const T2 = { id: 'b', title: 'Book', config: { carddav: 'https://dav.example.com/book/', user: 'me@example.com' }, secrets: { password: 'p' } };
+    await assert.rejects(contacts({ fetch: ro }).run('contacts.update', T2, { id: 'https://dav.example.com/book/x.vcf', name: 'B' }, { secret: async () => 'PW' }), /does not allow this here \(403/);
+});

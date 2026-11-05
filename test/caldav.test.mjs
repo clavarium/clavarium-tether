@@ -417,3 +417,9 @@ test('loop 41: a server error on OPTIONS is no answer (refused, asked again), ne
     bad = false;
     assert.match((await c.run('calendar.create', T, { title: 'x', start: '2030-11-04T10:00', end: '2030-11-04T11:00', with: 'a@example.org' }, ctx())).text, /sent by the calendar server/);
 });
+
+test('loop 45: a 403 on a CalDAV write is "not allowed", never the password', async () => {
+    const s = davServer();
+    const ro = { ...s, fetch: async (url, o = {}) => (o.method === 'PUT' ? new Response('', { status: 403 }) : s.fetch(url, o)) };
+    await assert.rejects(run(ro, 'calendar.update', { id: '/cal/me/work/b.ics', title: 'x' }), /does not allow this here \(403/);
+});
