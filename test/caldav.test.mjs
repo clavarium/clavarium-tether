@@ -215,3 +215,12 @@ test('CalDAV: a category renamed on several events that fails in the middle says
     const flaky = { ...s, fetch: async (url, o = {}) => ((o.method === 'PUT' && ++puts === 2) ? new Response('', { status: 500 }) : s.fetch(url, o)) };
     await assert.rejects(run(flaky, 'calendar.category-rename', { name: 'client', to: 'Clients' }), /done on 1 of 2 events; asking again does the rest/);
 });
+
+test('CalDAV attach says who receives the file only when the server schedules (loop 2)', async () => {
+    const no = scheduling(davServer(), false);
+    const r = await run(no, 'calendar.attach', { id: '/cal/me/work/a.ics', attach: 'SGVsbG8=', attachName: 'plan.pdf', share: true });
+    assert.match(r.text, /Kept in the event on this calendar; boss@example\.com do NOT receive it/);
+    const yes = scheduling(davServer(), true);
+    const r2 = await run(yes, 'calendar.attach', { id: '/cal/me/work/a.ics', attach: 'SGVsbG8=', attachName: 'plan.pdf', share: true });
+    assert.match(r2.text, /The calendar server sends it with the event to boss@example\.com\./);
+});

@@ -345,7 +345,10 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
             await davPut(target, ctx, url, setProps(text, 'ATTACH', lines), { etag });
             const back = await davGet(target, ctx, a.id);
             if (!eventOf(back.text).files.some((f) => f.name === name)) no(`${target.title}: the calendar did not keep the file (this server takes no file inside an event) -- send it by mail instead`);
-            const who = ev.attendees.length ? ` It goes with the event to ${ev.attendees.map((x) => x.email).join(', ')}.` : ' Visible to you alone (the event has no participants).';
+            /* It reaches the others only through the server's scheduling (loop 2: it was said sent regardless). */
+            const others = ev.attendees.map((x) => x.email).filter((x) => x.toLowerCase() !== userOf(target).toLowerCase());
+            const who = !others.length ? ' Visible to you alone (the event has no participants).'
+                : (await schedules(target, ctx)) ? ` The calendar server sends it with the event to ${others.join(', ')}.` : ` Kept in the event on this calendar; ${others.join(', ')} do NOT receive it (this server does not schedule) -- send it by mail if they need it.`;
             return { text: `Attached ${name} to the event.${who}`, size: 0 };
         },
         async detach(target, a, ctx) {
