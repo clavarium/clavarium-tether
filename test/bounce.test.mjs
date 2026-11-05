@@ -307,3 +307,18 @@ test('loop 13: an IMAP write cut in the middle says it may have been done; a sch
     await conn2.run('mail.send', BOX, { to: 'bob@example.com', bcc: 'hidden@example.com', subject: 'l', body: 'x', at: new Date(Date.now() + 3600_000).toISOString() }, ctx());
     assert.match([...s2.folders.Drafts.msgs.values()][0], /^Bcc: hidden@example\.com$/m);
 });
+
+test('loop 18: a keeper store that cannot be written never turns a done act into "not done"', async () => {
+    const { mkdirSync } = await import('node:fs');
+    const s = imapBox(); const m = smtp();
+    const conn = mail({ connect: s.connect, smtpConnect: m.connect, smtpSecure: m.secure });
+    const h = hostOf(BOX, { t: Date.now() });
+    mkdirSync(join(h.hand.dir, 'mail-sent.json.tmp'));   /* the watch file cannot be written */
+    mkdirSync(join(h.hand.dir, 'mail-later.json.tmp'));
+    conn.wake(h.hand);
+    const r = await conn.run('mail.send', BOX, { to: 'bob@example.com', subject: 's', body: 'b' }, ctx());
+    assert.match(r.text, /^Sent to bob@example\.com.*its watch list could not be saved/);
+    const e = await conn.run('mail.send', BOX, { to: 'bob@example.com', subject: 'l', body: 'b', at: new Date(Date.now() + 3600_000).toISOString() }, ctx()).catch((x) => x);
+    assert.match(e.message, /waits in Drafts, but could not be scheduled .* it will NOT leave by itself/);
+    assert.equal(conn.later().length, 0);
+});

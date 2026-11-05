@@ -259,7 +259,10 @@ export function keeper(dir, { sides = () => [], ask, notify, secrets = async () 
         try { res = await conn.run(verb, t, a, ctx); } catch (e) {
             ok = false; error = e instanceof Refused ? e.message : `failed: ${e?.message ?? e}`;
         }
-        journal.append({ ...base, decision: outcome.decision, because: d.go === 'yes' ? d.because : undefined, by: outcome.by, ok, error, size: res?.size, exit: res?.exit, ms: now() - started, request: asked });
+        /* What happened is told even if the journal cannot keep it (a full disk): a done act is never answered "not done" (loop 18). */
+        let unjournaled = false;
+        try { journal.append({ ...base, decision: outcome.decision, because: d.go === 'yes' ? d.because : undefined, by: outcome.by, ok, error, size: res?.size, exit: res?.exit, ms: now() - started, request: asked }); } catch { unjournaled = true; }
+        if (ok && unjournaled) res = { ...res, text: `${res.text}\n(The journal could not record this act.)` };
         if (!ok) no(hide(error, known));
         return { text: hide(res.text, known), data: { ...(res.exit !== undefined ? { exit: res.exit } : {}), size: res.size ?? 0 } };
     }

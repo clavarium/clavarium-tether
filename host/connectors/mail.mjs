@@ -433,8 +433,10 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
                 await imap.append(drafts, '\\Draft \\Seen', raw, 'the message could not be kept for later');
                 return drafts;
             }, { write: true });
-            later.push({ id: messageId, target: target.id, agent: ctx.agent, when: at.getTime(), box, to: m.to, cc: m.cc, bcc: m.bcc, subject: String(m.subject ?? ''), tries: 0 });
-            keep();
+            const rec = { id: messageId, target: target.id, agent: ctx.agent, when: at.getTime(), box, to: m.to, cc: m.cc, bcc: m.bcc, subject: String(m.subject ?? ''), tries: 0 };
+            later.push(rec);
+            /* The schedule kept on disk, or none at all: the draft is there already, said so (loop 18). */
+            try { keep(); } catch (e) { later = later.filter((r) => r !== rec); no(`the message waits in ${box}, but could not be scheduled (${e?.message ?? e}): it will NOT leave by itself -- send it from there, or delete it`); }
             return { text: `Scheduled for ${wallClock(at)}, to ${m.to.join(', ')}${files} — it waits in ${box} until then (delete it there to cancel). The keeper must be running at that time; if not, it leaves as soon as it is back (and you are told).${LATER_TEXT}`, size: 0 };
         }
         if (draft) {
@@ -563,7 +565,9 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
         if (!host || !agent) return '';
         const at = Math.max(host.now(), Number(from) || 0);
         sent.push({ id: id || null, target: target.id, agent, to: [...new Set((to ?? []).map((x) => String(x).toLowerCase()))], subject: String(subject ?? ''), sentAt: at, until: at + WATCH_MS, next: at + 2 * 60_000, told: [] });
-        sent = sent.slice(-500); keepSent();
+        sent = sent.slice(-500);
+        /* The act is done: a watch that cannot be saved is said, never turned into a failure (loop 18). */
+        try { keepSent(); } catch { return ' (Tether watches for a return only while the keeper runs: its watch list could not be saved.)'; }
         return WATCH_TEXT;
     }
     const looked = new Map();   // target.id -> Map(message key -> bounce or null): a report read once
@@ -638,7 +642,12 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
 
     /* A mail Microsoft sent: watched like the others (its ref, its recipients, its time). */
     /* Exchange holds a scheduled one in its Outbox: a return is watched, but one that never leaves is Exchange's to report. */
-    const graphSent = (target, ctx, r) => { const { watch: w, ...rest } = r; if (w && watch(target, ctx.agent, w)) rest.text += w.from ? ' Once it leaves, Tether watches for a return for 48 h: a mail that comes back is told to you.' : WATCH_TEXT; return rest; };
+    const graphSent = (target, ctx, r) => {
+        const { watch: w, ...rest } = r;
+        const said = w ? watch(target, ctx.agent, w) : '';
+        rest.text += said === WATCH_TEXT && w.from ? ' Once it leaves, Tether watches for a return for 48 h: a mail that comes back is told to you.' : said;
+        return rest;
+    };
 
     let ticking = false;
     async function tick() {

@@ -566,3 +566,13 @@ test('loop 17: a Teams check that throws after a done change says "could not be 
     const r = await calendar({ fetch }).run('calendar.update', M, { id: 'E1', notes: 'n' }, ctx());
     assert.match(r.text, /Whether its Teams meeting is still there could not be checked/);
 });
+
+test('loop 18: an event made whose decline watch cannot be saved is still said made', async () => {
+    const { mkdtempSync, mkdirSync } = await import('node:fs'); const { tmpdir } = await import('node:os'); const { join } = await import('node:path');
+    const dir = mkdtempSync(join(tmpdir(), 'cw-')); mkdirSync(join(dir, 'calendar-watch.json.tmp'));
+    const s = graphCal(() => ORG());
+    const conn = calendar({ fetch: s.fetch });
+    conn.wake({ dir, now: () => Date.parse('2030-11-01T00:00:00Z'), target: () => M, ctx: () => ctx(), notice: () => {} });
+    const r = await conn.run('calendar.create', M, { title: 'Comité', start: '2030-11-05T14:00', end: '2030-11-05T15:00', with: 'a@example.com' }, { ...ctx(), agent: 'agent:a' });
+    assert.match(r.text, /^Created: Comité.*its watch list could not be saved/);
+});

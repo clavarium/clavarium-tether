@@ -824,7 +824,8 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
         if (!(at > host.now())) return '';
         watched = watched.filter((x) => !(x.target === target.id && x.id === id));
         watched.push({ target: target.id, agent, id, title: String(title ?? ''), start: at, next: host.now() + 15 * 60_000, told: [] });
-        watched = watched.slice(-300); keepWatch();
+        watched = watched.slice(-300);
+        try { keepWatch(); } catch { return ' (Tether watches the answers only while the keeper runs: its watch list could not be saved.)'; }
         return ' Tether watches the answers until it starts: an invitee who declines is told to you.';
     }
     async function answersOf(target, ctx, id) {

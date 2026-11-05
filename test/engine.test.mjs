@@ -622,3 +622,16 @@ test('loop 13: a failed answer is "Not done" only when nothing was done', async 
     assert.match(failed(MAY_BE_DONE), /^Uncertain, check before asking again: /);
     assert.match(failed('Agenda: the calendar refused the change (500) -- done on 3 of 5 events; asking again does the rest'), /^Done in part: /);
 });
+
+test('loop 18: a journal that cannot be written never turns a done act into "not done"', async () => {
+    const { mkdirSync } = await import('node:fs');
+    const store = tmp(); const conn = fake();
+    const k = keeper(store, { connectors: { fake: conn } });
+    k.store.putTarget({ id: 'web', title: 'Web', kind: 'ssh', connector: 'fake' });
+    k.store.grant('web', BOT.id, 'free');
+    const { rmSync } = await import('node:fs');
+    rmSync(join(store, 'journal.jsonl'), { force: true }); mkdirSync(join(store, 'journal.jsonl'));
+    const r = await k.act('terminal.run', { target: 'web', command: 'ls' }, BOT);
+    assert.equal(r.ok, true);
+    assert.match(r.text, /did terminal\.run\n\(The journal could not record this act\.\)/);
+});
