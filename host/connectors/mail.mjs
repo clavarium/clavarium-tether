@@ -901,7 +901,14 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
                 const cc = a.all === true ? [...emailsOf(headerOf(block, 'To')), ...emailsOf(headerOf(block, 'Cc'))].filter((x) => x !== self && !to.includes(x)) : [];
                 replyTo = { to: to.filter((x) => x !== self), cc: [...new Set([...cc, ...listOf(a.cc).map((x) => x.toLowerCase())])] };
             }
-            return { from: decodeWords(headerOf(block, 'From')), subject: decodeWords(headerOf(block, 'Subject')), date: headerOf(block, 'Date'), ...(files.length ? { files } : {}), ...(replyTo ? { replyTo } : {}) };
+            /* A delete from the Trash itself is for good: said on the card before, not only after (loop 36). Read only: no folder made. */
+            let forGood;
+            if (verb === 'mail.delete') {
+                const boxes = (await imap.command('LIST "" "*"', 'the folders could not be listed')).filter((x) => /^\* LIST/i.test(x)).map((x) => ({ flags: /^\* LIST \(([^)]*)\)/i.exec(x)?.[1] ?? '', name: (/"((?:[^"\\]|\\.)*)"\s*$/.exec(x)?.[1] ?? /\s(\S+)$/.exec(x)?.[1] ?? '').replace(/\\(.)/g, '$1') }));
+                const bin = boxes.find((b) => /\\Trash\b/i.test(b.flags)) ?? boxes.find((b) => TRASH_NAMES.test(mutf7(b.name)));
+                forGood = Boolean(bin && bin.name.toLowerCase() === boxOf(target, a.mailbox).toLowerCase());
+            }
+            return { from: decodeWords(headerOf(block, 'From')), subject: decodeWords(headerOf(block, 'Subject')), date: headerOf(block, 'Date'), ...(files.length ? { files } : {}), ...(replyTo ? { replyTo } : {}), ...(forGood ? { forGood: true } : {}) };
         });
     }
 

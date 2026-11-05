@@ -265,7 +265,7 @@ export function contacts({ fetch: fetchImpl = globalThis.fetch } = {}) {
             }
             const body = msBody({ name: a.name });
             const url = `https://graph.microsoft.com/v1.0/me/contacts/${encodeURIComponent(id)}`;
-            if (a.name !== undefined) said.push(`name ${a.name}`);
+            if (a.name !== undefined) said.push(String(a.name).trim() ? `name ${a.name}` : 'name removed');
             if (a.email !== undefined || a.phone !== undefined) {
                 const was = await req(target, ctx, 'GET', `${url}?$select=displayName,emailAddresses,mobilePhone,businessPhones,homePhones`);
                 if (was.status === 404) no('no such contact');

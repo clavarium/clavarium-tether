@@ -219,7 +219,10 @@ export function graphMail({ fetch: fetchImpl = globalThis.fetch, token }) {
         /* What a message is, for an approval card: who, subject, when, its files' names. */
         async about(target, a, ctx, verb) {
             const id = encodeURIComponent(String(a.uid ?? '').trim());
-            const m = await call(target, ctx, 'GET', `/me/messages/${id}?$select=from,replyTo,toRecipients,ccRecipients,subject,receivedDateTime,hasAttachments`);
+            const m = await call(target, ctx, 'GET', `/me/messages/${id}?$select=from,replyTo,toRecipients,ccRecipients,subject,receivedDateTime,hasAttachments,parentFolderId`);
+            /* Already in Deleted Items: a delete is for good, said on the card before (loop 36). */
+            let forGood;
+            if (verb === 'mail.delete') { try { forGood = m?.parentFolderId && m.parentFolderId === (await call(target, ctx, 'GET', '/me/mailFolders/deleteditems?$select=id'))?.id; } catch { /* the result says it */ } }
             let files;
             if (m?.hasAttachments) files = ((await call(target, ctx, 'GET', `/me/messages/${id}/attachments?$select=name,size`))?.value ?? []).map((x) => ({ name: x.name, kb: Math.max(1, Math.round((x.size || 0) / 1024)) }));
             const who = m?.from?.emailAddress;
@@ -232,7 +235,7 @@ export function graphMail({ fetch: fetchImpl = globalThis.fetch, token }) {
                 const cc = a.all === true || a.all === 'true' ? [...addr(m?.toRecipients), ...addr(m?.ccRecipients)].filter((x) => x !== self && !to.includes(x)) : [];
                 replyTo = { to, cc: [...new Set([...cc, ...listOf(a.cc).map((x) => x.toLowerCase())])] };
             }
-            return { from: who ? (who.name && who.name !== who.address ? `${who.name} <${who.address}>` : who.address) : '', subject: m?.subject ?? '', date: m?.receivedDateTime ?? '', ...(files ? { files } : {}), ...(replyTo ? { replyTo } : {}) };
+            return { from: who ? (who.name && who.name !== who.address ? `${who.name} <${who.address}>` : who.address) : '', subject: m?.subject ?? '', date: m?.receivedDateTime ?? '', ...(files ? { files } : {}), ...(replyTo ? { replyTo } : {}), ...(forGood ? { forGood: true } : {}) };
         },
         /* Send a message (or, with draft, keep it in Drafts). The body is the
            composed HTML (Markdown) or the text as written. */

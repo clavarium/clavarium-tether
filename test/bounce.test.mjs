@@ -394,3 +394,18 @@ test('loop 34: the reply card shows who it goes to (Reply-To first, all: To and 
     const { cardOf } = await import('../server/cards.mjs');
     assert.deepEqual(cardOf('contacts.update', { id: 'c', phone: '', type: 'work' }).cleared, ['phone (work)']);
 });
+
+test('loop 36: a delete from the Trash is "for good" on the card before; emptied title and name show on the card', async () => {
+    const s = imapBox();
+    s.folders.Trash = { flags: '\\Trash', msgs: new Map() };
+    const conn = mail({ connect: s.connect });
+    assert.equal((await conn.describe('mail.delete', BOX, { uid: '1', mailbox: 'Trash' }, ctx())).forGood, true);
+    assert.equal((await conn.describe('mail.delete', BOX, { uid: '1' }, ctx())).forGood, undefined);
+    assert.ok(!s.commands.some((c) => c.startsWith('CREATE')));
+    const { graphMail } = await import('../host/connectors/graphmail.mjs');
+    const fetch = async (url) => new Response(JSON.stringify(url.includes('deleteditems') ? { id: 'BIN' } : { parentFolderId: 'BIN', subject: 's' }), { status: 200 });
+    assert.equal((await graphMail({ fetch, token: async () => 'T' }).about({ title: 'O', config: {} }, { uid: 'M' }, {}, 'mail.delete')).forGood, true);
+    const { cardOf } = await import('../server/cards.mjs');
+    assert.deepEqual(cardOf('calendar.update', { id: 'e', title: '' }, {}).cleared, ['title']);
+    assert.deepEqual(cardOf('contacts.update', { id: 'c', name: '' }).cleared, ['name']);
+});

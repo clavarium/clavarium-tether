@@ -269,7 +269,7 @@ function editOne(text, name, value, type, said) {
    replaced one by one (editOne), never all of them; the rest of the card kept. */
 export function editCard(text, { name, email, phone, type, photo, photoType }, said = []) {
     let t = text;
-    if (name !== undefined) { t = setProps(t, 'FN', [`FN:${escapeText(name)}`], 'VCARD'); t = setProps(t, 'N', [nOf(name)], 'VCARD'); said.push(`name ${name}`); }
+    if (name !== undefined) { t = setProps(t, 'FN', [`FN:${escapeText(name)}`], 'VCARD'); t = setProps(t, 'N', [nOf(name)], 'VCARD'); said.push(String(name).trim() ? `name ${name}` : 'name removed'); }
     if (email !== undefined) t = editOne(t, 'EMAIL', email, type, said);
     if (phone !== undefined) t = editOne(t, 'TEL', phone, type, said);
     /* vCard 4 carries a photo as a data: URI; 3.0 as base64 with ENCODING=b (loop 5). */
