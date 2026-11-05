@@ -355,7 +355,7 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
             const sized = await imap.command(`UID FETCH ${uid} (RFC822.SIZE)`, 'that message could not be read');
             const size = Number(/RFC822\.SIZE (\d+)/i.exec(sized.find((l) => /^\* \d+ FETCH/i.test(l)) ?? '')?.[1]);
             if (!Number.isFinite(size)) no('no such message');
-            if (size > max) no(max === FORWARD_MAX ? `the original is too large (${Math.round(size / 1024 / 1024)} MB) to forward with its files -- forward it with keep "none", or fewer files` : 'the original is too large to quote');
+            if (size > max) no(`the original is too large (${Math.round(size / 1024 / 1024)} MB) to be read whole here -- nothing was done: answer or forward it from a mail program`);
             const lines = await imap.command(`UID FETCH ${uid} (BODY.PEEK[])`, 'that message could not be read');
             const fetched = lines.find((l) => /^\* \d+ FETCH/i.test(l)) ?? '';
             const cut = fetched.indexOf('\n'); if (cut < 0) no('no such message');
@@ -670,7 +670,7 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
                 host.note({ agent: { id: rec.agent, name: rec.agent }, target: { id: rec.target, title: target?.title }, verb: 'mail.send', detail: `later, to ${rec.to.join(', ')}: ${rec.subject}`,
                     decision: 'yes', because: 'later', ok: outcome === 'sent', ...(outcome === 'sent' ? {} : { error: error ?? (outcome === 'cancelled' ? 'cancelled: the draft was deleted' : outcome) }) });
                 if (unsure) tell(rec, 'mail.later-unsure', `The mail "${rec.subject}" to ${rec.to.join(', ')} MAY have been sent (${error}). It is not sent again; check Sent (its draft is still in ${rec.box}).`, rec.id);
-                else if (error) tell(rec, 'mail.later-failed', `The mail "${rec.subject}" to ${rec.to.join(', ')}, to leave at ${wallClock(new Date(rec.when))}, could NOT be sent: ${error}. It is still in ${rec.box}.`, rec.id);
+                else if (error || (outcome !== 'sent' && outcome !== 'cancelled')) tell(rec, 'mail.later-failed', `The mail "${rec.subject}" to ${rec.to.join(', ')}, to leave at ${wallClock(new Date(rec.when))}, could NOT be sent: ${error ?? outcome}. It is still in ${rec.box}.`, rec.id);
                 else if (late) tell(rec, 'mail.later-late', `The mail "${rec.subject}" to ${rec.to.join(', ')}, due at ${wallClock(new Date(rec.when))}, left late, at ${wallClock(new Date(host.now()))} (${rec.held ? 'the agent was stopped by a person until then' : rec.tries ? 'the mail server could not be reached until then' : 'the keeper was not running at its time'}).`, rec.id);
             }
             await scanBounces().catch(() => { /* looked again next minute */ });
@@ -847,7 +847,7 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
         async 'mail.reply'(target, a, ctx) {
             if (isGraph(target)) return graphSent(target, ctx, await gmail.reply(target, a, ctx));
             const user = userOf(target).toLowerCase();
-            const o = await original(target, ctx, a, READ_MAX);
+            const o = await original(target, ctx, a, FORWARD_MAX);   /* the size counts its files, which a reply leaves out (loop 26: Microsoft took it) */
             const self = (x) => x === user;
             let to = emailsOf(o.replyTo || o.from);
             if (to.every(self)) to = emailsOf(o.to);   /* a reply to one's own sent message */
@@ -868,8 +868,7 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
             if (isGraph(target)) return graphSent(target, ctx, await gmail.forward(target, a, ctx));
             const to = listOf(a.to);
             if (!to.length) no('forward needs a recipient (to)');
-            const none = /^(none|false|no)$/i.test(String(a.keep ?? '').trim());
-            const o = await original(target, ctx, a, none ? READ_MAX : FORWARD_MAX);
+            const o = await original(target, ctx, a, FORWARD_MAX);
             const files = keptFiles(o.files, a.keep).map((f) => ({ name: f.name, type: f.type, bytes: decodeBytes(f.headers, f.body).toString('base64') }));
             return deliver(target, ctx, a, { to, cc: listOf(a.cc), bcc: listOf(a.bcc), subject: forwardSubject(o.subject), ...words(target, a, quoteForward(o, langOf(target))), attachments: [...files, ...added(a)] });
         },

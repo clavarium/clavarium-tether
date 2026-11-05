@@ -321,7 +321,7 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
             if (a.where !== undefined) set('LOCATION', String(a.where).trim() ? [`LOCATION:${escapeText(a.where)}`] : []);
             if (a.notes !== undefined) set('DESCRIPTION', String(a.notes).trim() ? [`DESCRIPTION:${escapeText(a.notes)}`] : []);
             if (a.with !== undefined) {
-                const list = String(a.with).split(',').map((x) => x.trim()).filter(Boolean);
+                const list = String(a.with).split(/[,;]/).map((x) => x.trim()).filter(Boolean);
                 const had = new Map(props(t, 'ATTENDEE').map((p) => [p.value.replace(/^mailto:/i, '').toLowerCase(), p.raw]));
                 set('ATTENDEE', list.map((x) => had.get(x.toLowerCase()) ?? attendeeLines([x])[0]));
                 if (list.length && !prop(t, 'ORGANIZER')) set('ORGANIZER', [`ORGANIZER:mailto:${userOf(target)}`]);
@@ -578,7 +578,7 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
             if (!a.title) no('an event needs a title');
             if (!a.start || !a.end) no('an event needs a start and an end (local ISO times, e.g. 2026-11-10T16:00:00)');
             const categories = catsOf(a);
-            const attendees = String(a.with ?? '').split(',').map((x) => x.trim()).filter(Boolean);
+            const attendees = String(a.with ?? '').split(/[,;]/).map((x) => x.trim()).filter(Boolean);
             /* An online (Teams) meeting: on by default once there are participants, off
                with --online none. Microsoft only (Teams); Graph makes the meeting + link. */
             const online = a.online !== undefined ? String(a.online).toLowerCase() : (attendees.length && provider === 'microsoft' ? 'teams' : 'none');
@@ -599,7 +599,7 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
             const provider = providerOf(target);
             if (!a.id) no('attach needs the event id (from the list)');
             if (!a.attach) no('attach needs the file (its base64 bytes)');
-            if (provider !== 'microsoft') return davVerbs.attach(target, a, ctx);
+            if (provider !== 'microsoft') return wholeSeries(target, ctx, a.id, () => davVerbs.attach(target, a, ctx));
             const ev = encodeURIComponent(String(a.id));
             /* Who would receive the file: an event attachment reaches every participant
                on the next invitation update or resend. Split internal from external by
@@ -638,7 +638,7 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
         async 'calendar.detach'(target, a, ctx) {
             const provider = providerOf(target);
             if (!a.id) no('detach needs the event id (from the list)');
-            if (provider !== 'microsoft') return davVerbs.detach(target, a, ctx);
+            if (provider !== 'microsoft') return wholeSeries(target, ctx, a.id, () => davVerbs.detach(target, a, ctx));
             const which = String(a.which ?? '').trim();
             if (!which) no('detach needs which attachment (its name or number)');
             const ev = encodeURIComponent(String(a.id));
@@ -700,7 +700,7 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
             if (a.end !== undefined) patch.end = msTime(endAs);
             if (a.where !== undefined) patch.location = { displayName: String(a.where) };
             if (a.notes !== undefined) patch.body = { contentType: 'text', content: String(a.notes) };
-            if (a.with !== undefined) patch.attendees = String(a.with).split(',').map((x) => x.trim()).filter(Boolean).map((e) => ({ emailAddress: { address: e }, type: 'required' }));
+            if (a.with !== undefined) patch.attendees = String(a.with).split(/[,;]/).map((x) => x.trim()).filter(Boolean).map((e) => ({ emailAddress: { address: e }, type: 'required' }));
             if (a.categories !== undefined) patch.categories = catsOf(a) ?? []; /* --category none clears them */
             if (a.online !== undefined) {
                 const online = String(a.online).toLowerCase();
@@ -911,7 +911,7 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
         try {
             const sent = provider === 'microsoft' || await schedules(target, ctx);
             const effects = [];
-            const now = a.with !== undefined ? String(a.with).split(',').map((x) => x.trim()).filter(Boolean) : ev.attendees;
+            const now = a.with !== undefined ? String(a.with).split(/[,;]/).map((x) => x.trim()).filter(Boolean) : ev.attendees;
             const gone = a.with !== undefined ? ev.attendees.filter((x) => !now.some((y) => y.toLowerCase() === x.toLowerCase())) : [];
             if (verb === 'calendar.delete' && ev.attendees.length) effects.push(ev.mine ? (sent ? `a cancellation goes to ${ev.attendees.join(', ')}` : `the invitees (${ev.attendees.join(', ')}) are NOT told`) : 'the organiser is not told that you will not come (decline tells them)');
             const seen = ['title', 'start', 'end', 'where', 'notes', 'with', 'online'].some((k) => a[k] !== undefined) || (provider !== 'microsoft' && a.categories !== undefined);
@@ -920,7 +920,7 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
                 if (gone.length && sent) effects.push(`removed: ${gone.join(', ')} (they get a cancellation)`);
             }
             if (verb === 'calendar.respond') effects.push(sent ? `the organiser${ev.organizer ? ` (${ev.organizer})` : ''} is told` : 'the organiser is NOT told (this server does not schedule)');
-            if (provider !== 'microsoft' && ev.series?.series && ['calendar.update', 'calendar.delete', 'calendar.respond'].includes(verb)) {
+            if (provider !== 'microsoft' && ev.series?.series && ['calendar.update', 'calendar.delete', 'calendar.respond', 'calendar.attach', 'calendar.detach'].includes(verb)) {
                 const own = ev.series.own;
                 effects.unshift(verb === 'calendar.delete' || !own.length ? 'the WHOLE repeating series (every occurrence), not one date'
                     : `the repeating series, not one date; ${own.length === 1 ? 'a date' : 'dates'} changed on ${own.length === 1 ? 'its' : 'their'} own (${own.join(', ')}) keep${own.length === 1 ? 's' : ''} ${own.length === 1 ? 'its' : 'their'} own values`);

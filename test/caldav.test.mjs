@@ -334,3 +334,12 @@ test('loop 24: the approval card names the dates of a series changed on their ow
     assert.equal((await c.describe('calendar.respond', T, { id: '/cal/me/work/r.ics', answer: 'decline' }, ctx())).effects[0], 'the repeating series, not one date; a date changed on its own (2030-11-11) keeps its own values');
     assert.equal((await c.describe('calendar.delete', T, { id: '/cal/me/work/r.ics' }, ctx())).effects[0], 'the WHOLE repeating series (every occurrence), not one date');
 });
+
+test('loop 26: invitees split on ; as on the card; attach on a series says the whole series', async () => {
+    const s = davServer();
+    const made = await run(s, 'calendar.create', { title: 'RDV', start: '2030-11-04T10:00', end: '2030-11-04T11:00', with: 'a@example.org; b@example.org' });
+    const id = /Its id is (\S+)\./.exec(made.text)[1];
+    assert.deepEqual(eventOf(s.files.get(id).text).attendees.map((x) => x.email), ['a@example.org', 'b@example.org']);
+    s.files.set('/cal/me/work/r.ics', { text: ev('r', 'Point', '20301104T080000Z', 'RRULE:FREQ=WEEKLY;COUNT=4\r\n'), etag: '"1"' });
+    assert.match((await run(s, 'calendar.attach', { id: '/cal/me/work/r.ics', attach: 'SGk=', attachName: 'a.pdf' })).text, /WHOLE series/);
+});

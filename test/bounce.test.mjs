@@ -44,6 +44,8 @@ function imapBox({ hooks = {} } = {}) {
             const um = /^UID SEARCH UID (\d+)$/.exec(cmd);
             if (um) return send(`* SEARCH${folders[current].msgs.has(Number(um[1])) ? ` ${um[1]}` : ''}\r\n${tag} OK\r\n`);
             if (cmd.startsWith('UID SEARCH')) return send(`* SEARCH${[...folders[current].msgs.keys()].map((u) => ` ${u}`).join('')}\r\n${tag} OK\r\n`);
+            const sz = /^UID FETCH (\d+) \(RFC822\.SIZE\)$/.exec(cmd);
+            if (sz) { const m = folders[current].msgs.get(Number(sz[1])) ?? ''; return send(`* 1 FETCH (UID ${sz[1]} RFC822.SIZE ${Buffer.byteLength(m)})\r\n${tag} OK\r\n`); }
             const fm = /^UID FETCH (\d+) \(BODY\.PEEK\[\]/.exec(cmd);
             if (fm) { const m = folders[current].msgs.get(Number(fm[1])) ?? ''; return send(`* 1 FETCH (UID ${fm[1]} BODY[] {${Buffer.byteLength(m)}}\r\n${m})\r\n${tag} OK\r\n`); }
             const xm = /^UID EXPUNGE (\d+)$/.exec(cmd);
@@ -335,4 +337,19 @@ test('loop 20: a scheduled mail whose APPEND line is lost says it is NOT schedul
 test('loop 20: that answer is headed Uncertain', async () => {
     const { failed } = await import('../server/mcp.mjs');
     assert.match(failed('Box: the line was lost while keeping it in Drafts -- it may have been kept there, but it is NOT scheduled and will not leave by itself'), /^Uncertain/);
+});
+
+test('loop 26: a reply to a message with a large file is not refused; a scheduled mail whose box is gone is told', async () => {
+    const big = `From: Bob <bob@example.com>\r\nTo: me@example.com\r\nSubject: Gros\r\nMessage-ID: <big@example.com>\r\nContent-Type: multipart/mixed; boundary="B"\r\n\r\n--B\r\nContent-Type: text/plain\r\n\r\nvoici\r\n--B\r\nContent-Type: application/pdf; name="a.pdf"\r\nContent-Transfer-Encoding: base64\r\n\r\n${'QUJD'.repeat(200_000)}\r\n--B--\r\n`;
+    const s = imapBox(); const uid = s.put('INBOX', big); const m = smtp();
+    const conn = mail({ connect: s.connect, smtpConnect: m.connect, smtpSecure: m.secure });
+    const r = await conn.run('mail.reply', BOX, { uid: String(uid), body: 'merci' }, ctx());
+    assert.match(r.text, /^Sent to bob@example\.com/);
+    const clock = { t: Date.now() }; const h = hostOf(BOX, clock);
+    const c2 = mail({ connect: imapBox().connect }); c2.wake(h.hand);
+    await c2.run('mail.send', BOX, { to: 'bob@example.com', subject: 'x', body: 'y', at: new Date(clock.t + 120_000).toISOString() }, ctx());
+    h.hand.target = () => null; c2.wake(h.hand);
+    clock.t += 180_000; await c2.tick();
+    assert.equal(h.notices[0]?.kind, 'mail.later-failed');
+    assert.match(h.notices[0].text, /its mailbox is gone/);
 });
