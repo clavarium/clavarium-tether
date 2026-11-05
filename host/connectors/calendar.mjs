@@ -306,7 +306,10 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
             const sched = (others.length || gone.length) && mine ? await schedules(target, ctx) : false;
             const told = !mine ? (others.length ? ` You are not the organiser (${before.organizer}): the change stays on this calendar, the others do not see it.` : '') : !(others.length || gone.length) ? '' : sched ? ` The calendar server sends the change to ${others.join(', ') || 'nobody left'}${gone.length ? `, and a cancellation to ${gone.join(', ')} (removed)` : ''}.` : ` Invitees (${[...others, ...gone].join(', ')}): ${NOT_TOLD}.`;
             /* The time set, said as Microsoft's result says it (loop 4). */
-            const when = a.start !== undefined || a.end !== undefined ? ` Now ${after.start}${after.end ? ` — ${after.end}` : ''} (${DAV_TZ}).` : '';
+            /* An all-day end is stored exclusive (the day after): said as its last day, as on Microsoft (loop 13). */
+            const lastDay = (s) => { if (!isDay(s)) return s; const d = new Date(`${s}T00:00:00Z`); d.setUTCDate(d.getUTCDate() - 1); return d.toISOString().slice(0, 10); };
+            const shownEnd = after.end && isDay(after.end) ? lastDay(after.end) : after.end;
+            const when = a.start !== undefined || a.end !== undefined ? ` Now ${after.start}${shownEnd && shownEnd !== after.start ? ` — ${shownEnd}` : ''}${isDay(after.start) ? ', all day' : ''} (${DAV_TZ}).` : '';
             return { text: `Updated the event.${when}${told}`, size: 0, watch: a.with !== undefined && others.length && sched ? { id: new URL(url).pathname, title: after.summary, start: after.start } : null };
         },
         async remove(target, a, ctx) {
@@ -686,7 +689,7 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
                 }
             }
             const who = await peopleOf(target, ctx, a.id);
-            const when = a.start !== undefined || a.end !== undefined ? ` Now ${[a.start, a.end].map((t) => (t === undefined ? '' : shortWhen(String(t)))).join(' — ').replace(/^ — | — $/, '')} (${TZ}).` : '';
+            const when = a.start !== undefined || a.end !== undefined ? ` Now ${[a.start, a.end === a.start && isDay(a.start) ? undefined : a.end].map((t) => (t === undefined ? '' : isDay(t) ? String(t).trim() : shortWhen(String(t)))).join(' — ').replace(/^ — | — $/, '')}${isDay(a.start) ? ', all day' : ''} (${TZ}).` : '';
             const res = await call(target, ctx, 'PATCH', API.microsoft.event(String(a.id)), patch);
             if (res.status === 404) no('no such event');
             if (!res.ok) no(`${target.title}: the event was not changed (${res.status} ${await bodyError(res)})`.trim());

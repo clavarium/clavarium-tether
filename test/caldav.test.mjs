@@ -258,3 +258,9 @@ test('loop 10: a second file of the same name that the server drops is said, not
     const dropNew = { ...s, fetch: async (url, o = {}) => (o.method === 'PUT' ? s.fetch(url, { ...o, body: o.body.replace(/\r\nATTACH[^\r\n]*(\r\n [^\r\n]*)*(?=\r\n(?!ATTACH))(?![\s\S]*\r\nATTACH)/, '') }) : s.fetch(url, o)) };
     await assert.rejects(run(dropNew, 'calendar.attach', { id: '/cal/me/work/b.ics', attach: 'V29ybGQ=', attachName: 'devis.pdf' }), /did not keep the file/);
 });
+
+test('loop 13: a one-day all-day change reads as that day, as on Microsoft', async () => {
+    const s = davServer();
+    const r = await run(s, 'calendar.update', { id: '/cal/me/work/b.ics', start: '2030-11-10', end: '2030-11-10' });
+    assert.match(r.text, /Now 2030-11-10, all day \(Europe\/Paris\)\./);
+});

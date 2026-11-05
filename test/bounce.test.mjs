@@ -297,3 +297,13 @@ test('loop 11: a classic server away for a while delays a scheduled mail, never 
     clock.t += 60_000; await conn.tick();
     assert.equal(m.messages.length, 1, 'sent once the server is back');
 });
+
+test('loop 13: an IMAP write cut in the middle says it may have been done; a scheduled draft shows its Bcc', async () => {
+    const s = imapBox({ hooks: { append: () => 'cut' } });
+    const conn = mail({ connect: s.connect });
+    await assert.rejects(conn.run('mail.send', BOX, { to: 'bob@example.com', subject: 'c', body: 'x', draft: true }, ctx()), /it may have been done: check before asking again/);
+    const s2 = imapBox(); const conn2 = mail({ connect: s2.connect });
+    conn2.wake(hostOf(BOX, { t: Date.now() }).hand);
+    await conn2.run('mail.send', BOX, { to: 'bob@example.com', bcc: 'hidden@example.com', subject: 'l', body: 'x', at: new Date(Date.now() + 3600_000).toISOString() }, ctx());
+    assert.match([...s2.folders.Drafts.msgs.values()][0], /^Bcc: hidden@example\.com$/m);
+});

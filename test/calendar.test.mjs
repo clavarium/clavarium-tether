@@ -526,3 +526,9 @@ test('loop 10: Microsoft delete/update refuse when who it concerns cannot be rea
     const r = await calendar({ fetch: made }).run('calendar.create', M, { title: 'T', start: '2030-11-05T14:00', end: '2030-11-05T15:00', with: 'a@example.com' }, ctx());
     assert.match(r.text, /Microsoft did NOT make its Teams meeting/);
 });
+
+test('loop 13: Microsoft says a one-day all-day change as that day, as CalDAV does', async () => {
+    const s = graphCal(() => ORG());
+    const r = await calendar({ fetch: s.fetch }).run('calendar.update', M, { id: 'E1', start: '2030-11-10', end: '2030-11-10' }, ctx());
+    assert.match(r.text, /Now 2030-11-10, all day \(Europe\/Paris\)\./);
+});

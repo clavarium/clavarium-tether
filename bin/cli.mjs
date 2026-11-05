@@ -7,7 +7,7 @@
 import { realpathSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ask, findFolder, notices, sayNotices } from '../server/mcp.mjs';
+import { ask, findFolder, notices, sayNotices, failed } from '../server/mcp.mjs';
 import { NAME, VERSION, FOLDER, ENV_DIR } from '../server/name.mjs';
 
 export const HELP = `${NAME}: act on the targets you were given (machines, folders, browsers, mailboxes, calendars, address books).
@@ -264,7 +264,7 @@ export async function run(argv, { env = process.env, cwd = process.cwd(), wait, 
         } catch (e) { return { code: 1, out: '', err: `cannot write to ${what[1].out}: ${e.code ?? e.message}\n` }; }
     }
     if (r.ok) return { code: 0, out: `${r.text}\n`, err: '' };
-    return { code: r.nokeeper ? 3 : r.late ? 4 : 1, out: '', err: `Not done: ${r.text}\n` };
+    return { code: r.nokeeper ? 3 : r.late ? 4 : 1, out: '', err: `${failed(r.text)}\n` };
 }
 
 const main = (() => { try { return realpathSync(process.argv[1] ?? '') === realpathSync(fileURLToPath(import.meta.url)); } catch { return false; } })();

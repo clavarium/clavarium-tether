@@ -615,3 +615,10 @@ test('an act that runs long: the agent keeps waiting, is told it may have been d
     assert.match(readFileSync(join(side2, 'answers.jsonl'), 'utf8'), /restarted while doing it -- it may have been done/);
     assert.equal(conn.calls.length, 0, 'never run twice');
 });
+
+test('loop 13: a failed answer is "Not done" only when nothing was done', async () => {
+    const { failed, MAY_BE_DONE } = await import('../server/mcp.mjs');
+    assert.match(failed('Web is at level watch: read only'), /^Not done: /);
+    assert.match(failed(MAY_BE_DONE), /^Uncertain, check before asking again: /);
+    assert.match(failed('Agenda: the calendar refused the change (500) -- done on 3 of 5 events; asking again does the rest'), /^Done in part: /);
+});

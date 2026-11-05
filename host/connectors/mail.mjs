@@ -310,7 +310,9 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
             if (write) {
                 const s = sessions.get(id);
                 if (s) { try { await s.imap.command('NOOP', 'the mailbox did not answer'); } catch { drop(id); } }
-                return await runOnce(target, ctx, fn);
+                /* A line lost in the middle of a write: it may have happened, said as on the other providers (loop 13). */
+                try { return await runOnce(target, ctx, fn); }
+                catch (e) { if (e instanceof Refused || !/did not answer in time|closed the connection|cannot be reached|sent more than/.test(e?.message ?? '')) throw e; no(`${target.title}: ${e.message} -- it may have been done: check before asking again`); }
             }
             try { return await runOnce(target, ctx, fn); }
             catch (e) { if (e instanceof Refused) throw e; return await runOnce(target, ctx, fn); /* dead connection: reopen once */ }
@@ -425,7 +427,7 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
                keeper sends it at its time. */
             if (!host) no('sending later needs the keeper running');
             const messageId = newId(user);
-            const raw = buildMessage({ ...m, from: user, messageId });
+            const raw = buildMessage({ ...m, from: user, messageId, keepBcc: true });   /* who it goes to, Bcc too, seen in Drafts (loop 13) */
             const box = await withImap(target, ctx, async (imap) => {
                 const drafts = await draftsOf(imap);
                 await imap.append(drafts, '\\Draft \\Seen', raw, 'the message could not be kept for later');

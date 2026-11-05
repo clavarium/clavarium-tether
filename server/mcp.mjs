@@ -99,6 +99,15 @@ export function notices(dir, { all = false, mark = true, last = 50 } = {}) {
 }
 export const sayNotices = (list) => list.map((n) => `- ${String(n.at ?? '').slice(0, 16).replace('T', ' ')} UTC${n.target?.title ? ` (${n.target.title})` : ''}: ${n.text}`).join('\n');
 
+/* How a failed answer is headed: "Not done" only when nothing was done; an act that may have happened,
+   or happened in part, is never said "not done" -- asking again would do it twice (loop 13). */
+export function failed(text) {
+    const t = String(text ?? '');
+    if (/may have been (done|sent)|MAY have been|it may have been|maybe sent/i.test(t)) return `Uncertain, check before asking again: ${t}`;
+    if (/done on \d+ of \d+|was changed, but|copied (to the Trash )?but|Sent, but/i.test(t)) return `Done in part: ${t}`;
+    return `Not done: ${t}`;
+}
+
 /* ---- MCP ---- */
 const S = (description) => ({ type: 'string', description });
 const CATS = { type: 'array', description: 'categories (labels): on Microsoft personal colour labels, invisible to the other participants; on Google and classic calendars written in the event itself, so its participants may see them, e.g. ["Internal"]; on update, [] clears them', items: { type: 'string' } };
@@ -223,7 +232,7 @@ export function serve(dir, { input = process.stdin, output = process.stdout, wai
             /* MCP over standard input cannot wake the agent: what happened later comes first in its next answer. */
             const fresh = notices(dir);
             const since = fresh.length ? `Since your last call:\n${sayNotices(fresh)}\n\n` : '';
-            return reply(m.id, { content: [{ type: 'text', text: `${since}${r.ok ? r.text : `Not done: ${r.text}`}` }], ...(r.ok ? {} : { isError: true }) });
+            return reply(m.id, { content: [{ type: 'text', text: `${since}${r.ok ? r.text : failed(r.text)}` }], ...(r.ok ? {} : { isError: true }) });
         }
         return reply(m.id, undefined, { code: -32601, message: `no method ${m.method}` });
     });
