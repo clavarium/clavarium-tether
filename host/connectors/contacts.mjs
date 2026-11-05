@@ -19,7 +19,10 @@ import { refreshAccess, thunderbird, PROVIDERS } from '../oauth.mjs';
 import { discover, cardOf, newCard, editCard, newUid, typeOf } from '../dav.mjs';
 
 const LIST_MAX = 50;
-const SCAN_MAX = 200;           /* contacts looked at when searching by name */
+const SCAN_MAX = 1000;          /* contacts looked at when searching by name (then it says so) */
+const TIMEOUT_MS = 60_000;
+/* A photo's type by its first bytes (a file name may lie or be absent). */
+const photoType = (b64, name) => { const head = Buffer.from(String(b64).slice(0, 16), 'base64'); return head[0] === 0x89 && head[1] === 0x50 ? 'PNG' : head[0] === 0xff && head[1] === 0xd8 ? 'JPEG' : /\.png$/i.test(String(name ?? '')) ? 'PNG' : 'JPEG'; };
 
 /* A vCard's useful fields. Lines fold with a leading space; unfold first. */
 function fromVcard(text) {
@@ -75,8 +78,8 @@ export function contacts({ fetch: fetchImpl = globalThis.fetch } = {}) {
             auth = `Basic ${Buffer.from(`${userOf(target)}:${password}`, 'utf8').toString('base64')}`;
         } else auth = `Bearer ${await access(target, ctx)}`;
         let res;
-        try { res = await fetchImpl(url, { method, headers: { Authorization: auth, ...headers }, ...(body !== undefined ? { body } : {}) }); }
-        catch (e) { if (e instanceof Refused) throw e; no(`${target.title}: cannot reach the address book`); }
+        try { res = await fetchImpl(url, { method, headers: { Authorization: auth, ...headers }, ...(body !== undefined ? { body } : {}), signal: AbortSignal.timeout(TIMEOUT_MS) }); }
+        catch (e) { if (e instanceof Refused) throw e; no(`${target.title}: ${e?.name === 'TimeoutError' ? 'the address book did not answer in time' : 'cannot reach the address book'}${['GET', 'PROPFIND', 'REPORT'].includes(method) ? '' : ' -- it may have been done: check before asking again'}`); }
         if (res.status === 401 || res.status === 403) no(providerOf(target) === 'carddav' ? `${target.title}: the address book refused the user or the password` : `${target.title}: not authorized -- reconnect the account (the contacts scope may be missing)`);
         return res;
     }
@@ -115,6 +118,14 @@ export function contacts({ fetch: fetchImpl = globalThis.fetch } = {}) {
     const hrefsIn = (xml) => [...xml.matchAll(/<[^>]*?:?href[^>]*>([\s\S]*?)<\/[^>]*?:?href>/gi)].map((m) => decodeXml(m[1].trim()));
 
     async function davList(target, ctx, { match } = {}) {
+        const out = []; const meta = { total: 0, looked: 0 };
+        await davScan(target, ctx, { match }, out, meta);
+        /* Never capped in silence (05-11): the list says how many there are; a search, how many it looked at. */
+        if (!match && meta.total > out.length && out.length >= LIST_MAX) out.push(`\n(Showing ${out.length} of ${meta.total} contacts — use contacts-search to find one.)`);
+        if (match && meta.looked < meta.total) out.push(`\n(Looked at the first ${meta.looked} of ${meta.total} contacts.)`);
+        return out;
+    }
+    async function davScan(target, ctx, { match } = {}, out, meta) {
         const base = await folderOf(target, ctx);
         const basePath = (() => { try { return new URL(base).pathname.replace(/\/+$/, ''); } catch { return ''; } })();
         const listed = await req(target, ctx, 'PROPFIND', base, { headers: { Depth: '1', 'Content-Type': 'application/xml; charset=utf-8' }, body: PROPFIND });
@@ -122,18 +133,23 @@ export function contacts({ fetch: fetchImpl = globalThis.fetch } = {}) {
         /* The collection lists itself and its contacts; keep the entries, whatever
            they are named (Google uses an id, not a .vcf suffix). A contact is any
            href under the collection that is not the collection itself. */
-        const hrefs = hrefsIn(await listed.text()).filter((h) => {
+        const all = hrefsIn(await listed.text()).filter((h) => {
             const clean = h.replace(/[?#].*$/, '');
             if (!clean || clean.endsWith('/')) return false;
             let p; try { p = new URL(h, base).pathname.replace(/\/+$/, ''); } catch { p = clean.replace(/\/+$/, ''); }
             return p !== basePath;
-        }).slice(0, match ? SCAN_MAX : LIST_MAX);
-        if (!hrefs.length) return [];
+        });
+        meta.total = all.length;
+        const hrefs = all.slice(0, match ? SCAN_MAX : LIST_MAX);
+        meta.looked = hrefs.length;
+        if (!hrefs.length) return;
+        for (let i = 0; i < hrefs.length && out.length < LIST_MAX; i += 200) await davChunk(target, ctx, base, hrefs.slice(i, i + 200), match, out);
+    }
+    async function davChunk(target, ctx, base, hrefs, match, out) {
         const body = `<?xml version="1.0" encoding="utf-8"?><C:addressbook-multiget xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:carddav"><D:prop><D:getetag/><C:address-data/></D:prop>${hrefs.map((h) => `<D:href>${h.replace(/&/g, '&amp;').replace(/</g, '&lt;')}</D:href>`).join('')}</C:addressbook-multiget>`;
         const res = await req(target, ctx, 'REPORT', base, { headers: { Depth: '1', 'Content-Type': 'application/xml; charset=utf-8' }, body });
         if (!res.ok) no(`${target.title}: the address book could not be read (${res.status})`);
         const xml = await res.text();
-        const out = [];
         const blocks = xml.split(/<[A-Za-z0-9]*:?response[\s>]/i).slice(1);
         for (const block of blocks) {
             const href = /<[^>]*?:?href[^>]*>([\s\S]*?)<\/[^>]*?:?href>/i.exec(block)?.[1]?.trim();
@@ -145,7 +161,6 @@ export function contacts({ fetch: fetchImpl = globalThis.fetch } = {}) {
             if (has && hit) out.push(brief(href || '(no id)', card));
             if (out.length >= LIST_MAX) break;
         }
-        return out;
     }
 
     const verbs = {
@@ -153,9 +168,11 @@ export function contacts({ fetch: fetchImpl = globalThis.fetch } = {}) {
         async 'contacts.list'(target, a, ctx) {
             const provider = providerOf(target);
             if (provider !== 'microsoft') { const items = await davList(target, ctx); const text = items.length ? items.join('\n') : 'No contact.'; return { text, size: Buffer.byteLength(text) }; }
-            const res = await req(target, ctx, 'GET', 'https://graph.microsoft.com/v1.0/me/contacts?$top=50&$select=id,displayName,givenName,surname,emailAddresses,mobilePhone,businessPhones,homePhones');
+            const res = await req(target, ctx, 'GET', `https://graph.microsoft.com/v1.0/me/contacts?$top=${LIST_MAX}&$count=true&$select=id,displayName,givenName,surname,emailAddresses,mobilePhone,businessPhones,homePhones`);
             if (!res.ok) no(`${target.title}: the address book could not be read (${res.status})`);
-            const items = ((await res.json()).value ?? []).map((c) => brief(c.id, fromMs(c)));
+            const j = await res.json();
+            const items = (j.value ?? []).map((c) => brief(c.id, fromMs(c)));
+            if (j['@odata.nextLink']) items.push(`\n(Showing the first ${items.length}${Number.isFinite(j['@odata.count']) ? ` of ${j['@odata.count']}` : ''} contacts — use contacts-search to find one.)`);
             const text = items.length ? items.join('\n') : 'No contact.';
             return { text, size: Buffer.byteLength(text) };
         },
@@ -169,15 +186,24 @@ export function contacts({ fetch: fetchImpl = globalThis.fetch } = {}) {
             let items;
             if (provider !== 'microsoft') items = await davList(target, ctx, { match: q });
             else {
-                const res = await req(target, ctx, 'GET', `https://graph.microsoft.com/v1.0/me/contacts?$top=${SCAN_MAX}&$select=id,displayName,givenName,surname,emailAddresses,mobilePhone,businessPhones,homePhones`);
-                if (!res.ok) no(`${target.title}: the address book could not be searched (${res.status})`);
-                items = ((await res.json()).value ?? [])
+                let url = `https://graph.microsoft.com/v1.0/me/contacts?$top=200&$select=id,displayName,givenName,surname,emailAddresses,mobilePhone,businessPhones,homePhones`;
+                const all = []; let more = false;
+                while (url) {
+                    const res = await req(target, ctx, 'GET', url);
+                    if (!res.ok) no(`${target.title}: the address book could not be searched (${res.status})`);
+                    const j = await res.json();
+                    all.push(...(j.value ?? []));
+                    url = j['@odata.nextLink'] && all.length < SCAN_MAX ? j['@odata.nextLink'] : null;
+                    more = Boolean(j['@odata.nextLink']) && !url;
+                }
+                items = all
                     .map((c) => ({ id: c.id, card: fromMs(c) }))
                     .filter(({ card }) => `${card.name} ${card.emails.join(' ')}`.toLowerCase().includes(q))
                     .slice(0, LIST_MAX)
                     .map(({ id, card }) => brief(id, card));
+                if (more) items.push(`\n(Looked at the first ${all.length} contacts.)`);
             }
-            const text = items.length ? items.join('\n') : 'No contact matches.';
+            const text = items.some((x) => !x.startsWith('\n')) ? items.join('\n') : ['No contact matches.', ...items].join('\n');
             return { text, size: Buffer.byteLength(text) };
         },
         /* One contact in full, by its id (the Microsoft id, or the Google CardDAV href). */
@@ -194,7 +220,17 @@ export function contacts({ fetch: fetchImpl = globalThis.fetch } = {}) {
             const res = await req(target, ctx, 'GET', `https://graph.microsoft.com/v1.0/me/contacts/${encodeURIComponent(id)}`);
             if (res.status === 404) no('no such contact');
             if (!res.ok) no(`${target.title}: that contact could not be read (${res.status})`);
-            const text = JSON.stringify(await res.json(), null, 1).slice(0, 64 * 1024);
+            /* Read as the CardDAV path reads (05-11: it was a raw JSON dump). */
+            const c = await res.json();
+            const addr = (x) => [x?.street, [x?.postalCode, x?.city].filter(Boolean).join(' '), x?.countryOrRegion].filter(Boolean).join(', ');
+            const lines = [c.displayName || [c.givenName, c.surname].filter(Boolean).join(' ') || '(no name)',
+                ...(c.emailAddresses ?? []).filter((e) => e?.address).map((e) => `  email: ${e.address}`),
+                ...(c.mobilePhone ? [`  tel (mobile): ${c.mobilePhone}`] : []), ...(c.businessPhones ?? []).filter(Boolean).map((t) => `  tel (work): ${t}`), ...(c.homePhones ?? []).filter(Boolean).map((t) => `  tel (home): ${t}`),
+                ...(c.companyName ? [`  company: ${c.companyName}${c.jobTitle ? `, ${c.jobTitle}` : ''}`] : []),
+                ...[['work', c.businessAddress], ['home', c.homeAddress]].filter(([, x]) => addr(x)).map(([k, x]) => `  address (${k}): ${addr(x)}`),
+                ...(c.birthday ? [`  birthday: ${String(c.birthday).slice(0, 10)}`] : []),
+                ...(c.personalNotes ? ['', String(c.personalNotes)] : []), '', `id: ${c.id ?? id}`];
+            const text = lines.join('\n').slice(0, 64 * 1024);
             return { text, size: Buffer.byteLength(text) };
         },
         /* Create a contact (Microsoft). Google means writing a vCard over CardDAV --
@@ -264,16 +300,19 @@ export function contacts({ fetch: fetchImpl = globalThis.fetch } = {}) {
         /* Delete a contact (Microsoft). */
         async 'contacts.delete'(target, a, ctx) {
             const id = String(a.id ?? '').trim(); if (!id) no('delete needs the contact id');
+            /* Who it was, said in the result (an id alone tells nobody what went). */
+            const who = await describe('contacts.delete', target, a, ctx).catch(() => null);
+            const named = who?.name || who?.email ? ` ${[who.name, who.email ? `<${who.email}>` : ''].filter(Boolean).join(' ')}` : '';
             if (providerOf(target) !== 'microsoft') {
                 const res = await req(target, ctx, 'DELETE', await urlOf(target, ctx, id));
                 if (res.status === 404) no('no such contact');
                 if (!res.ok) no(`${target.title}: the contact was not deleted (${res.status})`);
-                return { text: 'Deleted the contact.', size: 0 };
+                return { text: `Deleted the contact${named}.`, size: 0 };
             }
             const res = await req(target, ctx, 'DELETE', `https://graph.microsoft.com/v1.0/me/contacts/${encodeURIComponent(id)}`);
             if (res.status === 404) no('no such contact');
             if (!res.ok) no(`${target.title}: the contact was not deleted (${res.status})`);
-            return { text: 'Deleted the contact.', size: 0 };
+            return { text: `Deleted the contact${named}.`, size: 0 };
         },
         /* Set a contact's photo. An act. Microsoft takes the image bytes (Graph);
            a Google photo means editing the vCard (coming with contacts writing) --
@@ -285,11 +324,11 @@ export function contacts({ fetch: fetchImpl = globalThis.fetch } = {}) {
             if (!a.attach) no('attach needs the photo (its base64 bytes)');
             if (provider !== 'microsoft') {
                 const { url, etag, text } = await cardGet(target, ctx, id);
-                const type = /\.png$/i.test(String(a.attachName ?? '')) ? 'PNG' : 'JPEG';
+                const type = photoType(a.attach, a.attachName);
                 await cardPut(target, ctx, url, editCard(text, { photo: a.attach, photoType: type }), { etag });
                 return { text: `Set the photo on ${id}.`, size: 0 };
             }
-            const res = await req(target, ctx, 'PUT', `https://graph.microsoft.com/v1.0/me/contacts/${encodeURIComponent(id)}/photo/$value`, { headers: { 'Content-Type': 'image/jpeg' }, body: Buffer.from(String(a.attach), 'base64') });
+            const res = await req(target, ctx, 'PUT', `https://graph.microsoft.com/v1.0/me/contacts/${encodeURIComponent(id)}/photo/$value`, { headers: { 'Content-Type': photoType(a.attach, a.attachName) === 'PNG' ? 'image/png' : 'image/jpeg' }, body: Buffer.from(String(a.attach), 'base64') });
             if (res.status === 404) no('no such contact');
             if (!res.ok) no(`${target.title}: the photo was not set (${res.status})`);
             return { text: `Set the photo on ${id}.`, size: 0 };

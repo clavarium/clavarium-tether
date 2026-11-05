@@ -177,3 +177,40 @@ test('describe (Microsoft): the contact to delete is named on the card', async (
     assert.equal(about.name, 'Carol Diaz');
     assert.equal(about.email, 'carol@example.com');
 });
+
+/* ---------- the same promise on every address book (audit 05-11) ---------- */
+test('contacts.read (Microsoft) is readable like CardDAV, not a JSON dump', async () => {
+    const fetch = async (url) => (url.includes('login.microsoftonline.com') ? json({ access_token: 'T', expires_in: 3600 })
+        : json({ id: 'm1', displayName: 'Carol Martin', emailAddresses: [{ address: 'carol@example.com' }], mobilePhone: '+33 6', businessPhones: ['+33 1'], companyName: 'ACME', businessAddress: { street: '1 rue X', city: 'Paris', postalCode: '75001' } }));
+    const r = await contacts({ fetch }).run('contacts.read', M, { id: 'm1' }, ctx());
+    assert.match(r.text, /^Carol Martin\n  email: carol@example\.com\n  tel \(mobile\): \+33 6\n  tel \(work\): \+33 1\n  company: ACME\n  address \(work\): 1 rue X, 75001 Paris/);
+    assert.match(r.text, /id: m1$/); assert.doesNotMatch(r.text, /"displayName"/);
+});
+
+test('a list never caps in silence: CardDAV and Microsoft say how many there are', async () => {
+    const many = Array.from({ length: 60 }, (_, i) => `<D:response><D:href>/carddav/v1/principals/me/lists/default/p${i}.vcf</D:href></D:response>`).join('');
+    const data = (hrefs) => `<?xml version="1.0"?><D:multistatus xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:carddav">${hrefs.map((h) => `<D:response><D:href>${h}</D:href><D:propstat><D:prop><C:address-data>BEGIN:VCARD\r\nFN:${h.slice(-7, -4)}\r\nEND:VCARD\r\n</C:address-data></D:prop></D:propstat></D:response>`).join('')}</D:multistatus>`;
+    const fetch = async (url, o = {}) => {
+        if (url.includes('oauth2.googleapis.com/token')) return json({ access_token: 'T', expires_in: 3600 });
+        if (o.method === 'PROPFIND') return xml(`<?xml version="1.0"?><D:multistatus xmlns:D="DAV:">${many}</D:multistatus>`);
+        if (o.method === 'REPORT') return xml(data([...String(o.body).matchAll(/<D:href>([^<]+)<\/D:href>/g)].map((m) => m[1])));
+        return json({}, 404);
+    };
+    const r = await contacts({ fetch }).run('contacts.list', G, {}, ctx());
+    assert.match(r.text, /\(Showing 50 of 60 contacts — use contacts-search to find one\.\)/);
+    const found = await contacts({ fetch }).run('contacts.search', G, { text: 'p59' }, ctx());
+    assert.match(found.text, /p59/, 'a search looks past the first 50');
+    const ms = async (url) => (url.includes('login.microsoftonline.com') ? json({ access_token: 'T', expires_in: 3600 }) : json({ value: [{ id: 'm1', displayName: 'Carol' }], '@odata.count': 120, '@odata.nextLink': 'https://graph.microsoft.com/next' }));
+    assert.match((await contacts({ fetch: ms }).run('contacts.list', M, {}, ctx())).text, /\(Showing the first 1 of 120 contacts/);
+});
+
+test('a contact deleted is named in the result; a PNG photo is said PNG (by its bytes) on both providers', async () => {
+    const s = server();
+    const del = await contacts({ fetch: s.fetch }).run('contacts.delete', G, { id: '/carddav/v1/principals/me/lists/default/alice.vcf' }, ctx());
+    assert.equal(del.text, 'Deleted the contact Alice Smith <alice@example.com>.');
+    const png = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.from('rest')]).toString('base64');
+    const calls = [];
+    const fetch = async (url, o = {}) => { calls.push({ url, o }); return url.includes('login.microsoftonline.com') ? json({ access_token: 'T', expires_in: 3600 }) : new Response(null, { status: 204 }); };
+    await contacts({ fetch }).run('contacts.attach', M, { id: 'm1', attach: png }, ctx());
+    assert.equal(calls.find((c) => c.url.includes('/photo/')).o.headers['Content-Type'], 'image/png');
+});
