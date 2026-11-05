@@ -8,6 +8,11 @@ import { connect as netConnect } from 'node:net';
 import { connect as tlsConnect } from 'node:tls';
 
 const REPLY_MAX = 256 * 1024;
+/* How long to wait for the server's next words: a server that connects but never answers
+   (a dropped route, port 465 spoken to as plain text) fails cleanly, never hangs the keeper.
+   After DATA, a server may scan a large message: it gets longer. */
+const IDLE_MS = 30_000;
+const DATA_MS = 120_000;
 const b64 = (s) => Buffer.from(String(s), 'utf8').toString('base64');
 
 /* One address, checked: no line break (it would inject a command or a header), a
@@ -101,8 +106,8 @@ export function buildMessage({ from, to, cc = [], subject, body, text: given, ht
 }
 
 class Line {
-    #socket; #buffer = Buffer.alloc(0); #wake = null; #failure = null;
-    constructor(socket) { this.attach(socket); }
+    #socket; #buffer = Buffer.alloc(0); #wake = null; #failure = null; #idleMs;
+    constructor(socket, idleMs = IDLE_MS) { this.#idleMs = idleMs; this.attach(socket); }
     attach(socket) {
         this.#socket = socket; this.#buffer = Buffer.alloc(0);
         socket.on('data', (b) => { this.#buffer = Buffer.concat([this.#buffer, b]); if (this.#buffer.length > REPLY_MAX) this.#fail(new Error('the mail server sent too much')); this.#wake?.(); });
@@ -113,7 +118,7 @@ class Line {
     write(text) { this.#socket.write(text); }
     destroy() { try { this.#socket.destroy(); } catch { /* closing */ } }
     /* An SMTP reply: lines until one reads "NNN " (a space after the code, not "-"). */
-    async reply() {
+    async reply(wait) {
         for (;;) {
             const text = this.#buffer.toString('utf8');
             const lines = text.split('\r\n');
@@ -124,30 +129,46 @@ class Line {
                 return { code: Number(lines[idx].slice(0, 3)), lines: lines.slice(0, idx + 1) };
             }
             if (this.#failure) throw this.#failure;
-            await new Promise((r) => { this.#wake = () => { this.#wake = null; r(); }; });
+            await new Promise((r) => {
+                const timer = setTimeout(() => { this.#wake = null; this.#fail(new Error('the mail server did not answer in time')); r(); }, wait ?? this.#idleMs);
+                timer.unref?.();
+                this.#wake = () => { this.#wake = null; clearTimeout(timer); r(); };
+            });
         }
     }
 }
+/* An SMTP refusal: 5xx is final (sending again changes nothing), 4xx is for now. */
+const refusal = (text, code) => Object.assign(new Error(text), { code, permanent: code >= 500 && code < 600 });
 
 /* Send one message. `auth` is { xoauth2 } for a provider, or { user, password } for
    a classic box. `connect` opens the plain socket, `secure` upgrades it after
    STARTTLS (tls.connect wrapping the same socket). */
-export async function send({ host, port = 587, auth, from, to, cc = [], bcc = [], connect = netConnect, secure = (opts) => tlsConnect(opts), ...fields }) {
+export async function send({ host, port = 587, auth, from, to, cc = [], bcc = [], connect = netConnect, secure = (opts) => tlsConnect(opts), idleMs = IDLE_MS, dataMs = DATA_MS, ...fields }) {
     const sender = address(from);
     const list = (x) => (Array.isArray(x) ? x : [x]).filter(Boolean).map(address);
     const heads = list(to); const copies = list(cc); const hidden = list(bcc);
     /* Every address gets the message: To and Cc are in its headers, Bcc only here. */
     const rcpts = [...new Set([...heads, ...copies, ...hidden])];
     if (!heads.length) throw new Error('no recipient');
-    const plain = connect({ host, port });
-    const io = new Line(plain);
-    const step = async (cmd, code) => { if (cmd !== null) io.write(`${cmd}\r\n`); const r = await io.reply(); if (r.code !== code) throw new Error(`${(cmd ?? 'server').split(' ')[0]} refused: ${r.lines.at(-1) || r.code}`); return r; };
+    /* Port 465 is TLS from the first byte (implicit TLS, RFC 8314: most classic hosts offer it);
+       any other port starts plain and asks STARTTLS. Never a password over plain text. */
+    const implicit = Number(port) === 465;
+    const plain = implicit ? secure({ host, port, servername: host }) : connect({ host, port });
+    const io = new Line(plain, idleMs);
+    const step = async (cmd, codes) => {
+        if (cmd !== null) io.write(`${cmd}\r\n`);
+        const r = await io.reply();
+        if (![codes].flat().includes(r.code)) throw refusal(`${(cmd ?? 'server').split(' ')[0]} refused: ${r.lines.at(-1) || r.code}`, r.code);
+        return r;
+    };
     try {
         await step(null, 220);
         await step('EHLO tether', 250);
-        await step('STARTTLS', 220);
-        io.attach(secure({ socket: plain, servername: host }));
-        await step('EHLO tether', 250);
+        if (!implicit) {
+            await step('STARTTLS', 220);
+            io.attach(secure({ socket: plain, servername: host }));
+            await step('EHLO tether', 250);
+        }
         if (auth?.xoauth2) {
             io.write(`AUTH XOAUTH2 ${auth.xoauth2}\r\n`);
             let r = await io.reply();
@@ -159,14 +180,20 @@ export async function send({ host, port = 587, auth, from, to, cc = [], bcc = []
             await step(b64(auth?.password ?? ''), 235);
         }
         await step(`MAIL FROM:<${sender}>`, 250);
-        for (const r of rcpts) await step(`RCPT TO:<${r}>`, 250);
+        /* 251 "will forward" accepts too (RFC 5321). A refused address is named: nothing was sent. */
+        for (const r of rcpts) {
+            try { await step(`RCPT TO:<${r}>`, [250, 251]); }
+            catch (e) { throw Object.assign(new Error(`${r} was refused (${String(e.message).replace(/^RCPT refused: /, '')}) -- nothing was sent`), { code: e.code, permanent: e.permanent }); }
+        }
         await step('DATA', 354);
         /* A message already built (a scheduled one, kept until its time) goes as is. */
         const message = (fields.raw ? String(fields.raw).replace(/\r?\n/g, '\r\n') : buildMessage({ ...fields, from: sender, to: heads, cc: copies }))
             .split('\r\n').map((l) => (l.startsWith('.') ? `.${l}` : l)).join('\r\n'); /* dot-stuffing */
         io.write(`${message}\r\n.\r\n`);
-        const done = await io.reply();
-        if (done.code !== 250) throw new Error(`the message was not accepted: ${done.lines.at(-1) || done.code}`);
+        let done;
+        try { done = await io.reply(dataMs); }
+        catch (e) { throw Object.assign(new Error(`the mail server took the message but did not confirm it (${e.message}): it may have been sent -- check before sending again`), { unsure: true }); }
+        if (done.code !== 250) throw refusal(`the message was not accepted: ${done.lines.at(-1) || done.code}`, done.code);
         try { io.write('QUIT\r\n'); } catch { /* done */ }
         return rcpts;
     } finally { io.destroy(); }

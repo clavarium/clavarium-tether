@@ -13,6 +13,7 @@
  *   -- OR, a classic IMAP box (no provider): the same verbs, LOGIN instead of a token --
  *   target.config.host       the IMAP server, e.g. imap.example.com (config.port: 993)
  *   target.secrets.password  the NAME of the password in the host's secret store
+ *   target.config.smtpHost   its SMTP server (config.smtpPort: 587 with STARTTLS by default; 465 is TLS at once)
  *
  * Reads (level watch): mail.list, mail.read, mail.search. Acts (above watch):
  * mail.move, mail.flag, mail.delete, and mail.send / mail.reply / mail.forward
@@ -406,7 +407,11 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
         try {
             await smtpSend({ host: server, port, auth, from: user, to: m.to, cc: m.cc, bcc: m.bcc, raw,
                 ...(smtpConnect ? { connect: smtpConnect } : {}), ...(smtpSecure ? { secure: smtpSecure } : {}) });
-        } catch (e) { if (e instanceof Refused) throw e; no(`${target.title}: ${e?.message ?? 'the message could not be sent'}`); }
+        } catch (e) {
+            if (e instanceof Refused) throw e;
+            /* Said as the server said it; a final refusal (5xx) is marked, so a scheduled send stops trying. */
+            throw Object.assign(new Refused(`${target.title}: ${e?.message ?? 'the message could not be sent'}`), { permanent: e?.permanent === true, unsure: e?.unsure === true });
+        }
         const copies = m.cc.length ? ` (cc ${m.cc.join(', ')})` : '';
         /* A COPY IN SENT (05-11): Google and Microsoft keep one themselves; a classic box (IMAP/SMTP) does not --
            without it the mail leaves no trace in the person's mailbox. Read, in the folder the server marks Sent.

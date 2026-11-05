@@ -378,3 +378,64 @@ test('a mailbox signature keeps its lines in the store', async () => {
     st.putTarget({ id: 'm', title: 'Mail', kind: 'mail', connector: 'mail', config: { user: 'a@example.com', signature: 'Marc\r\n**ACME**' } });
     assert.equal(st.target('m').config.signature, 'Marc\n**ACME**');
 });
+
+/* ---------- SMTP, what can go wrong (audit 05-11) ---------- */
+import { send as smtpSendRaw } from '../host/smtp.mjs';
+function smtpScript(answer) {
+    const commands = []; let opened = null;
+    const make = (greet) => {
+        const s = new EventEmitter(); s.destroy = () => {};
+        const reply = (t) => { if (t) setImmediate(() => s.emit('data', Buffer.from(t))); };
+        s.write = (text) => {
+            if (/\r\n\.\r\n$/.test(text)) return reply(answer('.') ?? '250 queued\r\n');
+            const cmd = text.replace(/\r\n$/, ''); commands.push(cmd);
+            const own = answer(cmd);
+            if (own !== undefined) return reply(own);
+            if (/^EHLO/.test(cmd)) return reply('250-hi\r\n250 AUTH LOGIN\r\n');
+            if (cmd === 'STARTTLS') return reply('220 go\r\n');
+            if (cmd === 'AUTH LOGIN') { s.login = 1; return reply('334 go\r\n'); }
+            if (s.login === 1) { s.login = 2; return reply('334 go\r\n'); }
+            if (s.login === 2) { s.login = 0; return reply('235 ok\r\n'); }
+            if (cmd === 'DATA') return reply('354 go\r\n');
+            return reply('250 ok\r\n');
+        };
+        if (greet) reply('220 ready\r\n');
+        return s;
+    };
+    return { commands, opened: () => opened, connect: (o) => { opened = { plain: o }; return make(true); }, secure: (o) => { if (!o.socket) opened = { tls: o }; return make(!o.socket); } };
+}
+const SEND = { host: 'smtp.example.com', auth: { user: 'me@example.com', password: 'pw-secret' }, from: 'me@example.com', to: ['bob@example.com'], subject: 's', body: 'b' };
+
+test('smtp: port 465 is TLS from the first byte (no STARTTLS); 587 asks STARTTLS', async () => {
+    const a = smtpScript(() => undefined);
+    await smtpSendRaw({ ...SEND, port: 465, connect: a.connect, secure: a.secure });
+    assert.equal(a.opened().tls.port, 465, 'opened over TLS');
+    assert.ok(!a.commands.includes('STARTTLS'));
+    const b = smtpScript(() => undefined);
+    await smtpSendRaw({ ...SEND, port: 587, connect: b.connect, secure: b.secure });
+    assert.ok(b.opened().plain && b.commands.includes('STARTTLS'));
+});
+
+test('smtp: 251 accepts a recipient; a refused one is named and nothing is sent; 5xx is final', async () => {
+    const a = smtpScript((c) => (c === 'RCPT TO:<bob@example.com>' ? '251 will forward\r\n' : undefined));
+    assert.deepEqual(await smtpSendRaw({ ...SEND, connect: a.connect, secure: a.secure }), ['bob@example.com']);
+    const b = smtpScript((c) => (c === 'RCPT TO:<carol@example.com>' ? '550 5.1.1 no such user\r\n' : undefined));
+    const e = await smtpSendRaw({ ...SEND, to: ['bob@example.com', 'carol@example.com'], connect: b.connect, secure: b.secure }).catch((x) => x);
+    assert.match(e.message, /carol@example\.com was refused \(550 5\.1\.1 no such user\) -- nothing was sent/);
+    assert.equal(e.permanent, true);
+    assert.ok(!b.commands.includes('DATA'), 'never reached DATA');
+    const c = smtpScript((x) => (x === 'RCPT TO:<bob@example.com>' ? '451 try later\r\n' : undefined));
+    const e2 = await smtpSendRaw({ ...SEND, connect: c.connect, secure: c.secure }).catch((x) => x);
+    assert.equal(e2.permanent, false, 'a 4xx is for now');
+});
+
+test('smtp: a server that never answers fails in time; one silent after the message says it may have been sent', async () => {
+    const a = smtpScript((c) => (c === 'MAIL FROM:<me@example.com>' ? '' : undefined));
+    await assert.rejects(smtpSendRaw({ ...SEND, idleMs: 50, connect: a.connect, secure: a.secure }), /did not answer in time/);
+    const b = smtpScript((c) => (c === '.' ? '' : undefined));
+    const t0 = Date.now();
+    const e = await smtpSendRaw({ ...SEND, idleMs: 50, dataMs: 80, connect: b.connect, secure: b.secure }).catch((x) => x);
+    assert.match(e.message, /it may have been sent -- check before sending again/);
+    assert.equal(e.unsure, true);
+    assert.ok(Date.now() - t0 < 5000);
+});
