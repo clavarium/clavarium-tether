@@ -48,6 +48,11 @@ export function dayEnd(start, end) {
 const htmlText = (html) => String(html ?? '').replace(/<(script|style)[^>]*>[\s\S]*?<\/\1>/gi, '').replace(/<br\s*\/?>/gi, '\n').replace(/<\/(p|div|tr|li)>/gi, '\n').replace(/<[^>]+>/g, '')
     .replace(/&nbsp;/g, ' ').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, '&').replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
 const TIMEOUT_MS = 60_000;
+/* WHO IS "INSIDE" (calendar-attach, loop 7): a participant on the organiser's own domain -- unless that domain
+   is a public mailbox provider, where a namesake domain says nothing: there, everyone but the account is outside. */
+const PUBLIC_DOMAINS = new Set(['gmail.com', 'googlemail.com', 'outlook.com', 'outlook.fr', 'hotmail.com', 'hotmail.fr', 'live.com', 'live.fr', 'msn.com', 'yahoo.com', 'yahoo.fr', 'icloud.com', 'me.com', 'mac.com',
+    'aol.com', 'gmx.com', 'gmx.fr', 'gmx.de', 'web.de', 'proton.me', 'protonmail.com', 'orange.fr', 'wanadoo.fr', 'free.fr', 'laposte.net', 'sfr.fr', 'neuf.fr', 'bbox.fr', 'yandex.com', 'mail.com', 'zoho.com']);
+export const insideOf = (org) => { const o = String(org ?? '').toLowerCase(); const dom = o.split('@')[1] || ''; return (addr) => { const x = String(addr ?? '').toLowerCase(); return x === o || (Boolean(dom) && !PUBLIC_DOMAINS.has(dom) && x.endsWith(`@${dom}`)); }; };
 
 const API = {
     google: {
@@ -342,8 +347,8 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
             const name = String(a.attachName || 'attachment').replace(/[";:\r\n]/g, '');
             const { url, etag, text } = await davGet(target, ctx, a.id);
             const ev = eventOf(text);
-            const org = (ev.organizer || userOf(target)).toLowerCase(); const dom = org.split('@')[1] || '';
-            const externals = ev.attendees.map((x) => x.email.toLowerCase()).filter((x) => x !== org && !(dom && x.endsWith(`@${dom}`)));
+            const inside = insideOf(ev.organizer || userOf(target)); const me = userOf(target).toLowerCase();
+            const externals = ev.attendees.map((x) => x.email.toLowerCase()).filter((x) => x !== me && !inside(x));
             if (externals.length && a.share !== true) no(`${externals.length} external participant(s): ${externals.join(', ')}. The file would reach them with the event. Add --share (CLI) or share:true (MCP) to attach anyway.`);
             const lines = [...props(text, 'ATTACH').map((p) => p.raw), `ATTACH;FMTTYPE=application/octet-stream;ENCODING=BASE64;VALUE=BINARY;X-FILENAME=${name}:${bytes}`];
             await davPut(target, ctx, url, setProps(text, 'ATTACH', lines), { etag });
@@ -565,10 +570,10 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
             {
                 const j = await info.json().catch(() => ({}));
                 const org = (j.organizer?.emailAddress?.address || target.config?.user || '').toLowerCase();
-                const dom = org.split('@')[1] || '';
+                const inside = insideOf(org);
                 for (const at of (j.attendees ?? [])) {
                     const addr = at.emailAddress?.address; if (!addr || addr.toLowerCase() === org) continue;
-                    (dom && addr.toLowerCase().endsWith('@' + dom) ? internals : externals).push(addr);
+                    (inside(addr) ? internals : externals).push(addr);
                 }
             }
             if (externals.length && a.share !== true) {

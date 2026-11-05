@@ -495,3 +495,13 @@ test('loop 5: Microsoft attach refuses when the participants cannot be read (nev
     await assert.rejects(calendar({ fetch }).run('calendar.attach', M, { id: 'E1', attach: 'SGk=', attachName: 'a.pdf' }, ctx()), /participants could not be read \(503\) -- nothing was attached/);
     await assert.rejects(calendar({ fetch }).run('calendar.update', M, { id: 'E1', notes: 'new' }, ctx()), /could not be read to keep its Teams meeting/);
 });
+
+test('loop 7: on a public mailbox domain, a namesake address is outside -- a file to it needs share', async () => {
+    const { insideOf } = await import('../host/connectors/calendar.mjs');
+    const at = (user, domain) => [user, domain].join('@');   /* a public provider's domain, no real mailbox */
+    assert.equal(insideOf(at('me', 'gmail.com'))(at('stranger', 'gmail.com')), false);
+    assert.equal(insideOf('me@example.com')('colleague@example.com'), true);
+    assert.equal(insideOf(at('me', 'gmail.com'))(at('me', 'gmail.com')), true);
+    const s = graphCal(() => ORG({ organizer: { emailAddress: { address: at('me', 'outlook.com') } }, attendees: [{ emailAddress: { address: at('someone', 'outlook.com') } }] }));
+    await assert.rejects(calendar({ fetch: s.fetch }).run('calendar.attach', M, { id: 'E1', attach: 'SGk=', attachName: 'a.pdf' }, ctx()), /1 external participant\(s\): someone@outlook\.com/);
+});
