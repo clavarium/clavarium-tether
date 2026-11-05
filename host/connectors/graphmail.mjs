@@ -291,7 +291,8 @@ export function graphMail({ fetch: fetchImpl = globalThis.fetch, token }) {
         /* Every step before the send: a failure removes the half-made draft, or says it is left (#18, loop 5). */
         const undo = async (e, what) => {
             const gone = await call(target, ctx, 'DELETE', `/me/messages/${did}`).then(() => true, () => false);
-            no(`${e?.message ?? what} -- nothing was sent${gone ? '' : '; a half-made draft is left in Drafts'}`);
+            /* Before the send nothing can have left: never "may have been done" here (loop 49). */
+            no(`${String(e?.message ?? what).replace(/ -- it may have been done: check before asking again$/, '')} -- nothing was sent${gone ? '' : '; a half-made draft is left in Drafts'}`);
         };
         if (!keepAll) {
             let have;

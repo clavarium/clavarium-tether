@@ -303,3 +303,14 @@ test('loop 8: a move tells the new id; a delete whose folder cannot be checked s
     const g = fakeGraph({ 'DELETE /me/messages/X': { _status: 204 }, 'GET /me/messages/X': { parentFolderId: 'P' }, 'GET /me/mailFolders/deleteditems': { _status: 503 } });
     assert.match((await graphMail({ fetch: g.fetch, token: mint }).remove(target, { uid: 'X' }, ctx)).text, /unless it was in Deleted Items already \(that could not be checked\)/);
 });
+
+test('loop 49: a step before the send that timed out says nothing was sent, never "may have been done"', async () => {
+    const fetch = async (url, o = {}) => {
+        const path = url.replace('https://graph.microsoft.com/v1.0', '');
+        if (path === '/me/messages/AAA/createReply') return { ok: true, status: 200, text: async () => JSON.stringify({ id: 'R5', toRecipients: [{ emailAddress: { address: 'x@example.com' } }], body: { content: '' } }) };
+        if (o.method === 'PATCH') { const e = new Error('t'); e.name = 'TimeoutError'; throw e; }
+        return { ok: true, status: 204, text: async () => '' };
+    };
+    const e = await graphMail({ fetch, token: mint }).reply(target, { uid: 'AAA', body: 'ok' }, ctx).catch((x) => x);
+    assert.match(e.message, /did not answer in time -- nothing was sent$/);
+});

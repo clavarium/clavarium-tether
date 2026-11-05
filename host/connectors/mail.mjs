@@ -178,7 +178,8 @@ export function readBounce(raw) {
             recipients.push({ to: who, action: f('Action').toLowerCase(), status: f('Status'), diag: f('Diagnostic-Code').replace(/^[^;]*;\s*/, '').replace(/\s+/g, ' ') });
         }
     }
-    return { subject, recipients, delayed: /delay/i.test(subject) && !recipients.length, raw: text };
+    const date = Date.parse(headerOf(head, 'Date'));
+    return { subject, recipients, delayed: /delay/i.test(subject) && !recipients.length, raw: text, ...(Number.isFinite(date) ? { date } : {}) };
 }
 const isFinal = (r) => r.action === 'failed' || /^5\./.test(r.status);
 const isDelay = (r) => r.action === 'delayed' || /^4\./.test(r.status);
@@ -609,7 +610,11 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
         return out;
     }
     function match(rec, b) {
+        /* A report older than the mail is another mail's (loop 49). */
+        if (b.date && b.date < rec.sentAt - 10 * 60_000) return false;
         if (rec.id && b.raw.includes(rec.id)) return true;
+        /* Subject and recipient only for a mail with no id of its own (a Microsoft reply): never for one that has it. */
+        if (rec.id) return false;
         const subj = rec.subject.trim();
         /* The returned headers carry an accented subject encoded (=?UTF-8?...?=): read decoded. */
         b.plain ??= decodeWords(b.raw).replace(/\r?\n[ \t]+/g, ' ');

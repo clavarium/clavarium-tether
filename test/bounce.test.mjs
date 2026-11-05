@@ -427,3 +427,16 @@ test('loop 43: a scheduled mail on a box with no SMTP server is refused at once,
     await assert.rejects(conn.run('mail.send', box, { to: 'b@example.com', subject: 's', body: 'b', at: new Date(Date.now() + 3600_000).toISOString() }, ctx()), /set its SMTP server/);
     assert.equal(s.folders.Drafts.msgs.size, 0);
 });
+
+test('loop 49: an older bounce of a mail with the same subject is never told against a new one', async () => {
+    const clock = { t: Date.parse('2026-11-05T09:00:00Z') };
+    const s = imapBox(); const m = smtp();
+    const conn = mail({ connect: s.connect, smtpConnect: m.connect, smtpSecure: m.secure });
+    const h = hostOf(BOX, clock); conn.wake(h.hand);
+    s.put('INBOX', dsn('<old@example.com>', 'bob@example.com').replace('Date: Thu, 05 Nov 2026 10:00:00 +0000', 'Date: Thu, 05 Nov 2026 07:00:00 +0000'));
+    await conn.run('mail.send', BOX, { to: 'bob@example.com', subject: 'Devis', body: 'x' }, ctx());
+    clock.t += 3 * 60_000; await conn.tick();
+    assert.equal(h.notices.length, 0, 'the old report is another mail\'s');
+    const { failed } = await import('../server/mcp.mjs');
+    assert.match(failed('Outlook: Microsoft did not answer in time -- nothing was sent'), /^Not done/);
+});
