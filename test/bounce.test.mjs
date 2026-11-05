@@ -34,6 +34,8 @@ function imapBox({ hooks = {} } = {}) {
             const line = text.replace(/\r\n$/, ''); const sp = line.indexOf(' ');
             const tag = line.slice(0, sp); const cmd = line.slice(sp + 1);
             commands.push(cmd);
+            if (hooks.cmd?.(cmd) === 'cut') { socket.dead = true; setImmediate(() => socket.emit('close')); return; }
+            if (/^UID FETCH \d+ \(BODYSTRUCTURE/.test(cmd) && hooks.structure) return send(`* 1 FETCH (UID 1 BODYSTRUCTURE ${hooks.structure} BODY[HEADER.FIELDS (FROM SUBJECT DATE)] {20}\r\nSubject: Devis\r\n\r\n\r\n)\r\n${tag} OK\r\n`);
             const ap = /^APPEND "([^"]*)"/.exec(cmd);
             if (ap) { pending = { tag, box: ap[1] }; return send('+ Ready\r\n'); }
             if (cmd.startsWith('LIST')) return send(`${Object.entries(folders).map(([n, f]) => `* LIST (${f.flags}) "/" "${n}"\r\n`).join('')}${tag} OK\r\n`);
@@ -352,4 +354,20 @@ test('loop 26: a reply to a message with a large file is not refused; a schedule
     clock.t += 180_000; await c2.tick();
     assert.equal(h.notices[0]?.kind, 'mail.later-failed');
     assert.match(h.notices[0].text, /its mailbox is gone/);
+});
+
+test('loop 28: a wrong uid makes no Trash folder; a forward card names the files on IMAP too', async () => {
+    const s = imapBox();
+    delete s.folders.Trash;
+    await assert.rejects(mail({ connect: s.connect }).run('mail.delete', BOX, { uid: '999' }, ctx()), /no message #999/);
+    assert.ok(!s.commands.some((c) => c.startsWith('CREATE')), 'nothing made');
+});
+
+test('loop 28: an IMAP mark whose line is lost says it may have been done; the forward card lists the files', async () => {
+    const s = imapBox({ hooks: { cmd: (c) => (c.startsWith('UID STORE') ? 'cut' : undefined) } });
+    s.put('INBOX', 'Subject: a\r\n\r\nx');
+    await assert.rejects(mail({ connect: s.connect }).run('mail.flag', BOX, { uid: '100', flag: 'read' }, ctx()), /it may have been done/);
+    const t = imapBox({ hooks: { structure: '(("text" "plain" NIL NIL NIL "7bit" 5 1)("application" "pdf" ("name" "devis.pdf") NIL NIL "base64" 400 NIL ("attachment" ("filename" "devis.pdf"))) "mixed")' } });
+    const about = await mail({ connect: t.connect }).describe('mail.forward', BOX, { uid: '1', to: 'x@example.com' }, ctx());
+    assert.deepEqual(about.files, [{ name: 'devis.pdf' }]);
 });

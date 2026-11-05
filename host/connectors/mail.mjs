@@ -801,7 +801,7 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
                 await mustHave(imap, uid, boxOf(target, a.mailbox));
                 await imap.command(`UID STORE ${uid} ${op}FLAGS (${flag})`, 'that message could not be marked');
                 return { text: `Marked #${uid} ${String(a.flag).toLowerCase().trim()}.`, size: 0 };
-            });
+            }, { write: true });   /* a write: a lost line says "may have been done", as on Microsoft (loop 28) */
         },
         /* Delete a message. An act. Over IMAP it goes to the Trash folder (the one the server marks \Trash):
            UID MOVE when the server has MOVE, else UID COPY there, then \Deleted and UID EXPUNGE of that one uid.
@@ -812,9 +812,10 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
             const uid = numUid(a.uid);
             return withImap(target, ctx, async (imap) => {
                 const box = boxOf(target, a.mailbox);
-                const trash = await trashOf(imap);
+                /* The message first: a wrong uid makes nothing, not even a Trash folder (loop 28). */
                 await imap.command(`SELECT ${quoted(box)}`, 'that mailbox could not be opened');
                 await mustHave(imap, uid, box);
+                const trash = await trashOf(imap);
                 if (trash.name.toLowerCase() === box.toLowerCase()) {
                     await imap.command(`UID STORE ${uid} +FLAGS (\\Deleted)`, 'that message could not be deleted');
                     await imap.command(`UID EXPUNGE ${uid}`, `that message was marked deleted, but could not be removed now: the next clean-up of ${trash.shown} by any mail program removes it for good`);
@@ -882,10 +883,12 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
         const uid = numUid(a.uid);
         return withImap(target, ctx, async (imap) => {
             await imap.command(`EXAMINE ${quoted(boxOf(target, verb === 'mail.move' ? a.from : a.mailbox))}`, 'that mailbox could not be opened');
-            const lines = await imap.command(`UID FETCH ${uid} (BODY.PEEK[HEADER.FIELDS (FROM SUBJECT DATE)])`, 'that message could not be read');
+            const lines = await imap.command(`UID FETCH ${uid} (BODYSTRUCTURE BODY.PEEK[HEADER.FIELDS (FROM SUBJECT DATE)])`, 'that message could not be read');
             const l = lines.find((x) => /^\* \d+ FETCH/i.test(x)) ?? '';
             const block = l.slice(l.indexOf('\n') + 1);
-            return { from: decodeWords(headerOf(block, 'From')), subject: decodeWords(headerOf(block, 'Subject')), date: headerOf(block, 'Date') };
+            /* Its files by name, as Microsoft's card shows them: a person sees what a forward takes along (loop 28). */
+            const names = [...new Set([...l.matchAll(/"(?:file)?name\*?" "([^"]+)"/gi)].map((m) => decodeWords(m[1])))];
+            return { from: decodeWords(headerOf(block, 'From')), subject: decodeWords(headerOf(block, 'Subject')), date: headerOf(block, 'Date'), ...(names.length ? { files: names.map((name) => ({ name })) } : {}) };
         });
     }
 

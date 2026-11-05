@@ -353,8 +353,8 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
             if (!res.ok) no(`${target.title}: the event was not deleted (${res.status})`);
             const me = userOf(target).toLowerCase();
             const others = (ev?.attendees ?? []).map((x) => x.email).filter((x) => x.toLowerCase() !== me);
-            if (!others.length) return { text: 'Deleted the event.', size: 0 };
             const mine = !ev.organizer || ev.organizer.toLowerCase() === me;
+            if (!others.length && mine) return { text: 'Deleted the event.', size: 0 };
             const sched = await schedules(target, ctx);
             if (!mine) return { text: `Deleted the event from this calendar. You were invited (organiser ${ev.organizer}): the organiser is not told that you will not come${sched ? ' (this server may send them a note)' : ''} -- calendar-respond decline is the way to say no.`, size: 0 };
             return { text: `Deleted the event.${sched ? ` The calendar server sends a cancellation to ${others.join(', ')}.` : ` Invitees (${others.join(', ')}): ${NOT_TOLD.replace('invitations', 'cancellations')}.`}`, size: 0 };
@@ -396,8 +396,8 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
             if (count(back.text) <= count(text)) no(`${target.title}: the calendar did not keep the file (this server takes no file inside an event) -- send it by mail instead`);
             /* It reaches the others only through the server's scheduling (loop 2: it was said sent regardless). */
             const others = ev.attendees.map((x) => x.email).filter((x) => x.toLowerCase() !== userOf(target).toLowerCase());
-            const who = !others.length ? ' Visible to you alone (the event has no participants).'
-                : !mine ? ` You are not the organiser (${ev.organizer}): the file stays on this calendar, the others do not receive it.`
+            const who = !mine ? ` You are not the organiser (${ev.organizer}): the file stays on this calendar, the others do not receive it.`
+                : !others.length ? ' Visible to you alone (the event has no participants).'
                 : (await schedules(target, ctx)) ? ` The calendar server sends it with the event to ${others.join(', ')}.` : ` Kept in the event on this calendar; ${others.join(', ')} do NOT receive it (this server does not schedule) -- send it by mail if they need it.`;
             return { text: `Attached ${name} to the event.${who}`, size: 0 };
         },
@@ -441,7 +441,10 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
                 n++;
             }
             if (!n) no(`${target.title}: no event wears the category "${a.name}"`);
-            return { text: `${to === null ? `Removed the category "${a.name}" from` : `Renamed "${a.name}" to "${String(to).trim()}" on`} ${n} event${n === 1 ? '' : 's'}, from a year ago to two years ahead (events outside that window keep it).`, size: 0 };
+            /* Dates of a series changed on their own carry their own labels: not changed here, said (loop 28). */
+            const own = wearing.reduce((k, ev) => k + ev.text.replace(/\r?\n[ \t]/g, '').split(/BEGIN:VEVENT/i).slice(2).filter((b) => /^RECURRENCE-ID/im.test(b) && new RegExp(`^CATEGORIES[^:]*:.*\\b${want.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'im').test(b)).length, 0);
+            const ownSaid = own ? ` ${own} date${own === 1 ? '' : 's'} of a series changed on ${own === 1 ? 'its' : 'their'} own keep${own === 1 ? 's' : ''} it.` : '';
+            return { text: `${to === null ? `Removed the category "${a.name}" from` : `Renamed "${a.name}" to "${String(to).trim()}" on`} ${n} event${n === 1 ? '' : 's'}, from a year ago to two years ahead (events outside that window keep it).${ownSaid}`, size: 0 };
         },
         /* Others' availability: the scheduling outbox (RFC 6638), where the server
            has one; it answers busy blocks only. */
@@ -913,7 +916,7 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
             const effects = [];
             const now = a.with !== undefined ? String(a.with).split(/[,;]/).map((x) => x.trim()).filter(Boolean) : ev.attendees;
             const gone = a.with !== undefined ? ev.attendees.filter((x) => !now.some((y) => y.toLowerCase() === x.toLowerCase())) : [];
-            if (verb === 'calendar.delete' && ev.attendees.length) effects.push(ev.mine ? (sent ? `a cancellation goes to ${ev.attendees.join(', ')}` : `the invitees (${ev.attendees.join(', ')}) are NOT told`) : 'the organiser is not told that you will not come (decline tells them)');
+            if (verb === 'calendar.delete' && (ev.attendees.length || !ev.mine)) effects.push(ev.mine ? (sent ? `a cancellation goes to ${ev.attendees.join(', ')}` : `the invitees (${ev.attendees.join(', ')}) are NOT told`) : 'the organiser is not told that you will not come (decline tells them)');
             const seen = ['title', 'start', 'end', 'where', 'notes', 'with', 'online'].some((k) => a[k] !== undefined) || (provider !== 'microsoft' && a.categories !== undefined);
             if (verb === 'calendar.update' && ev.mine && seen && (now.length || gone.length)) {
                 effects.push(sent ? `the update goes to ${now.join(', ') || 'nobody'}` : `the invitees (${[...now, ...gone].join(', ')}) are NOT told`);

@@ -30,7 +30,9 @@ export function cardOf(verb, a = {}, target = {}) {
         case 'calendar': {
             const base = { kind: 'calendar', action: act, self };
             if (act === 'create' || act === 'update') {
-                return drop({ ...base, id: a.id, title: a.title, start: a.start, end: a.end, where: a.where, with: list(a.with), online: a.online,
+                /* Microsoft adds a Teams meeting by default once there are invitees: shown before it is approved (loop 28). */
+                const teams = a.online === undefined && act === 'create' && target?.config?.provider === 'microsoft' && list(a.with).length ? 'teams (by default)' : a.online;
+                return drop({ ...base, id: a.id, title: a.title, start: a.start, end: a.end, where: a.where, with: list(a.with), online: teams,
                     notes: a.notes === undefined ? undefined : short(a.notes, 300), categories: Array.isArray(a.categories) ? a.categories : undefined });
             }
             if (act === 'respond') return drop({ ...base, id: a.id, answer: a.answer, comment: a.comment });

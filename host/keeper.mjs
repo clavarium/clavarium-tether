@@ -332,6 +332,9 @@ export function keeper(dir, { sides = () => [], ask, notify, secrets = async () 
                 if (holding.has(q.id)) { write(side, { ask: q.id, ok: false, text: 'not answered: its keeper restarted; nothing was done, ask again' }); continue; }
                 if (!(now() - Date.parse(q.at) < TOO_LATE_MS)) { write(side, { ask: q.id, ok: false, text: 'too late: this ask waited too long and was not done' }); continue; }
                 busy.add(key);
+                /* Taken: the agent keeps waiting while the keeper works out what to ask a person (loop 28: a late pickup
+                   was answered "nothing was done" while its card still reached the person). Never the person's hold. */
+                write(side, { ask: q.id, held: true, taken: true, until: new Date(now() + 2 * DESCRIBE_MS + 30_000).toISOString() });
                 act(oneLine(q.op, 40), withFile(side.dir, q.args && typeof q.args === 'object' ? q.args : {}), side.who, { held: (request) => write(side, { ask: q.id, held: true, until: request.until, request: request.id }), started: ({ until }) => write(side, { ask: q.id, held: true, running: true, until }) })
                     .then((r) => write(side, { ask: q.id, ok: r.ok, text: r.text, ...(r.data && !Array.isArray(r.data) ? { data: r.data } : {}) }))
                     .catch((e) => write(side, { ask: q.id, ok: false, text: `failed: ${e?.message ?? e}` }))

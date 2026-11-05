@@ -635,3 +635,28 @@ test('loop 18: a journal that cannot be written never turns a done act into "not
     assert.equal(r.ok, true);
     assert.match(r.text, /did terminal\.run\n\(The journal could not record this act\.\)/);
 });
+
+test('loop 28: an ask taken late is marked taken at once, so its agent keeps waiting while a card is made', async () => {
+    const side = tmp();
+    const slowCard = { ...fake(), describe: () => new Promise((r) => setTimeout(() => r({ title: 'x' }), 300)) };
+    const k = keeper(tmp(), { sides: () => [{ dir: side, who: BOT }], connectors: { fake: slowCard } });
+    k.store.putTarget({ id: 'web', title: 'Web', kind: 'ssh', connector: 'fake' });
+    k.store.grant('web', BOT.id, 'propose');
+    const timer = setInterval(() => k.pump(), 10);
+    try {
+        let heldUntil = null;
+        const p = ask(side, 'terminal.run', { target: 'web', command: 'ls' }, { wait: 100, every: 10, onHeld: (u) => { heldUntil = u; } });
+        while (!k.approvals().length) await new Promise((r) => setTimeout(r, 10));
+        k.decide(k.approvals()[0].id, 'yes', ME);
+        const r = await p;
+        assert.equal(r.ok, true, 'never "nobody keeps these targets" while the card was being made');
+        assert.ok(heldUntil, 'then told a person decides');
+        assert.ok(readFileSync(join(side, 'answers.jsonl'), 'utf8').includes('"taken":true'));
+    } finally { clearInterval(timer); }
+});
+
+test('loop 28: a Microsoft create card shows the Teams meeting it adds by default', async () => {
+    const { cardOf } = await import('../server/cards.mjs');
+    assert.equal(cardOf('calendar.create', { title: 'T', start: 's', end: 'e', with: 'a@example.com' }, { config: { provider: 'microsoft' } }).online, 'teams (by default)');
+    assert.equal(cardOf('calendar.create', { title: 'T', start: 's', end: 'e', with: 'a@example.com' }, { config: { caldav: 'x' } }).online, undefined);
+});

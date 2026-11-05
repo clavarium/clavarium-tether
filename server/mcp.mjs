@@ -71,6 +71,7 @@ export async function ask(dir, verb, args = {}, { wait = WAIT_MS, grace = GRACE_
             const end = Date.parse(hold.until);
             until = (Number.isFinite(end) ? end : Date.now()) + grace;
             if (hold.running === true) running = true;
+            else if (hold.taken === true) { /* the keeper has it: wait, no person yet */ }
             else {
                 const first = !held;
                 held = true;

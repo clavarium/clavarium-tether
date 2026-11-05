@@ -343,3 +343,20 @@ test('loop 26: invitees split on ; as on the card; attach on a series says the w
     s.files.set('/cal/me/work/r.ics', { text: ev('r', 'Point', '20301104T080000Z', 'RRULE:FREQ=WEEKLY;COUNT=4\r\n'), etag: '"1"' });
     assert.match((await run(s, 'calendar.attach', { id: '/cal/me/work/r.ics', attach: 'SGk=', attachName: 'a.pdf' })).text, /WHOLE series/);
 });
+
+test('loop 28: deleting an invitation where you are the only attendee says the organiser is not told (result and card)', async () => {
+    const s = davServer();
+    s.files.set('/cal/me/work/i.ics', { text: ev('i', 'Invit', '20301104T080000Z', 'ORGANIZER:mailto:boss@example.com\r\nATTENDEE;PARTSTAT=NEEDS-ACTION:mailto:me@example.com\r\n'), etag: '"1"' });
+    const about = await calendar({ fetch: s.fetch }).describe('calendar.delete', T, { id: '/cal/me/work/i.ics' }, ctx());
+    assert.ok(about.effects.some((x) => /organiser is not told/.test(x)));
+    assert.match((await run(s, 'calendar.delete', { id: '/cal/me/work/i.ics' })).text, /You were invited \(organiser boss@example\.com\)/);
+});
+
+test('loop 28: a category rename says dates of a series changed on their own keep it', async () => {
+    const s = davServer();
+    const text = ev('r', 'Point', '20301104T080000Z', 'RRULE:FREQ=WEEKLY;COUNT=4\r\nCATEGORIES:Client\r\n')
+        .replace('END:VCALENDAR', 'BEGIN:VEVENT\r\nUID:r\r\nRECURRENCE-ID:20301111T080000Z\r\nSUMMARY:x\r\nDTSTART:20301112T080000Z\r\nCATEGORIES:Client\r\nEND:VEVENT\r\nEND:VCALENDAR');
+    s.files.set('/cal/me/work/r.ics', { text, etag: '"1"' });
+    const r = await run(s, 'calendar.category-rename', { name: 'Client', to: 'Clients' });
+    assert.match(r.text, /1 date of a series changed on its own keeps it\./);
+});
