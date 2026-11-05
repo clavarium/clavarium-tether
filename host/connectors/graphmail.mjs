@@ -304,7 +304,8 @@ export function graphMail({ fetch: fetchImpl = globalThis.fetch, token }) {
         const joined = names.length ? ` with ${names.join(', ')}` : '';
         if (drafted(a)) return { text: `Draft saved in Drafts, to ${to.join(', ')}${joined} — not sent.`, size: 0 };
         /* The send refused: the prepared message stays in Drafts, and that is said (a send that timed out may have left: not removed). */
-        try { await call(target, ctx, 'POST', `/me/messages/${did}/send`); } catch (e) { no(`${e?.message ?? 'the message was not sent'}; the prepared message is in Drafts`); }
+        try { await call(target, ctx, 'POST', `/me/messages/${did}/send`); }
+        catch (e) { const unsure = /may have been done/.test(e?.message ?? ''); no(`${e?.message ?? 'the message was not sent'}${unsure ? '' : '; the prepared message is in Drafts'}`); }
         const watch = { id: d.internetMessageId || null, to: [...to, ...cc, ...listOf(a.bcc)], subject: d.subject ?? '', from: at?.getTime() };
         if (at) return { text: scheduled(at, to, joined), size: 0, watch };
         return { text: `Sent to ${to.join(', ')}${copies(cc)}${joined} (accepted by Microsoft).`, size: 0, watch };

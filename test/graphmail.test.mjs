@@ -285,3 +285,14 @@ test('loop 5: a forward whose files cannot be sorted, or a send refused, never l
     const g = fakeGraph({ 'POST /me/messages/AAA/createReply': { id: 'R3', toRecipients: [{ emailAddress: { address: 'x@example.com' } }], body: { content: '' } }, 'PATCH /me/messages/R3': {} });
     await assert.rejects(graphMail({ fetch: g.fetch, token: mint }).reply(target, { uid: 'AAA', body: 'ok' }, ctx), /the prepared message is in Drafts$/);
 });
+
+test('loop 6: a send that timed out never says the message is still in Drafts (it may have left)', async () => {
+    const fetch = async (url, o = {}) => {
+        const path = url.replace('https://graph.microsoft.com/v1.0', '');
+        if (path === '/me/messages/AAA/createReply') return { ok: true, status: 200, text: async () => JSON.stringify({ id: 'R4', toRecipients: [{ emailAddress: { address: 'x@example.com' } }], body: { content: '' } }) };
+        if (path.endsWith('/send')) { const e = new Error('timeout'); e.name = 'TimeoutError'; throw e; }
+        return { ok: true, status: 200, text: async () => '{}' };
+    };
+    const e = await graphMail({ fetch, token: mint }).reply(target, { uid: 'AAA', body: 'ok' }, ctx).catch((x) => x);
+    assert.match(e.message, /may have been done: check before asking again$/);
+});
