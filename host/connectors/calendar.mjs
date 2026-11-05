@@ -378,11 +378,13 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
             if (a.color !== undefined) no(`${target.title}: this calendar keeps no colour for categories`);
             if (to !== null && !String(to ?? '').trim()) no('rename needs a new name (--to)');
             let n = 0;
-            for (const ev of await davEvents(target, ctx, { ...yearAround(), expand: false })) {
+            const wearing = (await davEvents(target, ctx, { ...yearAround(), expand: false })).filter((ev) => eventOf(ev.text).categories.some((c) => c.toLowerCase() === want));
+            for (const ev of wearing) {
                 const cats = eventOf(ev.text).categories;
-                if (!cats.some((c) => c.toLowerCase() === want)) continue;
                 const next = [...new Set(cats.flatMap((c) => (c.toLowerCase() === want ? (to === null ? [] : [String(to).trim()]) : [c])))];
-                await davPut(target, ctx, new URL(ev.href, await folderOf(target, ctx)).href, setProps(ev.text, 'CATEGORIES', next.length ? [`CATEGORIES:${next.map(escapeText).join(',')}`] : []), { etag: ev.etag });
+                /* One event at a time: a failure in the middle says how far it went (#23); asking again does the rest. */
+                try { await davPut(target, ctx, new URL(ev.href, await folderOf(target, ctx)).href, setProps(ev.text, 'CATEGORIES', next.length ? [`CATEGORIES:${next.map(escapeText).join(',')}`] : []), { etag: ev.etag }); }
+                catch (e) { if (!n) throw e; no(`${e?.message ?? 'an event was not changed'} -- done on ${n} of ${wearing.length} events; asking again does the rest`); }
                 n++;
             }
             if (!n) no(`${target.title}: no event wears the category "${a.name}"`);

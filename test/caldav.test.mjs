@@ -208,3 +208,10 @@ test('CalDAV: the card says what the act does to the others', async () => {
     const del = await calendar({ fetch: s.fetch }).describe('calendar.delete', T, { id: '/cal/me/work/a.ics' }, ctx());
     assert.deepEqual(del.effects, ['the organiser is NOT told (decline tells them)']);
 });
+
+test('CalDAV: a category renamed on several events that fails in the middle says how far it went (#23)', async () => {
+    const s = davServer();
+    let puts = 0;
+    const flaky = { ...s, fetch: async (url, o = {}) => ((o.method === 'PUT' && ++puts === 2) ? new Response('', { status: 500 }) : s.fetch(url, o)) };
+    await assert.rejects(run(flaky, 'calendar.category-rename', { name: 'client', to: 'Clients' }), /done on 1 of 2 events; asking again does the rest/);
+});
