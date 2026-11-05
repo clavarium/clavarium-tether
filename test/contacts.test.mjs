@@ -235,3 +235,9 @@ test('loop 10: removing a phone a Microsoft contact does not have is refused, as
     const fetch = async (url, o = {}) => (url.includes('login.microsoftonline.com') ? json({ access_token: 'T', expires_in: 3600 }) : (o.method || 'GET') === 'GET' ? json({ displayName: 'C', businessPhones: [] }) : new Response(null, { status: 204 }));
     await assert.rejects(contacts({ fetch }).run('contacts.update', M, { id: 'm1', phone: '', type: 'work' }, ctx()), /no work phone to remove/);
 });
+
+test('loop 43: a 4th email on Microsoft is named on the card before (the last one goes)', async () => {
+    const fetch = async (url) => (url.includes('login.microsoftonline.com') ? json({ access_token: 'T', expires_in: 3600 }) : json({ displayName: 'C', emailAddresses: [{ address: 'a@example.com' }, { address: 'b@example.com' }, { address: 'c@example.com' }] }));
+    const about = await contacts({ fetch }).describe('contacts.update', M, { id: 'm1', email: 'd@example.com' }, ctx());
+    assert.deepEqual(about.effects, ['removes c@example.com (Microsoft keeps 3 emails)']);
+});

@@ -356,7 +356,10 @@ export function contacts({ fetch: fetchImpl = globalThis.fetch } = {}) {
         const res = await req(target, ctx, 'GET', `https://graph.microsoft.com/v1.0/me/contacts/${encodeURIComponent(id)}?$select=displayName,givenName,surname,emailAddresses,mobilePhone,businessPhones,homePhones`);
         if (!res.ok) return null;
         const c = fromMs(await res.json());
-        return { name: c.name, email: c.emails[0] ?? '', emails: c.emails, phones: c.tels };
+        /* Microsoft keeps 3 emails: a new one pushes the last out -- on the card before it is approved (loop 43). */
+        const e = String(a.email ?? '').trim().toLowerCase();
+        const out = verb === 'contacts.update' && e && c.emails.length >= 3 && !c.emails.some((x) => x.toLowerCase() === e) ? c.emails.slice(2) : [];
+        return { name: c.name, email: c.emails[0] ?? '', emails: c.emails, phones: c.tels, ...(out.length ? { effects: [`removes ${out.join(', ')} (Microsoft keeps 3 emails)`] } : {}) };
     }
 
     return {

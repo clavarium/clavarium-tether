@@ -420,3 +420,10 @@ test('loop 38: a scheduled mail sent whose draft cannot be removed is told, so i
     assert.equal(m.messages.length, 1);
     assert.ok(h.notices.some((n) => n.kind === 'mail.later-draft-kept' && /do not send it again/.test(n.text)));
 });
+
+test('loop 43: a scheduled mail on a box with no SMTP server is refused at once, never "Scheduled"', async () => {
+    const s = imapBox(); const conn = mail({ connect: s.connect }); conn.wake(hostOf(BOX, { t: Date.now() }).hand);
+    const box = { ...BOX, config: { host: 'imap.example.com', user: 'me@example.com' } };
+    await assert.rejects(conn.run('mail.send', box, { to: 'b@example.com', subject: 's', body: 'b', at: new Date(Date.now() + 3600_000).toISOString() }, ctx()), /set its SMTP server/);
+    assert.equal(s.folders.Drafts.msgs.size, 0);
+});

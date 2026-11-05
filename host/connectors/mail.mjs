@@ -426,6 +426,12 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
                Drafts (where a person sees it, and deletes it to cancel), and the
                keeper sends it at its time. */
             if (!host) no('sending later needs the keeper running');
+            /* What it will need to leave, checked now, as a send now does (loop 43): never "Scheduled" for a mail that cannot go. */
+            if (!isOAuth(target)) {
+                const server = String(target.config?.smtpHost ?? '').trim();
+                if (!server || !server.includes('.')) no(`${target.title}: set its SMTP server (smtpHost) to send`);
+                if (!(await ctx.secret('password'))) no(`${target.title}: its password is empty`);
+            }
             const messageId = newId(user);
             const raw = buildMessage({ ...m, from: user, messageId, keepBcc: true });   /* who it goes to, Bcc too, seen in Drafts (loop 13) */
             const box = await withImap(target, ctx, async (imap) => {
