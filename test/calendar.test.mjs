@@ -413,3 +413,72 @@ test('calendar.update (Microsoft) reads start/end as local time, like create (no
     assert.deepEqual(body.end, { dateTime: '2026-11-10T17:00:00', timeZone: 'Europe/Paris' });
     assert.match(r.text, /2026-11-10 16:00 — 2026-11-10 17:00 \(Europe\/Paris\)/, 'the result says the time it set, and in which zone');
 });
+
+/* ---------- Microsoft: what an act does to the others, all-day, a readable read, declines (audit 05-11) ---------- */
+function graphCal(event) {
+    const calls = [];
+    const fetch = async (url, o = {}) => {
+        const method = o.method || 'GET';
+        if (url.includes('login.microsoftonline.com')) return json({ access_token: 'T', expires_in: 3600 });
+        calls.push({ url, method, body: o.body ? JSON.parse(o.body) : undefined });
+        if (method === 'GET' && url.includes('/me/events/E1')) return event ? json(event()) : json({ error: { message: 'gone' } }, 404);
+        if (method === 'POST' && url.endsWith('/me/events')) return json({ id: 'E1' });
+        if (method === 'DELETE') return new Response(null, { status: 204 });
+        if (method === 'PATCH') return json({});
+        return json({ error: { message: 'nope' } }, 404);
+    };
+    return { fetch, calls };
+}
+const ORG = (extra = {}) => ({ id: 'E1', subject: 'Comité', isOrganizer: true, organizer: { emailAddress: { address: 'me@example.com' } }, start: { dateTime: '2030-11-05T14:00:00' }, end: { dateTime: '2030-11-05T15:00:00' },
+    attendees: [{ emailAddress: { address: 'a@example.com' }, status: { response: 'accepted' } }, { emailAddress: { address: 'b@example.com' }, status: { response: 'none' } }], ...extra });
+
+test('Microsoft: a bare date is an all-day event (isAllDay, midnight, the day after as end)', async () => {
+    const s = graphCal();
+    await calendar({ fetch: s.fetch }).run('calendar.create', M, { title: 'Congés', start: '2030-11-10', end: '2030-11-10' }, ctx());
+    const body = s.calls.find((c) => c.method === 'POST' && c.url.endsWith('/me/events')).body;
+    assert.equal(body.isAllDay, true);
+    assert.deepEqual([body.start.dateTime, body.end.dateTime], ['2030-11-10T00:00:00', '2030-11-11T00:00:00']);
+});
+
+test('Microsoft: delete and update say what goes to the others; an invitee\'s delete says the organiser is not told', async () => {
+    let s = graphCal(() => ORG());
+    assert.match((await calendar({ fetch: s.fetch }).run('calendar.delete', M, { id: 'E1' }, ctx())).text, /Microsoft sends a cancellation to a@example\.com, b@example\.com/);
+    s = graphCal(() => ORG({ isOrganizer: false, organizer: { emailAddress: { address: 'boss@example.com' } } }));
+    assert.match((await calendar({ fetch: s.fetch }).run('calendar.delete', M, { id: 'E1' }, ctx())).text, /You were invited \(organiser boss@example\.com\): the organiser is NOT told/);
+    s = graphCal(() => ORG());
+    const r = await calendar({ fetch: s.fetch }).run('calendar.update', M, { id: 'E1', with: 'a@example.com, c@example.com' }, ctx());
+    assert.match(r.text, /Microsoft sends the update to a@example\.com, c@example\.com, and a cancellation to b@example\.com \(removed\)/);
+    const about = await calendar({ fetch: s.fetch }).describe('calendar.update', M, { id: 'E1', with: 'a@example.com' }, ctx());
+    assert.deepEqual(about.effects, ['the update goes to a@example.com', 'removed: b@example.com (they get a cancellation)']);
+});
+
+test('Microsoft: read is readable like CalDAV (who answered what), not a JSON dump', async () => {
+    const s = graphCal(() => ORG({ location: { displayName: 'Salle 2' }, body: { contentType: 'html', content: '<html><body><p>Ordre du jour</p></body></html>' } }));
+    const r = await calendar({ fetch: s.fetch }).run('calendar.read', M, { id: 'E1' }, ctx());
+    assert.match(r.text, /^Comité\n  2030-11-05 14:00 — 2030-11-05 15:00/);
+    assert.match(r.text, /with: a@example\.com \(accepted\), b@example\.com \(no answer\)/);
+    assert.match(r.text, /Ordre du jour/); assert.match(r.text, /id: E1/);
+    assert.doesNotMatch(r.text, /"subject"/);
+});
+
+test('an invitee who declines an event the agent made is told once (notice calendar.declined); the watch ends when it starts', async () => {
+    const { mkdtempSync } = await import('node:fs'); const { tmpdir } = await import('node:os'); const { join } = await import('node:path');
+    let answer = 'none';
+    const s = graphCal(() => ORG({ attendees: [{ emailAddress: { address: 'a@example.com' }, status: { response: answer } }] }));
+    const clock = { t: Date.parse('2030-11-01T09:00:00Z') };
+    const notices = [];
+    const conn = calendar({ fetch: s.fetch });
+    conn.wake({ dir: mkdtempSync(join(tmpdir(), 'calw-')), now: () => clock.t, target: (id) => (id === M.id ? M : null), ctx: () => ctx(), notice: (n) => notices.push(n) });
+    const r = await conn.run('calendar.create', M, { title: 'Comité', start: '2030-11-05T14:00', end: '2030-11-05T15:00', with: 'a@example.com' }, { ...ctx(), agent: 'agent:a' });
+    assert.match(r.text, /invitations to a@example\.com \(sent by Microsoft\).*an invitee who declines is told to you/);
+    clock.t += 16 * 60_000; await conn.tick();
+    assert.equal(notices.length, 0);
+    answer = 'declined';
+    clock.t += 16 * 60_000; await conn.tick();
+    clock.t += 16 * 60_000; await conn.tick();
+    assert.equal(notices.length, 1, 'once');
+    assert.equal(notices[0].kind, 'calendar.declined'); assert.equal(notices[0].agent, 'agent:a');
+    assert.match(notices[0].text, /a@example\.com declined "Comité"/);
+    clock.t = Date.parse('2030-11-06T00:00:00Z'); await conn.tick();
+    assert.equal(conn.watched().length, 0);
+});

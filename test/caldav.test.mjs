@@ -171,3 +171,40 @@ test('freebusy over the scheduling outbox, busy blocks in Paris time; a server w
     assert.match(post.body, /BEGIN:VFREEBUSY[\s\S]*ATTENDEE:mailto:boss@example\.com/);
     await assert.rejects(run(davServer({ outbox: false }), 'calendar.freebusy', { who: 'boss@example.com' }), /does not share others' availability/);
 });
+
+/* ---------- does the server tell the others? (audit 05-11, #8) ---------- */
+const scheduling = (s, yes) => ({ ...s, fetch: async (url, o = {}) => ((o.method || 'GET') === 'OPTIONS' ? new Response(null, { status: 200, headers: { dav: yes ? '1, 2, access-control, calendar-access, calendar-auto-schedule' : '1, 2, calendar-access' } }) : s.fetch(url, o)) });
+
+test('CalDAV: invitations, changes, cancellations and answers are said sent only when the server schedules', async () => {
+    const no = scheduling(davServer(), false);
+    const made = await run(no, 'calendar.create', { title: 'RDV', start: '2030-11-04T10:00', end: '2030-11-04T11:00', with: 'client@example.org' });
+    assert.match(made.text, /invitations to client@example\.org: this calendar server sends no invitations .* NOT told -- tell them yourself/);
+    const id = /Its id is (\S+)\./.exec(made.text)[1];
+    assert.match((await run(no, 'calendar.update', { id, title: 'RDV 2' })).text, /Invitees \(client@example\.org\): .*NOT told/);
+    assert.match((await run(no, 'calendar.respond', { id: '/cal/me/work/a.ics', answer: 'decline' })).text, /organiser \(boss@example\.com\) is NOT told/);
+    assert.match((await run(no, 'calendar.delete', { id })).text, /Invitees \(client@example\.org\): .*cancellations.*NOT told/);
+    const yes = scheduling(davServer(), true);
+    const made2 = await run(yes, 'calendar.create', { title: 'RDV', start: '2030-11-04T10:00', end: '2030-11-04T11:00', with: 'client@example.org' });
+    assert.match(made2.text, /invitations to client@example\.org \(sent by the calendar server\)/);
+    const id2 = /Its id is (\S+)\./.exec(made2.text)[1];
+    assert.match((await run(yes, 'calendar.update', { id: id2, with: 'other@example.org' })).text, /sends the change to other@example\.org, and a cancellation to client@example\.org \(removed\)/);
+    assert.match((await run(yes, 'calendar.respond', { id: '/cal/me/work/a.ics', answer: 'accept' })).text, /server tells the organiser \(boss@example\.com\)/);
+    assert.match((await run(yes, 'calendar.delete', { id: '/cal/me/work/a.ics' })).text, /You were invited \(organiser boss@example\.com\).*decline is the way/);
+    assert.equal(yes.calls.filter((c) => c.method === 'OPTIONS').length, 0, 'the wrapper answered OPTIONS itself');
+});
+
+test('CalDAV: an all-day event from the 10th to the 10th is one day (the end is the day after); a date with a time refused', async () => {
+    const s = davServer();
+    const made = await run(s, 'calendar.create', { title: 'Congés', start: '2030-11-10', end: '2030-11-10' });
+    const text = s.files.get(/Its id is (\S+)\./.exec(made.text)[1]).text;
+    assert.match(text, /DTSTART;VALUE=DATE:20301110/); assert.match(text, /DTEND;VALUE=DATE:20301111/);
+    await assert.rejects(run(s, 'calendar.create', { title: 'x', start: '2030-11-10', end: '2030-11-10T10:00' }), /dates for both start and end/);
+});
+
+test('CalDAV: the card says what the act does to the others', async () => {
+    const s = scheduling(davServer(), false);
+    const about = await calendar({ fetch: s.fetch }).describe('calendar.respond', T, { id: '/cal/me/work/a.ics', answer: 'accept' }, ctx());
+    assert.deepEqual(about.effects, ['the organiser is NOT told (this server does not schedule)']);
+    const del = await calendar({ fetch: s.fetch }).describe('calendar.delete', T, { id: '/cal/me/work/a.ics' }, ctx());
+    assert.deepEqual(del.effects, ['the organiser is NOT told (decline tells them)']);
+});

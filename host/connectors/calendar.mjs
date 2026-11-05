@@ -22,6 +22,8 @@
  * cleanly; a Microsoft calendar needs the right Graph scope on the connected account.)
  */
 import { no, Refused } from '../../server/verbs.mjs';
+import { readFileSync, writeFileSync, renameSync } from 'node:fs';
+import { join } from 'node:path';
 import { refreshAccess, thunderbird, PROVIDERS } from '../oauth.mjs';
 import { discover, responses, props, prop, setProps, eventOf, newEvent, newUid, escapeText, timeLine, stamp, localToUtc, TZ as DAV_TZ } from '../dav.mjs';
 
@@ -31,8 +33,21 @@ const TZ = 'Europe/Paris';      /* the person's timezone: events are shown and c
 const shortWhen = (dt) => { const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(String(dt || '')); return m ? `${m[1]}-${m[2]}-${m[3]} ${m[4]}:${m[5]}` : (dt || '?'); };
 const READ_MAX = 256 * 1024;
 const dateField = (s) => (/^\d{4}-\d{2}-\d{2}$/.test(s) ? { date: s } : { dateTime: s });
-/* A Graph time: the local ISO time the tool takes, in the person's timezone (create AND update: never UTC). */
-const msTime = (s) => ({ dateTime: String(s), timeZone: TZ });
+/* A Graph time: the local ISO time the tool takes, in the person's timezone (create AND update: never UTC).
+   A bare date is midnight of that day (an all-day event, isAllDay). */
+const isDay = (s) => /^\d{4}-\d{2}-\d{2}$/.test(String(s ?? '').trim());
+const msTime = (s) => ({ dateTime: isDay(s) ? `${String(s).trim()}T00:00:00` : String(s), timeZone: TZ });
+/* An all-day event ends the day AFTER its last day (the end is exclusive, everywhere): "from the 10th to
+   the 10th" is one day, never an empty event. Both ends a date, or neither. */
+export function dayEnd(start, end) {
+    if (isDay(start) !== isDay(end)) no('an all-day event has dates for both start and end (2026-11-10); a timed one, times for both');
+    if (!isDay(start) || String(end).trim() > String(start).trim()) return end;
+    const d = new Date(`${String(start).trim()}T00:00:00Z`); d.setUTCDate(d.getUTCDate() + 1);
+    return d.toISOString().slice(0, 10);
+}
+const htmlText = (html) => String(html ?? '').replace(/<(script|style)[^>]*>[\s\S]*?<\/\1>/gi, '').replace(/<br\s*\/?>/gi, '\n').replace(/<\/(p|div|tr|li)>/gi, '\n').replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/g, ' ').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, '&').replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+const TIMEOUT_MS = 60_000;
 
 const API = {
     google: {
@@ -54,7 +69,7 @@ const API = {
         brief: (e) => `${e.id}\n  ${shortWhen(e.start?.dateTime)} — ${e.subject ?? '(no title)'}${e.location?.displayName ? `  @ ${e.location.displayName}` : ''}${e.categories?.length ? `  [${e.categories.join(', ')}]` : ''}`,
         body: ({ title, start, end, where, notes, attendees, categories }) => ({
             subject: title,
-            start: msTime(start), end: msTime(end),
+            start: msTime(start), end: msTime(end), ...(isDay(start) ? { isAllDay: true } : {}),
             ...(where ? { location: { displayName: where } } : {}),
             ...(notes ? { body: { contentType: 'text', content: String(notes) } } : {}),
             ...(attendees?.length ? { attendees: attendees.map((a) => ({ emailAddress: { address: a }, type: 'required' })) } : {}),
@@ -128,8 +143,8 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
         const headers = { Authorization: `Bearer ${token}`, Prefer: `outlook.timezone="${TZ}"` };
         if (json !== undefined) headers['Content-Type'] = 'application/json';
         let res;
-        try { res = await fetchImpl(url, { method, headers, ...(json !== undefined ? { body: JSON.stringify(json) } : {}) }); }
-        catch (e) { if (e instanceof Refused) throw e; no(`${target.title}: cannot reach the calendar`); }
+        try { res = await fetchImpl(url, { method, headers, ...(json !== undefined ? { body: JSON.stringify(json) } : {}), signal: AbortSignal.timeout(TIMEOUT_MS) }); }
+        catch (e) { if (e instanceof Refused) throw e; no(`${target.title}: ${e?.name === 'TimeoutError' ? 'the calendar did not answer in time' : 'cannot reach the calendar'}${method === 'GET' ? '' : ' -- it may have been done: check before asking again'}`); }
         if (res.status === 401 || res.status === 403) no(`${target.title}: not authorized -- reconnect the account (the calendar scope may be missing)`);
         return res;
     }
@@ -156,8 +171,8 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
                 auth = `Basic ${Buffer.from(`${userOf(target)}:${password}`, 'utf8').toString('base64')}`;
             }
             let res;
-            try { res = await fetchImpl(url, { method, headers: { Authorization: auth, ...headers }, ...(body !== undefined ? { body } : {}) }); }
-            catch (e) { if (e instanceof Refused) throw e; no(`${target.title}: cannot reach the calendar`); }
+            try { res = await fetchImpl(url, { method, headers: { Authorization: auth, ...headers }, ...(body !== undefined ? { body } : {}), signal: AbortSignal.timeout(TIMEOUT_MS) }); }
+            catch (e) { if (e instanceof Refused) throw e; no(`${target.title}: ${e?.name === 'TimeoutError' ? 'the calendar did not answer in time' : 'cannot reach the calendar'}${['GET', 'PROPFIND', 'REPORT', 'OPTIONS'].includes(method) ? '' : ' -- it may have been done: check before asking again'}`); }
             if (res.status === 401 || res.status === 403) no(providerOf(target) === 'google' ? `${target.title}: not authorized -- reconnect the account (the calendar scope may be missing)` : `${target.title}: the calendar refused the user or the password`);
             return res;
         };
@@ -173,6 +188,18 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
         folders.set(target.id, found);
         return found;
     }
+    /* DOES THIS SERVER TELL THE OTHERS? Invitations, updates, cancellations and answers reach people only
+       when the server schedules itself (RFC 6638: "calendar-auto-schedule" in the DAV header of OPTIONS).
+       Asked once per target; what the result says follows it, never promised blindly (#8). */
+    const scheduling = new Map();
+    async function schedules(target, ctx) {
+        if (scheduling.has(target.id)) return scheduling.get(target.id);
+        let yes = false;
+        try { const res = await davRequest(target, ctx)('OPTIONS', await folderOf(target, ctx)); yes = /calendar-auto-schedule/i.test(res.headers?.get?.('dav') ?? ''); } catch { /* unknown: said as not */ }
+        scheduling.set(target.id, yes);
+        return yes;
+    }
+    const NOT_TOLD = 'this calendar server sends no invitations (it does not schedule): they are NOT told -- tell them yourself, e.g. by mail';
     const urlOf = async (target, ctx, id) => { const s = String(id ?? '').trim(); if (!s) no('that needs the event id (from the list)'); return /^https?:\/\//.test(s) ? s : new URL(s, await folderOf(target, ctx)).href; };
     const XML = { 'Content-Type': 'application/xml; charset=utf-8' };
     /* The events of a window: with `expand`, one entry per occurrence (to show);
@@ -239,8 +266,9 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
             if (online !== 'none') no(MEET(target));
             const uid = newUid();
             const url = new URL(`${uid}.ics`, await folderOf(target, ctx)).href;
-            await davPut(target, ctx, url, newEvent({ uid, title: a.title, start: a.start, end: a.end, where: a.where, notes: a.notes, attendees, organizer: attendees.length ? userOf(target) : null, categories: categories ?? [] }), { create: true });
-            return { text: `Created: ${a.title} (${a.start})${attendees.length ? `, invitations to ${attendees.join(', ')}` : ''}. Its id is ${new URL(url).pathname}.`, size: 0 };
+            await davPut(target, ctx, url, newEvent({ uid, title: a.title, start: a.start, end: dayEnd(a.start, a.end), where: a.where, notes: a.notes, attendees, organizer: attendees.length ? userOf(target) : null, categories: categories ?? [] }), { create: true });
+            const told = attendees.length ? ((await schedules(target, ctx)) ? `, invitations to ${attendees.join(', ')} (sent by the calendar server)` : `, invitations to ${attendees.join(', ')}: ${NOT_TOLD}`) : '';
+            return { text: `Created: ${a.title} (${a.start})${told}. Its id is ${new URL(url).pathname}.`, size: 0, watch: attendees.length ? { id: new URL(url).pathname, title: a.title, start: a.start } : null };
         },
         async update(target, a, ctx) {
             const { url, etag, text } = await davGet(target, ctx, a.id);
@@ -248,7 +276,7 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
             const set = (name, lines) => { t = setProps(t, name, lines); changed++; };
             if (a.title !== undefined) set('SUMMARY', [`SUMMARY:${escapeText(a.title)}`]);
             if (a.start !== undefined) set('DTSTART', [timeLine('DTSTART', a.start)]);
-            if (a.end !== undefined) set('DTEND', [timeLine('DTEND', a.end)]);
+            if (a.end !== undefined) set('DTEND', [timeLine('DTEND', a.start !== undefined ? dayEnd(a.start, a.end) : a.end)]);
             if (a.where !== undefined) set('LOCATION', String(a.where).trim() ? [`LOCATION:${escapeText(a.where)}`] : []);
             if (a.notes !== undefined) set('DESCRIPTION', String(a.notes).trim() ? [`DESCRIPTION:${escapeText(a.notes)}`] : []);
             if (a.with !== undefined) {
@@ -264,14 +292,28 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
             t = setProps(t, 'SEQUENCE', [`SEQUENCE:${seq + 1}`]);
             t = setProps(t, 'DTSTAMP', [`DTSTAMP:${stamp(new Date())}`]);
             await davPut(target, ctx, url, t, { etag });
-            return { text: 'Updated the event.', size: 0 };
+            const before = eventOf(text); const after = eventOf(t);
+            const mine = !before.organizer || before.organizer.toLowerCase() === userOf(target).toLowerCase();
+            const others = after.attendees.map((x) => x.email).filter((x) => x.toLowerCase() !== userOf(target).toLowerCase());
+            const gone = before.attendees.map((x) => x.email).filter((x) => !after.attendees.some((y) => y.email.toLowerCase() === x.toLowerCase()));
+            const sched = (others.length || gone.length) && mine ? await schedules(target, ctx) : false;
+            const told = !mine || !(others.length || gone.length) ? '' : sched ? ` The calendar server sends the change to ${others.join(', ') || 'nobody left'}${gone.length ? `, and a cancellation to ${gone.join(', ')} (removed)` : ''}.` : ` Invitees (${[...others, ...gone].join(', ')}): ${NOT_TOLD}.`;
+            return { text: `Updated the event.${told}`, size: 0, watch: a.with !== undefined && others.length ? { id: new URL(url).pathname, title: after.summary, start: after.start } : null };
         },
         async remove(target, a, ctx) {
             const url = await urlOf(target, ctx, a.id);
+            let ev = null;
+            try { ev = eventOf((await davGet(target, ctx, url)).text); } catch (e) { if (/no such event/.test(e?.message ?? '')) throw e; }
             const res = await davRequest(target, ctx)('DELETE', url, {});
             if (res.status === 404) no('no such event');
             if (!res.ok) no(`${target.title}: the event was not deleted (${res.status})`);
-            return { text: 'Deleted the event.', size: 0 };
+            const me = userOf(target).toLowerCase();
+            const others = (ev?.attendees ?? []).map((x) => x.email).filter((x) => x.toLowerCase() !== me);
+            if (!others.length) return { text: 'Deleted the event.', size: 0 };
+            const mine = !ev.organizer || ev.organizer.toLowerCase() === me;
+            const sched = await schedules(target, ctx);
+            if (!mine) return { text: `Deleted the event from this calendar. You were invited (organiser ${ev.organizer}): ${sched ? 'the server may tell the organiser you left it' : 'the organiser is NOT told'} -- calendar-respond decline is the way to say no.`, size: 0 };
+            return { text: `Deleted the event.${sched ? ` The calendar server sends a cancellation to ${others.join(', ')}.` : ` Invitees (${others.join(', ')}): ${NOT_TOLD.replace('invitations', 'cancellations')}.`}`, size: 0 };
         },
         /* An answer is this account's PARTSTAT on the event; the server tells the
            organiser (CalDAV scheduling). */
@@ -285,7 +327,9 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
             let t = setProps(text, 'ATTENDEE', lines);
             if (a.comment) t = setProps(t, 'COMMENT', [`COMMENT:${escapeText(a.comment)}`]);
             await davPut(target, ctx, url, t, { etag });
-            return { text: `${part === 'ACCEPTED' ? 'Accepted' : part === 'DECLINED' ? 'Declined' : 'Tentatively accepted'} the invitation.`, size: 0 };
+            const org = eventOf(text).organizer;
+            const told = (await schedules(target, ctx)) ? ` The calendar server tells the organiser${org ? ` (${org})` : ''}.` : ` This calendar server does not schedule: the organiser${org ? ` (${org})` : ''} is NOT told -- tell them yourself, e.g. by mail.`;
+            return { text: `${part === 'ACCEPTED' ? 'Accepted' : part === 'DECLINED' ? 'Declined' : 'Tentatively accepted'} the invitation.${told}`, size: 0 };
         },
         /* A file kept inside the event itself; read back to be sure the server kept it. */
         async attach(target, a, ctx) {
@@ -413,7 +457,22 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
             const res = await call(target, ctx, 'GET', api.event(String(a.id)));
             if (res.status === 404) no('no such event');
             if (!res.ok) no(`${target.title}: ${res.status} ${await bodyError(res)}`.trim());
-            const text = JSON.stringify(await res.json(), null, 1).slice(0, READ_MAX);
+            /* Read as the CalDAV path reads (05-11: it was a raw JSON dump): who, when, where, answers, notes. */
+            const j = await res.json();
+            const when = (t) => (j.isAllDay ? String(t?.dateTime ?? '').slice(0, 10) : shortWhen(t?.dateTime));
+            const said = { accepted: 'accepted', declined: 'declined', tentativelyAccepted: 'tentative', notResponded: 'no answer', none: 'no answer', organizer: 'organiser' };
+            const lines = [`${j.subject || '(no title)'}`, `  ${when(j.start)}${j.end ? ` — ${when(j.end)}` : ''} (${TZ})${j.isAllDay ? ', all day' : ''}${j.isCancelled ? ' -- CANCELLED' : ''}`];
+            if (j.location?.displayName) lines.push(`  @ ${j.location.displayName}`);
+            if (j.organizer?.emailAddress?.address) lines.push(`  organiser: ${j.organizer.emailAddress.address}${j.isOrganizer ? ' (you)' : ''}`);
+            if (j.attendees?.length) lines.push(`  with: ${j.attendees.map((x) => `${x.emailAddress?.address}${x.status?.response ? ` (${said[x.status.response] ?? x.status.response})` : ''}`).join(', ')}`);
+            if (!j.isOrganizer && j.responseStatus?.response) lines.push(`  your answer: ${said[j.responseStatus.response] ?? j.responseStatus.response}`);
+            if (j.categories?.length) lines.push(`  categories: ${j.categories.join(', ')}`);
+            if (j.isOnlineMeeting) lines.push(`  online: Teams${j.onlineMeeting?.joinUrl ? ` ${j.onlineMeeting.joinUrl}` : ''}`);
+            if (j.hasAttachments) lines.push('  files: yes (calendar-detach lists them by name)');
+            const notes = j.body?.contentType === 'html' ? htmlText(j.body.content) : String(j.body?.content ?? '').trim();
+            if (notes) lines.push('', notes);
+            lines.push('', `id: ${j.id ?? a.id}`);
+            const text = lines.join('\n').slice(0, READ_MAX);
             return { text, size: Buffer.byteLength(text) };
         },
         /* See when others are busy, to find a time together. A read: it returns
@@ -470,12 +529,12 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
             const online = a.online !== undefined ? String(a.online).toLowerCase() : (attendees.length && provider === 'microsoft' ? 'teams' : 'none');
             if (provider !== 'microsoft') return davVerbs.create(target, a, ctx, { attendees, categories, online });
             if (online !== 'none' && online !== 'teams') no('--online is teams or none');
-            const payload = api.body({ title: a.title, start: a.start, end: a.end, where: a.where, notes: a.notes, attendees, categories: categories ?? undefined });
+            const payload = api.body({ title: a.title, start: a.start, end: dayEnd(a.start, a.end), where: a.where, notes: a.notes, attendees, categories: categories ?? undefined });
             if (provider === 'microsoft' && online === 'teams') { payload.isOnlineMeeting = true; payload.onlineMeetingProvider = 'teamsForBusiness'; }
             const res = await call(target, ctx, 'POST', api.create, payload);
             if (!res.ok) no(`${target.title}: the event was not created (${res.status} ${await bodyError(res)})`.trim());
             const made = await res.json().catch(() => ({}));
-            return { text: `Created: ${a.title} (${a.start})${online === 'teams' ? ', with a Teams meeting' : ''}. Its id is ${made.id ?? '(unknown)'}.`, size: 0 };
+            return { text: `Created: ${a.title} (${a.start})${online === 'teams' ? ', with a Teams meeting' : ''}${attendees.length ? `, invitations to ${attendees.join(', ')} (sent by Microsoft)` : ''}. Its id is ${made.id ?? '(unknown)'}.`, size: 0, watch: attendees.length && made.id ? { id: made.id, title: a.title, start: a.start } : null };
         },
         /* Join a file to an event. An act. Microsoft takes the bytes inline (Graph
            fileAttachment); a Google calendar attach is a Drive link, added once the
@@ -538,10 +597,14 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
             const provider = providerOf(target);
             if (!a.id) no('delete needs the event id (from the list)');
             if (provider !== 'microsoft') return davVerbs.remove(target, a, ctx);
+            const who = await peopleOf(target, ctx, a.id);
             const res = await call(target, ctx, 'DELETE', API.microsoft.event(String(a.id)));
             if (res.status === 404) no('no such event');
             if (!res.ok) no(`${target.title}: the event was not deleted (${res.status} ${await bodyError(res)})`.trim());
-            return { text: 'Deleted the event.', size: 0 };
+            /* What Microsoft does to the others, said (#12): the organiser's delete cancels for every invitee;
+               an invitee's delete only takes it off this calendar, the organiser is not told. */
+            if (who && !who.isOrganizer) return { text: `Deleted the event from this calendar. You were invited (organiser ${who.organizer || 'unknown'}): the organiser is NOT told -- calendar-respond decline is the way to say no.`, size: 0 };
+            return { text: `Deleted the event.${who?.attendees.length ? ` Microsoft sends a cancellation to ${who.attendees.join(', ')}.` : ''}`, size: 0 };
         },
         /* Respond to a meeting invitation: accept, decline or tentative. An act.
            Microsoft over Graph; a Google RSVP (CalDAV PARTSTAT) comes with parity. */
@@ -565,8 +628,8 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
             if (provider !== 'microsoft') return davVerbs.update(target, a, ctx);
             const patch = {};
             if (a.title !== undefined) patch.subject = String(a.title);
-            if (a.start !== undefined) patch.start = msTime(a.start);
-            if (a.end !== undefined) patch.end = msTime(a.end);
+            if (a.start !== undefined) { patch.start = msTime(a.start); patch.isAllDay = isDay(a.start); }
+            if (a.end !== undefined) patch.end = msTime(a.start !== undefined ? dayEnd(a.start, a.end) : a.end);
             if (a.where !== undefined) patch.location = { displayName: String(a.where) };
             if (a.notes !== undefined) patch.body = { contentType: 'text', content: String(a.notes) };
             if (a.with !== undefined) patch.attendees = String(a.with).split(',').map((x) => x.trim()).filter(Boolean).map((e) => ({ emailAddress: { address: e }, type: 'required' }));
@@ -593,6 +656,7 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
                     }
                 }
             }
+            const who = await peopleOf(target, ctx, a.id);
             const when = a.start !== undefined || a.end !== undefined ? ` Now ${[a.start, a.end].map((t) => (t === undefined ? '' : shortWhen(String(t)))).join(' — ').replace(/^ — | — $/, '')} (${TZ}).` : '';
             const res = await call(target, ctx, 'PATCH', API.microsoft.event(String(a.id)), patch);
             if (res.status === 404) no('no such event');
@@ -604,11 +668,11 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
                 if (!still) {
                     const again = await call(target, ctx, 'PATCH', API.microsoft.event(String(a.id)), { isOnlineMeeting: true, onlineMeetingProvider: patch.onlineMeetingProvider || 'teamsForBusiness' });
                     if (!again.ok) no(`${target.title}: the event was changed, but its Teams meeting was lost and could not be put back (${again.status}); add it again with --online teams`);
-                    return { text: `Updated the event. Its Teams meeting had been dropped by Microsoft and was put back: the join link is new.${when}`, size: 0 };
+                    return { text: `Updated the event. Its Teams meeting had been dropped by Microsoft and was put back: the join link is new.${when}${told(who, patch)}`, size: 0, watch: watchOf(a, who, patch) };
                 }
-                return { text: `Updated the event; its Teams meeting is kept.${when}`, size: 0 };
+                return { text: `Updated the event; its Teams meeting is kept.${when}${told(who, patch)}`, size: 0, watch: watchOf(a, who, patch) };
             }
-            return { text: `Updated the event.${when}`, size: 0 };
+            return { text: `Updated the event.${when}${told(who, patch)}`, size: 0, watch: watchOf(a, who, patch) };
         },
         /* The mailbox's own categories (name and colour), so the agent knows which
            ones exist before it tags an event. A read. Microsoft only; a category is
@@ -661,6 +725,26 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
             return { text: `Removed the category "${a.name}".`, size: 0 };
         },
     };
+    /* Who an event concerns (Microsoft): its organiser, whether that is this account, its invitees. */
+    async function peopleOf(target, ctx, id) {
+        try {
+            const res = await call(target, ctx, 'GET', `${API.microsoft.event(String(id))}?$select=subject,start,isOrganizer,organizer,attendees`);
+            if (!res.ok) return null;
+            const j = await res.json();
+            return { isOrganizer: j.isOrganizer !== false, organizer: j.organizer?.emailAddress?.address ?? '', attendees: (j.attendees ?? []).map((x) => x.emailAddress?.address).filter(Boolean), title: j.subject ?? '', start: j.start?.dateTime ?? '' };
+        } catch { return null; }
+    }
+    /* What a change sends to the others (#12): the organiser's change goes to every invitee; with "with", the
+       list is REPLACED -- one left out gets a cancellation. An invitee's change stays on this calendar. */
+    function told(who, patch) {
+        if (!who) return '';
+        const now = patch.attendees ? patch.attendees.map((x) => x.emailAddress.address) : who.attendees;
+        const gone = patch.attendees ? who.attendees.filter((x) => !now.some((y) => y.toLowerCase() === x.toLowerCase())) : [];
+        if (!who.isOrganizer) return now.length ? ' You are not the organiser: the change stays on this calendar, the others do not see it.' : '';
+        if (!now.length && !gone.length) return '';
+        return ` Microsoft sends the update to ${now.join(', ') || 'nobody left'}${gone.length ? `, and a cancellation to ${gone.join(', ')} (removed)` : ''}.`;
+    }
+    const watchOf = (a, who, patch) => (patch.attendees?.length && who?.isOrganizer ? { id: String(a.id), title: patch.subject ?? who.title, start: a.start ?? who.start } : null);
     /* A mailbox category's Graph id, by its display name (Microsoft only). */
     async function categoryId(target, a, ctx, name) {
         const provider = providerOf(target);
@@ -672,6 +756,59 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
         const found = ((await res.json()).value ?? []).find((c) => String(c.displayName).toLowerCase() === want.toLowerCase());
         if (!found) no(`${target.title}: no category "${want}"`);
         return found.id;
+    }
+
+    /* ---------- an invitee who declines (#13) ----------
+       An event the agent made, or whose invitees it set, is looked at every 15 minutes until it starts:
+       an invitee whose answer becomes "declined" is told to the agent and the person (a notice). On a
+       CalDAV server the answers come back only when it schedules. */
+    let host = null; let watched = [];
+    const watchFile = () => join(host.dir, 'calendar-watch.json');
+    const keepWatch = () => { if (!host) return; const f = watchFile(); writeFileSync(`${f}.tmp`, JSON.stringify(watched, null, 1), { mode: 0o600 }); renameSync(`${f}.tmp`, f); };
+    const startMs = (s) => { const t = String(s ?? '').trim(); if (isDay(t)) return localToUtc(`${t}T00:00`).getTime(); const d = /Z$|[+-]\d\d:?\d\d$/.test(t) ? new Date(t) : localToUtc(t.replace(' ', 'T').slice(0, 16)); return d.getTime(); };
+    function watchEvent(target, agent, { id, title, start }) {
+        if (!host || !agent) return '';
+        const at = startMs(start);
+        if (!(at > host.now())) return '';
+        watched = watched.filter((x) => !(x.target === target.id && x.id === id));
+        watched.push({ target: target.id, agent, id, title: String(title ?? ''), start: at, next: host.now() + 15 * 60_000, told: [] });
+        watched = watched.slice(-300); keepWatch();
+        return ' Tether watches the answers until it starts: an invitee who declines is told to you.';
+    }
+    async function answersOf(target, ctx, id) {
+        if (providerOf(target) === 'microsoft') {
+            const res = await call(target, ctx, 'GET', `${API.microsoft.event(String(id))}?$select=attendees,isCancelled`);
+            if (res.status === 404) return null;
+            if (!res.ok) throw new Error(String(res.status));
+            const j = await res.json();
+            return j.isCancelled ? null : (j.attendees ?? []).map((x) => ({ email: x.emailAddress?.address, declined: x.status?.response === 'declined' }));
+        }
+        let got;
+        try { got = await davGet(target, ctx, id); } catch (e) { if (/no such event/.test(e?.message ?? '')) return null; throw e; }
+        return eventOf(got.text).attendees.map((x) => ({ email: x.email, declined: /^declined$/i.test(x.status ?? '') }));
+    }
+    let ticking = false;
+    async function tick() {
+        if (!host || ticking) return;
+        ticking = true;
+        try {
+            const now = host.now();
+            const before = watched.length;
+            watched = watched.filter((x) => x.start > now && host.target(x.target));
+            let changed = before !== watched.length;
+            for (const w of watched.filter((x) => x.next <= now)) {
+                const target = host.target(w.target);
+                let list;
+                try { list = await answersOf(target, host.ctx(target, w.agent), w.id); } catch { w.next = now + 15 * 60_000; changed = true; continue; }
+                if (list === null) { watched = watched.filter((x) => x !== w); changed = true; continue; }
+                for (const p of list.filter((x) => x.declined && x.email && !w.told.includes(x.email.toLowerCase()))) {
+                    w.told.push(p.email.toLowerCase());
+                    try { host.notice({ agent: w.agent, target: { id: target.id, title: target.title }, kind: 'calendar.declined', text: `${p.email} declined "${w.title}" (${new Date(w.start).toISOString().slice(0, 16).replace('T', ' ')} UTC).`, ref: String(w.id) }); } catch { /* told next time */ }
+                }
+                w.next = now + 15 * 60_000; changed = true;
+            }
+            if (changed) keepWatch();
+        } finally { ticking = false; }
     }
 
     /* What a waiting act is about, for the card a person approves from: the event
@@ -686,12 +823,28 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
             if (!res.ok) return null;
             const j = await res.json();
             ev = { title: j.subject ?? '', start: shortWhen(j.start?.dateTime), end: shortWhen(j.end?.dateTime), where: j.location?.displayName ?? '', organizer: j.organizer?.emailAddress?.address ?? '',
-                attendees: (j.attendees ?? []).map((x) => x.emailAddress?.address).filter(Boolean), online: Boolean(j.isOnlineMeeting), startIso: j.start?.dateTime, endIso: j.end?.dateTime };
+                attendees: (j.attendees ?? []).map((x) => x.emailAddress?.address).filter(Boolean), online: Boolean(j.isOnlineMeeting), startIso: j.start?.dateTime, endIso: j.end?.dateTime, mine: j.isOrganizer !== false };
         } else {
             const { text, url } = await davGet(target, ctx, a.id);
             const e = eventOf(text);
-            ev = { title: e.summary, start: e.start, end: e.end, where: e.location, organizer: e.organizer, attendees: e.attendees.map((x) => x.email), url };
+            const me = String(target.config?.user ?? '').toLowerCase();
+            ev = { title: e.summary, start: e.start, end: e.end, where: e.location, organizer: e.organizer, attendees: e.attendees.map((x) => x.email).filter((x) => x.toLowerCase() !== me), url, mine: !e.organizer || e.organizer.toLowerCase() === me };
         }
+        /* What the act does to the others, for the card (#12): a person approves knowing who gets what. */
+        try {
+            const sent = provider === 'microsoft' || await schedules(target, ctx);
+            const effects = [];
+            const now = a.with !== undefined ? String(a.with).split(',').map((x) => x.trim()).filter(Boolean) : ev.attendees;
+            const gone = a.with !== undefined ? ev.attendees.filter((x) => !now.some((y) => y.toLowerCase() === x.toLowerCase())) : [];
+            if (verb === 'calendar.delete' && ev.attendees.length) effects.push(ev.mine ? (sent ? `a cancellation goes to ${ev.attendees.join(', ')}` : `the invitees (${ev.attendees.join(', ')}) are NOT told`) : 'the organiser is NOT told (decline tells them)');
+            if (verb === 'calendar.update' && ev.mine && (now.length || gone.length)) {
+                effects.push(sent ? `the update goes to ${now.join(', ') || 'nobody'}` : `the invitees (${[...now, ...gone].join(', ')}) are NOT told`);
+                if (gone.length && sent) effects.push(`removed: ${gone.join(', ')} (they get a cancellation)`);
+            }
+            if (verb === 'calendar.respond') effects.push(sent ? `the organiser${ev.organizer ? ` (${ev.organizer})` : ''} is told` : 'the organiser is NOT told (this server does not schedule)');
+            if (effects.length) ev.effects = effects;
+        } catch { /* the card says less */ }
+        delete ev.mine;
         /* What already stands at that time (an invitation answered): other events overlapping. */
         if (verb === 'calendar.respond') {
             try {
@@ -712,10 +865,18 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
         name: 'calendar',
         verbs: Object.keys(verbs),
         describe,
-        run(verb, target, a, ctx) {
+        async run(verb, target, a, ctx) {
             if (!verbs[verb]) no(`${verb} is not done by this connector`);
-            return verbs[verb](target, a, ctx);
+            const { watch: w, ...r } = await verbs[verb](target, a, ctx);
+            if (w) r.text += watchEvent(target, ctx.agent, w);
+            return r;
         },
+        wake(h) {
+            host = { now: () => Date.now(), notice: () => {}, ...h };
+            try { watched = JSON.parse(readFileSync(watchFile(), 'utf8')); if (!Array.isArray(watched)) watched = []; } catch { watched = []; }
+        },
+        tick,
+        watched: () => watched.map((x) => ({ ...x })),
         close() { tokens.clear(); folders.clear(); },
         shutdown() { tokens.clear(); folders.clear(); },
     };
