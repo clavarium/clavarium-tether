@@ -45,6 +45,14 @@ export function dayEnd(start, end) {
     const d = new Date(`${String(start).trim()}T00:00:00Z`); d.setUTCDate(d.getUTCDate() + 1);
     return d.toISOString().slice(0, 10);
 }
+/* The days an all-day event covers, said the same everywhere: its first day, then its LAST day (the stored end
+   is the day after). A timed event: its start (loop 14). */
+const lastDayOf = (end) => { const d = new Date(`${String(end).trim()}T00:00:00Z`); d.setUTCDate(d.getUTCDate() - 1); return d.toISOString().slice(0, 10); };
+export function daysSaid(start, end) {
+    if (!isDay(start)) return String(start);
+    const last = end && isDay(end) ? lastDayOf(dayEnd(start, end)) : String(start).trim();
+    return last > String(start).trim() ? `${String(start).trim()} to ${last} included, all day` : `${String(start).trim()}, all day`;
+}
 const htmlText = (html) => String(html ?? '').replace(/<(script|style)[^>]*>[\s\S]*?<\/\1>/gi, '').replace(/<br\s*\/?>/gi, '\n').replace(/<\/(p|div|tr|li)>/gi, '\n').replace(/<[^>]+>/g, '')
     .replace(/&nbsp;/g, ' ').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, '&').replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
 const TIMEOUT_MS = 60_000;
@@ -275,7 +283,7 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
             const sched = attendees.length ? await schedules(target, ctx) : false;
             const told = attendees.length ? (sched ? `, invitations to ${attendees.join(', ')} (sent by the calendar server)` : `, invitations to ${attendees.join(', ')}: ${NOT_TOLD}`) : '';
             /* Answers come back only through scheduling: watched only then (loop 3). */
-            return { text: `Created: ${a.title} (${a.start})${told}. Its id is ${new URL(url).pathname}.`, size: 0, watch: sched ? { id: new URL(url).pathname, title: a.title, start: a.start } : null };
+            return { text: `Created: ${a.title} (${daysSaid(a.start, a.end)})${told}. Its id is ${new URL(url).pathname}.`, size: 0, watch: sched ? { id: new URL(url).pathname, title: a.title, start: a.start } : null };
         },
         async update(target, a, ctx) {
             const { url, etag, text } = await davGet(target, ctx, a.id);
@@ -307,9 +315,7 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
             const told = !mine ? (others.length ? ` You are not the organiser (${before.organizer}): the change stays on this calendar, the others do not see it.` : '') : !(others.length || gone.length) ? '' : sched ? ` The calendar server sends the change to ${others.join(', ') || 'nobody left'}${gone.length ? `, and a cancellation to ${gone.join(', ')} (removed)` : ''}.` : ` Invitees (${[...others, ...gone].join(', ')}): ${NOT_TOLD}.`;
             /* The time set, said as Microsoft's result says it (loop 4). */
             /* An all-day end is stored exclusive (the day after): said as its last day, as on Microsoft (loop 13). */
-            const lastDay = (s) => { if (!isDay(s)) return s; const d = new Date(`${s}T00:00:00Z`); d.setUTCDate(d.getUTCDate() - 1); return d.toISOString().slice(0, 10); };
-            const shownEnd = after.end && isDay(after.end) ? lastDay(after.end) : after.end;
-            const when = a.start !== undefined || a.end !== undefined ? ` Now ${after.start}${shownEnd && shownEnd !== after.start ? ` — ${shownEnd}` : ''}${isDay(after.start) ? ', all day' : ''} (${DAV_TZ}).` : '';
+            const when = a.start !== undefined || a.end !== undefined ? ` Now ${isDay(after.start) ? daysSaid(after.start, after.end || after.start) : `${after.start}${after.end ? ` — ${after.end}` : ''}`} (${DAV_TZ}).` : '';
             return { text: `Updated the event.${when}${told}`, size: 0, watch: a.with !== undefined && others.length && sched ? { id: new URL(url).pathname, title: after.summary, start: after.start } : null };
         },
         async remove(target, a, ctx) {
@@ -556,7 +562,7 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
             if (!res.ok) no(`${target.title}: the event was not created (${res.status} ${await bodyError(res)})`.trim());
             const made = await res.json().catch(() => ({}));
             const teams = online !== 'teams' ? '' : made.isOnlineMeeting === false ? ', but Microsoft did NOT make its Teams meeting (add it with online "teams")' : made.isOnlineMeeting === true ? ', with a Teams meeting' : ', with a Teams meeting asked (read the event for its join link)';
-            return { text: `Created: ${a.title} (${a.start})${teams}${attendees.length ? `, invitations to ${attendees.join(', ')} (sent by Microsoft)` : ''}. Its id is ${made.id ?? '(unknown)'}.`, size: 0, watch: attendees.length && made.id ? { id: made.id, title: a.title, start: a.start } : null };
+            return { text: `Created: ${a.title} (${daysSaid(a.start, a.end)})${teams}${attendees.length ? `, invitations to ${attendees.join(', ')} (sent by Microsoft)` : ''}. Its id is ${made.id ?? '(unknown)'}.`, size: 0, watch: attendees.length && made.id ? { id: made.id, title: a.title, start: a.start } : null };
         },
         /* Join a file to an event. An act. Microsoft takes the bytes inline (Graph
            fileAttachment); a Google calendar attach is a Drive link, added once the
@@ -689,7 +695,7 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
                 }
             }
             const who = await peopleOf(target, ctx, a.id);
-            const when = a.start !== undefined || a.end !== undefined ? ` Now ${[a.start, a.end === a.start && isDay(a.start) ? undefined : a.end].map((t) => (t === undefined ? '' : isDay(t) ? String(t).trim() : shortWhen(String(t)))).join(' — ').replace(/^ — | — $/, '')}${isDay(a.start) ? ', all day' : ''} (${TZ}).` : '';
+            const when = a.start !== undefined || a.end !== undefined ? ` Now ${a.start !== undefined && isDay(a.start) ? daysSaid(a.start, a.end ?? a.start) : [a.start, a.end].map((t) => (t === undefined ? '' : shortWhen(String(t)))).join(' — ').replace(/^ — | — $/, '')} (${TZ}).` : '';
             const res = await call(target, ctx, 'PATCH', API.microsoft.event(String(a.id)), patch);
             if (res.status === 404) no('no such event');
             if (!res.ok) no(`${target.title}: the event was not changed (${res.status} ${await bodyError(res)})`.trim());

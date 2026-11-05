@@ -264,3 +264,9 @@ test('loop 13: a one-day all-day change reads as that day, as on Microsoft', asy
     const r = await run(s, 'calendar.update', { id: '/cal/me/work/b.ics', start: '2030-11-10', end: '2030-11-10' });
     assert.match(r.text, /Now 2030-11-10, all day \(Europe\/Paris\)\./);
 });
+
+test('loop 14: CalDAV says the days covered as Microsoft does', async () => {
+    const s = davServer();
+    assert.match((await run(s, 'calendar.create', { title: 'Salon', start: '2030-11-10', end: '2030-11-12' })).text, /Created: Salon \(2030-11-10 to 2030-11-11 included, all day\)/);
+    assert.match((await run(s, 'calendar.update', { id: '/cal/me/work/b.ics', start: '2030-11-10', end: '2030-11-12' })).text, /Now 2030-11-10 to 2030-11-11 included, all day/);
+});

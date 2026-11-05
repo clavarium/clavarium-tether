@@ -532,3 +532,13 @@ test('loop 13: Microsoft says a one-day all-day change as that day, as CalDAV do
     const r = await calendar({ fetch: s.fetch }).run('calendar.update', M, { id: 'E1', start: '2030-11-10', end: '2030-11-10' }, ctx());
     assert.match(r.text, /Now 2030-11-10, all day \(Europe\/Paris\)\./);
 });
+
+test('loop 14: the days an all-day event covers are said the same on create and update, both providers', async () => {
+    const { daysSaid } = await import('../host/connectors/calendar.mjs');
+    assert.equal(daysSaid('2030-11-10', '2030-11-12'), '2030-11-10 to 2030-11-11 included, all day');
+    assert.equal(daysSaid('2030-11-10', '2030-11-11'), '2030-11-10, all day');
+    assert.equal(daysSaid('2030-11-10', '2030-11-10'), '2030-11-10, all day');
+    const s = graphCal(() => ORG());
+    assert.match((await calendar({ fetch: s.fetch }).run('calendar.create', M, { title: 'Salon', start: '2030-11-10', end: '2030-11-12' }, ctx())).text, /Created: Salon \(2030-11-10 to 2030-11-11 included, all day\)/);
+    assert.match((await calendar({ fetch: s.fetch }).run('calendar.update', M, { id: 'E1', start: '2030-11-10', end: '2030-11-12' }, ctx())).text, /Now 2030-11-10 to 2030-11-11 included, all day/);
+});
