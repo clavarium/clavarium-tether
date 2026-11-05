@@ -531,7 +531,9 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
             if (!already) {
                 rec.trying = host.now(); keep();
                 const raw = found.raw.replace(/^Date: .*$/m, `Date: ${new Date(host.now()).toUTCString()}`);
-                await deliver(target, ctx, {}, { to: rec.to, cc: rec.cc, bcc: rec.bcc, raw, attachments: [] });
+                /* A try that failed for sure (server away, refused) left nothing: the mark is taken off (loop 11). */
+                try { await deliver(target, ctx, {}, { to: rec.to, cc: rec.cc, bcc: rec.bcc, raw, attachments: [] }); }
+                catch (e) { if (e?.unsure !== true) { delete rec.trying; keep(); } throw e; }
             }
             rec.sentAt = host.now(); keep();
         }
@@ -652,7 +654,7 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
                 const late = outcome === 'sent' && host.now() - rec.when > LATE_MS;
                 host.note({ agent: { id: rec.agent, name: rec.agent }, target: { id: rec.target, title: target?.title }, verb: 'mail.send', detail: `later, to ${rec.to.join(', ')}: ${rec.subject}`,
                     decision: 'yes', because: 'later', ok: outcome === 'sent', ...(outcome === 'sent' ? {} : { error: error ?? (outcome === 'cancelled' ? 'cancelled: the draft was deleted' : outcome) }) });
-                if (unsure) tell(rec, 'mail.later-unsure', `The mail "${rec.subject}" to ${rec.to.join(', ')} MAY have been sent: the server took it but never confirmed. It is not sent again; check Sent (its draft is still in ${rec.box}).`, rec.id);
+                if (unsure) tell(rec, 'mail.later-unsure', `The mail "${rec.subject}" to ${rec.to.join(', ')} MAY have been sent (${error}). It is not sent again; check Sent (its draft is still in ${rec.box}).`, rec.id);
                 else if (error) tell(rec, 'mail.later-failed', `The mail "${rec.subject}" to ${rec.to.join(', ')}, to leave at ${wallClock(new Date(rec.when))}, could NOT be sent: ${error}. It is still in ${rec.box}.`, rec.id);
                 else if (late) tell(rec, 'mail.later-late', `The mail "${rec.subject}" to ${rec.to.join(', ')}, due at ${wallClock(new Date(rec.when))}, left late, at ${wallClock(new Date(host.now()))} (${rec.held ? 'the agent was stopped by a person until then' : rec.tries ? 'the mail server could not be reached until then' : 'the keeper was not running at its time'}).`, rec.id);
             }

@@ -281,3 +281,19 @@ test('loop 10: a classic box whose scheduled try was cut and is not in Sent is t
     assert.equal(m.messages.length, 0, 'not sent again');
     assert.equal(h.notices[0].kind, 'mail.later-unsure');
 });
+
+test('loop 11: a classic server away for a while delays a scheduled mail, never cancels it as "maybe sent"', async () => {
+    const clock = { t: Date.now() };
+    const s = imapBox(); const m = smtp();
+    let down = true;
+    const conn = mail({ connect: s.connect, smtpConnect: (o) => { if (down) { const e = new EventEmitter(); e.write = () => {}; e.destroy = () => {}; setImmediate(() => e.emit('error', new Error('refused'))); return e; } return m.connect(o); }, smtpSecure: m.secure });
+    const h = hostOf(BOX, clock); conn.wake(h.hand);
+    await conn.run('mail.send', BOX, { to: 'bob@example.com', subject: 'Plus tard', body: 'x', at: new Date(clock.t + 120_000).toISOString() }, ctx());
+    clock.t += 180_000; await conn.tick();
+    clock.t += 60_000; await conn.tick();
+    assert.equal(conn.later().length, 1, 'still waiting');
+    assert.equal(h.notices.length, 0);
+    down = false;
+    clock.t += 60_000; await conn.tick();
+    assert.equal(m.messages.length, 1, 'sent once the server is back');
+});
