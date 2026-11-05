@@ -42,8 +42,8 @@ export const HELP = `${NAME}: act on the targets you were given (machines, folde
   ${NAME} mail TARGET source UID [--mailbox NAME]      the raw source (every header, both bodies)
   ${NAME} mail TARGET attachment UID NAME|N            download one attachment (base64)
   ${NAME} mail TARGET search "text" [--mailbox NAME]
-  ${NAME} mail TARGET move UID MAILBOX                 move a message to a folder
-  ${NAME} mail TARGET flag UID read|unread|flagged|unflagged
+  ${NAME} mail TARGET move UID MAILBOX [--from FOLDER] move a message to a folder (from the one it was listed in)
+  ${NAME} mail TARGET flag UID read|unread|flagged|unflagged [--mailbox NAME]
   ${NAME} mail TARGET delete UID                       delete a message (to Trash / Deleted Items)
   ${NAME} mail TARGET send --to "a@b,c@d" --subject "..." --body "..." [--cc "..."] [--attach FILE ...]   (--attach repeats, or --attach A,B)
   ${NAME} calendar TARGET list [--from DATE] [--to DATE]   events in a window (default: from now on)
@@ -156,8 +156,8 @@ export function read(argv) {
                 case 'source': return need(p[0], 'mail TARGET source UID [--mailbox NAME]') ?? ['mail.source', { target, uid: p[0], ...box }];
                 case 'attachment': return need(p.length >= 2, 'mail TARGET attachment UID NAME|N [--mailbox NAME] [--out DIR]') ?? ['mail.attachment', { target, uid: p[0], which: p.slice(1).join(' '), ...box, ...(flags.out !== undefined ? { out: flags.out } : {}) }];
                 case 'search': return need(p.length, 'mail TARGET search "text" [--mailbox NAME]') ?? ['mail.search', { target, text: p.join(' '), ...box }];
-                case 'move': return need(p.length === 2, 'mail TARGET move UID MAILBOX') ?? ['mail.move', { target, uid: p[0], mailbox: p[1], ...why }];
-                case 'flag': return need(p.length === 2, 'mail TARGET flag UID FLAG') ?? ['mail.flag', { target, uid: p[0], flag: p[1], ...why }];
+                case 'move': return need(p.length === 2, 'mail TARGET move UID MAILBOX [--from FOLDER]') ?? ['mail.move', { target, uid: p[0], mailbox: p[1], ...(flags.from !== undefined ? { from: flags.from } : {}), ...why }];
+                case 'flag': return need(p.length === 2, 'mail TARGET flag UID FLAG [--mailbox NAME]') ?? ['mail.flag', { target, uid: p[0], flag: p[1], ...box, ...why }];
                 case 'delete': return need(p[0], 'mail TARGET delete UID') ?? ['mail.delete', { target, uid: p[0], ...box, ...why }];
                 default: {
                     const usage = { send: 'mail TARGET send --to "a@b" --subject "..." --body "..."', reply: 'mail TARGET reply UID --body "..." [--all]', forward: 'mail TARGET forward UID --to "a@b" [--body "..."] [--keep all|none|NAMES]' }[what];

@@ -741,7 +741,8 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
             if (isGraph(target)) return gmail.move(target, a, ctx);
             const uid = numUid(a.uid);
             return withImap(target, ctx, async (imap) => {
-                await imap.command(`SELECT ${quoted(boxOf(target))}`, 'that mailbox could not be opened');
+                /* The uid is the one of the folder it was listed in (from): another folder's same number is another message. */
+                await imap.command(`SELECT ${quoted(boxOf(target, a.from))}`, 'that mailbox could not be opened');
                 await imap.command(`UID MOVE ${uid} ${quoted(String(a.mailbox))}`, 'that message could not be moved (the destination folder may not exist)');
                 return { text: `Moved #${uid} to ${a.mailbox}.`, size: 0 };
             }, { write: true });
@@ -752,7 +753,7 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
             const uid = numUid(a.uid);
             const { op, flag } = flagOf(a.flag);
             return withImap(target, ctx, async (imap) => {
-                await imap.command(`SELECT ${quoted(boxOf(target))}`, 'that mailbox could not be opened');
+                await imap.command(`SELECT ${quoted(boxOf(target, a.mailbox))}`, 'that mailbox could not be opened');
                 await imap.command(`UID STORE ${uid} ${op}FLAGS (${flag})`, 'that message could not be marked');
                 return { text: `Marked #${uid} ${String(a.flag).toLowerCase().trim()}.`, size: 0 };
             });
@@ -835,7 +836,7 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
         if (isGraph(target)) return gmail.about(target, a, ctx);
         const uid = numUid(a.uid);
         return withImap(target, ctx, async (imap) => {
-            await imap.command(`EXAMINE ${quoted(boxOf(target, verb === 'mail.move' ? undefined : a.mailbox))}`, 'that mailbox could not be opened');
+            await imap.command(`EXAMINE ${quoted(boxOf(target, verb === 'mail.move' ? a.from : a.mailbox))}`, 'that mailbox could not be opened');
             const lines = await imap.command(`UID FETCH ${uid} (BODY.PEEK[HEADER.FIELDS (FROM SUBJECT DATE)])`, 'that message could not be read');
             const l = lines.find((x) => /^\* \d+ FETCH/i.test(x)) ?? '';
             const block = l.slice(l.indexOf('\n') + 1);

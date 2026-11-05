@@ -223,8 +223,8 @@ export function check(verb, a = {}) {
         case 'mail.source': str('uid', 1024); str('mailbox', 200); break;
         case 'mail.attachment': str('uid', 1024); str('which', 400); str('mailbox', 200); break;
         case 'mail.search': str('text', 400); str('mailbox', 200); break;
-        case 'mail.move': str('uid', 1024); str('mailbox', 200); break;
-        case 'mail.flag': str('uid', 1024); str('flag', 40); break;
+        case 'mail.move': str('uid', 1024); str('mailbox', 200); str('from', 200); break;
+        case 'mail.flag': str('uid', 1024); str('flag', 40); str('mailbox', 200); break;
         case 'mail.delete': str('uid', 1024); str('mailbox', 200); break;
         case 'mail.send': case 'mail.reply': case 'mail.forward': {
             if (verb !== 'mail.send') { str('uid', 1024); str('mailbox', 200); }

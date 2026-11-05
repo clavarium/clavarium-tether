@@ -25,7 +25,7 @@ export function cardOf(verb, a = {}, target = {}) {
                 return drop({ ...base, to: list(a.to), cc: list(a.cc), bcc: list(a.bcc), subject: a.subject, body: short(a.body), files: filesOf(a),
                     all: a.all === true || undefined, keep: a.keep, draft: a.draft === true || undefined, at: a.at, uid: a.uid });
             }
-            return drop({ ...base, uid: a.uid, mailbox: a.mailbox, flag: a.flag, text: a.text });
+            return drop({ ...base, uid: a.uid, mailbox: a.mailbox, from: a.from, flag: a.flag, text: a.text });
         }
         case 'calendar': {
             const base = { kind: 'calendar', action: act, self };

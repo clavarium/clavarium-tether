@@ -414,3 +414,16 @@ test('mail refuses a target with no provider and no host, and an unknown verb', 
     await assert.rejects(c.run('mail.list', { id: 'x', title: 'X', config: { user: 'u' }, secrets: { password: 'p' } }, {}, ctx()), /mail server \(host\), or a google\/microsoft/);
     await assert.rejects(async () => c.run('mail.nope', TARGET, {}, ctx()), /not done by this connector/);
 });
+
+test('mail.move and mail.flag act in the folder the message was listed in, never on INBOX\'s same number (audit 05-11)', async () => {
+    const s = imapServer(STORE);
+    const conn = mail({ fetch: okToken, connect: s.connect });
+    await conn.run('mail.move', TARGET, { uid: '5', mailbox: 'INBOX', from: 'Archive' }, ctx());
+    await conn.run('mail.flag', TARGET, { uid: '5', flag: 'read', mailbox: 'Archive' }, ctx());
+    assert.deepEqual(s.commands.filter((c) => c.startsWith('SELECT')), ['SELECT "Archive"', 'SELECT "Archive"']);
+    await conn.run('mail.flag', TARGET, { uid: '5', flag: 'read' }, ctx());
+    assert.equal(s.commands.filter((c) => c.startsWith('SELECT')).at(-1), 'SELECT "INBOX"', 'INBOX by default');
+    const { check } = await import('../server/verbs.mjs');
+    assert.equal(check('mail.move', { target: 't', uid: '5', mailbox: 'INBOX', from: 'Archive' }).from, 'Archive');
+    assert.equal(check('mail.flag', { target: 't', uid: '5', flag: 'read', mailbox: 'Archive' }).mailbox, 'Archive');
+});
