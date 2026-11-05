@@ -423,3 +423,10 @@ test('loop 45: a 403 on a CalDAV write is "not allowed", never the password', as
     const ro = { ...s, fetch: async (url, o = {}) => (o.method === 'PUT' ? new Response('', { status: 403 }) : s.fetch(url, o)) };
     await assert.rejects(run(ro, 'calendar.update', { id: '/cal/me/work/b.ics', title: 'x' }), /does not allow this here \(403/);
 });
+
+test('loop 47: an update that leaves the account out of "with" never says a cancellation goes to the account', async () => {
+    const s = scheduling(davServer(), true);
+    s.files.set('/cal/me/work/o.ics', { text: ev('o', 'RDV', '20301104T080000Z', 'ORGANIZER:mailto:me@example.com\r\nATTENDEE;PARTSTAT=ACCEPTED:mailto:me@example.com\r\nATTENDEE;PARTSTAT=NEEDS-ACTION:mailto:a@example.org\r\n'), etag: '"1"' });
+    const r = await run(s, 'calendar.update', { id: '/cal/me/work/o.ics', with: 'a@example.org' });
+    assert.doesNotMatch(r.text, /cancellation to me@example\.com/);
+});

@@ -350,7 +350,7 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
             const before = eventOf(text); const after = eventOf(t);
             const mine = !before.organizer || before.organizer.toLowerCase() === userOf(target).toLowerCase();
             const others = after.attendees.map((x) => x.email).filter((x) => x.toLowerCase() !== userOf(target).toLowerCase());
-            const gone = before.attendees.map((x) => x.email).filter((x) => !after.attendees.some((y) => y.email.toLowerCase() === x.toLowerCase()));
+            const gone = before.attendees.map((x) => x.email).filter((x) => x.toLowerCase() !== userOf(target).toLowerCase() && !after.attendees.some((y) => y.email.toLowerCase() === x.toLowerCase()));   /* never this account (loop 47) */
             const sched = (others.length || gone.length) && mine ? await schedules(target, ctx) : false;
             const told = !mine ? (others.length ? ` You are not the organiser (${before.organizer}): the change stays on this calendar, the others do not see it.` : '') : !(others.length || gone.length) ? '' : sched ? ` The calendar server sends the change to ${others.join(', ') || 'nobody left'}${gone.length ? `, and a cancellation to ${gone.join(', ')} (removed)` : ''}.` : ` Invitees (${[...others, ...gone].join(', ')}): ${NOT_TOLD}.`;
             /* The time set, said as Microsoft's result says it (loop 4). */
