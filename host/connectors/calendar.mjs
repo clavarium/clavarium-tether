@@ -291,7 +291,9 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
             const set = (name, lines) => { t = setProps(t, name, lines); changed++; };
             if (a.title !== undefined) set('SUMMARY', [`SUMMARY:${escapeText(a.title)}`]);
             if (a.start !== undefined) set('DTSTART', [timeLine('DTSTART', a.start)]);
-            if (a.end !== undefined) set('DTEND', [timeLine('DTEND', a.start !== undefined ? dayEnd(a.start, a.end) : a.end)]);
+            /* An end alone on an all-day event follows the same rule, against its current start (loop 15). */
+            const curStart = eventOf(text).start;
+            if (a.end !== undefined) set('DTEND', [timeLine('DTEND', a.start !== undefined ? dayEnd(a.start, a.end) : isDay(curStart) && isDay(a.end) ? dayEnd(curStart, a.end) : a.end)]);
             if (a.where !== undefined) set('LOCATION', String(a.where).trim() ? [`LOCATION:${escapeText(a.where)}`] : []);
             if (a.notes !== undefined) set('DESCRIPTION', String(a.notes).trim() ? [`DESCRIPTION:${escapeText(a.notes)}`] : []);
             if (a.with !== undefined) {
@@ -665,7 +667,11 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
             const patch = {};
             if (a.title !== undefined) patch.subject = String(a.title);
             if (a.start !== undefined) { patch.start = msTime(a.start); patch.isAllDay = isDay(a.start); }
-            if (a.end !== undefined) patch.end = msTime(a.start !== undefined ? dayEnd(a.start, a.end) : a.end);
+            /* Read first (who it concerns, and the event's own start and end, to say what it now covers). */
+            const who = await peopleOf(target, ctx, a.id);
+            const curDay = who.isAllDay ? String(who.start).slice(0, 10) : null;
+            const endAs = a.end === undefined ? undefined : a.start !== undefined ? dayEnd(a.start, a.end) : curDay && isDay(a.end) ? dayEnd(curDay, a.end) : a.end;
+            if (a.end !== undefined) patch.end = msTime(endAs);
             if (a.where !== undefined) patch.location = { displayName: String(a.where) };
             if (a.notes !== undefined) patch.body = { contentType: 'text', content: String(a.notes) };
             if (a.with !== undefined) patch.attendees = String(a.with).split(',').map((x) => x.trim()).filter(Boolean).map((e) => ({ emailAddress: { address: e }, type: 'required' }));
@@ -694,8 +700,10 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
                     }
                 }
             }
-            const who = await peopleOf(target, ctx, a.id);
-            const when = a.start !== undefined || a.end !== undefined ? ` Now ${a.start !== undefined && isDay(a.start) ? daysSaid(a.start, a.end ?? a.start) : [a.start, a.end].map((t) => (t === undefined ? '' : shortWhen(String(t)))).join(' — ').replace(/^ — | — $/, '')} (${TZ}).` : '';
+            /* What it now covers, from the event as it will stand (its own start or end where not changed), never from the request alone (loop 15). */
+            const newStart = a.start !== undefined ? String(a.start).trim() : (curDay ?? who.start);
+            const newEnd = endAs !== undefined ? String(endAs).trim() : (who.isAllDay ? String(who.end).slice(0, 10) : who.end);
+            const when = a.start !== undefined || a.end !== undefined ? ` Now ${isDay(newStart) ? daysSaid(newStart, isDay(newEnd) ? newEnd : newStart) : `${shortWhen(String(newStart))} — ${shortWhen(String(newEnd))}`} (${TZ}).` : '';
             const res = await call(target, ctx, 'PATCH', API.microsoft.event(String(a.id)), patch);
             if (res.status === 404) no('no such event');
             if (!res.ok) no(`${target.title}: the event was not changed (${res.status} ${await bodyError(res)})`.trim());
@@ -767,12 +775,12 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
     /* Who an event concerns (Microsoft): its organiser, whether that is this account, its invitees. */
     /* Read before an act that concerns the others: an unread list is never taken as "nobody" (loop 10). */
     async function peopleOf(target, ctx, id) {
-        const res = await call(target, ctx, 'GET', `${API.microsoft.event(String(id))}?$select=subject,start,isOrganizer,organizer,attendees`);
+        const res = await call(target, ctx, 'GET', `${API.microsoft.event(String(id))}?$select=subject,start,end,isAllDay,isOrganizer,organizer,attendees`);
         if (res.status === 404) no('no such event');
         if (!res.ok) no(`${target.title}: the event could not be read first, to say who it concerns (${res.status}) -- nothing was done`);
         const j = await res.json().catch(() => null);
         if (!j) no(`${target.title}: the event could not be read first -- nothing was done`);
-        return { isOrganizer: j.isOrganizer !== false, organizer: j.organizer?.emailAddress?.address ?? '', attendees: (j.attendees ?? []).map((x) => x.emailAddress?.address).filter(Boolean), title: j.subject ?? '', start: j.start?.dateTime ?? '' };
+        return { isOrganizer: j.isOrganizer !== false, organizer: j.organizer?.emailAddress?.address ?? '', attendees: (j.attendees ?? []).map((x) => x.emailAddress?.address).filter(Boolean), title: j.subject ?? '', start: j.start?.dateTime ?? '', end: j.end?.dateTime ?? '', isAllDay: j.isAllDay === true };
     }
     /* What a change sends to the others (#12): the organiser's change goes to every invitee; with "with", the
        list is REPLACED -- one left out gets a cancellation. An invitee's change stays on this calendar. */

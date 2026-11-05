@@ -496,7 +496,7 @@ test('Microsoft: an answer to an invitation says the organiser is told, as on Ca
 test('loop 5: Microsoft attach refuses when the participants cannot be read (never "visible to you alone" by default)', async () => {
     const fetch = async (url) => (url.includes('login.microsoftonline.com') ? json({ access_token: 'T', expires_in: 3600 }) : json({ error: { message: 'busy' } }, 503));
     await assert.rejects(calendar({ fetch }).run('calendar.attach', M, { id: 'E1', attach: 'SGk=', attachName: 'a.pdf' }, ctx()), /participants could not be read \(503\) -- nothing was attached/);
-    await assert.rejects(calendar({ fetch }).run('calendar.update', M, { id: 'E1', notes: 'new' }, ctx()), /could not be read to keep its Teams meeting/);
+    await assert.rejects(calendar({ fetch }).run('calendar.update', M, { id: 'E1', notes: 'new' }, ctx()), /could not be read.*nothing was (done|changed)/);
 });
 
 test('loop 7: on a public mailbox domain, a namesake address is outside -- a file to it needs share', async () => {
@@ -541,4 +541,13 @@ test('loop 14: the days an all-day event covers are said the same on create and 
     const s = graphCal(() => ORG());
     assert.match((await calendar({ fetch: s.fetch }).run('calendar.create', M, { title: 'Salon', start: '2030-11-10', end: '2030-11-12' }, ctx())).text, /Created: Salon \(2030-11-10 to 2030-11-11 included, all day\)/);
     assert.match((await calendar({ fetch: s.fetch }).run('calendar.update', M, { id: 'E1', start: '2030-11-10', end: '2030-11-12' }, ctx())).text, /Now 2030-11-10 to 2030-11-11 included, all day/);
+});
+
+test('loop 15: a Microsoft all-day change says the days the event now covers, from its own end; an end alone follows the same rule', async () => {
+    const s = graphCal(() => ORG({ isAllDay: true, start: { dateTime: '2030-11-10T00:00:00.0000000' }, end: { dateTime: '2030-11-13T00:00:00.0000000' } }));
+    const r = await calendar({ fetch: s.fetch }).run('calendar.update', M, { id: 'E1', start: '2030-11-09' }, ctx());
+    assert.match(r.text, /Now 2030-11-09 to 2030-11-12 included, all day/);
+    const r2 = await calendar({ fetch: s.fetch }).run('calendar.update', M, { id: 'E1', end: '2030-11-10' }, ctx());
+    assert.match(r2.text, /Now 2030-11-10, all day/);
+    assert.equal(s.calls.filter((c) => c.method === 'PATCH').at(-1).body.end.dateTime, '2030-11-11T00:00:00', 'never an empty event');
 });

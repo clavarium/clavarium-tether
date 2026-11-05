@@ -270,3 +270,12 @@ test('loop 14: CalDAV says the days covered as Microsoft does', async () => {
     assert.match((await run(s, 'calendar.create', { title: 'Salon', start: '2030-11-10', end: '2030-11-12' })).text, /Created: Salon \(2030-11-10 to 2030-11-11 included, all day\)/);
     assert.match((await run(s, 'calendar.update', { id: '/cal/me/work/b.ics', start: '2030-11-10', end: '2030-11-12' })).text, /Now 2030-11-10 to 2030-11-11 included, all day/);
 });
+
+test('loop 15: an end alone on a CalDAV all-day event follows the same rule as create', async () => {
+    const s = davServer();
+    const made = await run(s, 'calendar.create', { title: 'Congés', start: '2030-11-10', end: '2030-11-13' });
+    const id = /Its id is (\S+)\./.exec(made.text)[1];
+    const r = await run(s, 'calendar.update', { id, end: '2030-11-10' });
+    assert.match(r.text, /Now 2030-11-10, all day/);
+    assert.match(s.files.get(id).text, /DTEND;VALUE=DATE:20301111/);
+});
