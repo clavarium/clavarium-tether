@@ -213,6 +213,15 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
         return yes;
     }
     const NOT_TOLD = 'this calendar server sends no invitations (it does not schedule): they are NOT told -- tell them yourself, e.g. by mail';
+    /* A REPEATING EVENT on CalDAV (loop 22): its id is the whole series (every occurrence shares it; Microsoft lists
+       each occurrence with its own id). A change, a delete, an answer apply to every occurrence: said, never silent. */
+    const SERIES = ' It is a repeating event: this applied to the WHOLE series (every occurrence), not one date.';
+    async function wholeSeries(target, ctx, id, act) {
+        let series = false;
+        try { series = /^RRULE/im.test((await davGet(target, ctx, id)).text.replace(/\r?\n[ \t]/g, '')); } catch { /* the act reads it itself, and says */ }
+        const r = await act();
+        return series ? { ...r, text: `${r.text}${SERIES}` } : r;
+    }
     const urlOf = async (target, ctx, id) => { const s = String(id ?? '').trim(); if (!s) no('that needs the event id (from the list)'); return /^https?:\/\//.test(s) ? s : new URL(s, await folderOf(target, ctx)).href; };
     const XML = { 'Content-Type': 'application/xml; charset=utf-8' };
     /* The events of a window: with `expand`, one entry per occurrence (to show);
@@ -229,7 +238,7 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
             if (!expand) { out.push({ href: r.href, etag: r.value('getetag'), text: data }); continue; }
             for (const piece of data.split(/BEGIN:VEVENT/i).slice(1)) {
                 const ev = eventOf(`BEGIN:VEVENT${piece.split(/END:VEVENT/i)[0]}END:VEVENT`);
-                if (ev.summary || ev.start) out.push({ href: r.href, ...ev });
+                if (ev.summary || ev.start) out.push({ href: r.href, ...ev, series: /RECURRENCE-ID/i.test(piece) || /^RRULE/im.test(data) });
             }
         }
         return out;
@@ -248,7 +257,7 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
         if (!res.ok) no(`${target.title}: the calendar refused the change (${res.status})`);
         return res;
     }
-    const briefOf = (ev) => `${ev.href || '(no id)'}\n  ${ev.start || '?'} — ${ev.summary || '(no title)'}${ev.location ? `  @ ${ev.location}` : ''}${ev.categories.length ? `  [${ev.categories.join(', ')}]` : ''}`;
+    const briefOf = (ev) => `${ev.href || '(no id)'}${ev.series ? '  (repeats: this id is the WHOLE series)' : ''}\n  ${ev.start || '?'} — ${ev.summary || '(no title)'}${ev.location ? `  @ ${ev.location}` : ''}${ev.categories.length ? `  [${ev.categories.join(', ')}]` : ''}`;
     const PARTSTAT = { accept: 'ACCEPTED', yes: 'ACCEPTED', decline: 'DECLINED', no: 'DECLINED', refuse: 'DECLINED', tentative: 'TENTATIVE', maybe: 'TENTATIVE' };
     const FILE_MAX = 5 * 1024 * 1024;   /* bytes of a file kept inside an event */
     const yearAround = () => ({ from: new Date(Date.now() - 366 * 86_400_000).toISOString(), to: new Date(Date.now() + 2 * 366 * 86_400_000).toISOString() });
@@ -634,7 +643,7 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
         async 'calendar.delete'(target, a, ctx) {
             const provider = providerOf(target);
             if (!a.id) no('delete needs the event id (from the list)');
-            if (provider !== 'microsoft') return davVerbs.remove(target, a, ctx);
+            if (provider !== 'microsoft') return wholeSeries(target, ctx, a.id, () => davVerbs.remove(target, a, ctx));
             const who = await peopleOf(target, ctx, a.id);
             const res = await call(target, ctx, 'DELETE', API.microsoft.event(String(a.id)));
             if (res.status === 404) no('no such event');
@@ -652,7 +661,7 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
             const map = { accept: 'accept', yes: 'accept', decline: 'decline', no: 'decline', refuse: 'decline', tentative: 'tentativelyAccept', maybe: 'tentativelyAccept' };
             const action = map[String(a.answer ?? '').toLowerCase().trim()];
             if (!action) no('answer is accept, decline or tentative');
-            if (provider !== 'microsoft') return davVerbs.respond(target, a, ctx, PARTSTAT[String(a.answer).toLowerCase().trim()]);
+            if (provider !== 'microsoft') return wholeSeries(target, ctx, a.id, () => davVerbs.respond(target, a, ctx, PARTSTAT[String(a.answer).toLowerCase().trim()]));
             const body = { sendResponse: true, ...(a.comment ? { comment: String(a.comment) } : {}) };
             const who = await peopleOf(target, ctx, a.id).catch(() => null);   /* only to name the organiser */
             const res = await call(target, ctx, 'POST', `https://graph.microsoft.com/v1.0/me/events/${encodeURIComponent(String(a.id))}/${action}`, body);
@@ -665,7 +674,7 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
         async 'calendar.update'(target, a, ctx) {
             const provider = providerOf(target);
             if (!a.id) no('update needs the event id (from the list)');
-            if (provider !== 'microsoft') return davVerbs.update(target, a, ctx);
+            if (provider !== 'microsoft') return wholeSeries(target, ctx, a.id, () => davVerbs.update(target, a, ctx));
             const patch = {};
             if (a.title !== undefined) patch.subject = String(a.title);
             if (a.start !== undefined) { patch.start = msTime(a.start); patch.isAllDay = isDay(a.start); }
@@ -881,7 +890,7 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
             const { text, url } = await davGet(target, ctx, a.id);
             const e = eventOf(text);
             const me = String(target.config?.user ?? '').toLowerCase();
-            ev = { title: e.summary, start: e.start, end: e.end, where: e.location, organizer: e.organizer, attendees: e.attendees.map((x) => x.email).filter((x) => x.toLowerCase() !== me), url, mine: !e.organizer || e.organizer.toLowerCase() === me };
+            ev = { title: e.summary, start: e.start, end: e.end, where: e.location, organizer: e.organizer, attendees: e.attendees.map((x) => x.email).filter((x) => x.toLowerCase() !== me), url, mine: !e.organizer || e.organizer.toLowerCase() === me, series: /^RRULE/im.test(text.replace(/\r?\n[ \t]/g, '')) };
         }
         /* What the act does to the others, for the card (#12): a person approves knowing who gets what. */
         try {
@@ -896,9 +905,10 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
                 if (gone.length && sent) effects.push(`removed: ${gone.join(', ')} (they get a cancellation)`);
             }
             if (verb === 'calendar.respond') effects.push(sent ? `the organiser${ev.organizer ? ` (${ev.organizer})` : ''} is told` : 'the organiser is NOT told (this server does not schedule)');
+            if (provider !== 'microsoft' && ev.series && ['calendar.update', 'calendar.delete', 'calendar.respond'].includes(verb)) effects.unshift('the WHOLE repeating series (every occurrence), not one date');
             if (effects.length) ev.effects = effects;
         } catch { /* the card says less */ }
-        delete ev.mine;
+        delete ev.mine; delete ev.series;
         /* What already stands at that time (an invitation answered): other events overlapping. */
         if (verb === 'calendar.respond') {
             try {

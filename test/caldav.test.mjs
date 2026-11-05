@@ -289,3 +289,21 @@ test('loop 17: a file put in an event whose read-back fails is "may have been do
     assert.match(failed(e.message), /^Uncertain/);
     assert.match(failed('Box: that message was marked deleted, but could not be removed now: the next clean-up of Trash by any mail program removes it for good'), /^Done in part/);
 });
+
+test('loop 22: a repeating CalDAV event -- listed as the whole series, and a change, delete or answer says it applied to every occurrence', async () => {
+    const s = davServer();
+    s.files.set('/cal/me/work/r.ics', { text: ev('r', 'Point hebdo', '20301104T080000Z', 'RRULE:FREQ=WEEKLY;COUNT=4\r\nORGANIZER:mailto:boss@example.com\r\nATTENDEE;PARTSTAT=NEEDS-ACTION:mailto:me@example.com\r\n'), etag: '"1"' });
+    const about = await calendar({ fetch: s.fetch }).describe('calendar.delete', T, { id: '/cal/me/work/r.ics' }, ctx());
+    assert.equal(about.effects[0], 'the WHOLE repeating series (every occurrence), not one date');
+    assert.match((await run(s, 'calendar.respond', { id: '/cal/me/work/r.ics', answer: 'accept' })).text, /repeating event: this applied to the WHOLE series/);
+    assert.match((await run(s, 'calendar.update', { id: '/cal/me/work/r.ics', title: 'Point' })).text, /WHOLE series/);
+    assert.match((await run(s, 'calendar.delete', { id: '/cal/me/work/r.ics' })).text, /WHOLE series/);
+    assert.doesNotMatch((await run(s, 'calendar.delete', { id: '/cal/me/work/b.ics' })).text, /series/);
+});
+
+test('loop 22: the list marks a repeating event as the whole series', async () => {
+    const s = davServer();
+    s.files.set('/cal/me/work/r.ics', { text: ev('r', 'Point hebdo', '20301104T080000Z', 'RRULE:FREQ=WEEKLY;COUNT=4\r\n'), etag: '"1"' });
+    const r = await run(s, 'calendar.list', { from: '2030-11-01', to: '2030-12-31' });
+    assert.match(r.text, /\/cal\/me\/work\/r\.ics  \(repeats: this id is the WHOLE series\)/);
+});
