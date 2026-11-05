@@ -218,14 +218,19 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
     const SERIES = ' It is a repeating event: this applied to the WHOLE series (every occurrence), not one date.';
     /* A date of the series changed on its own is a VEVENT of its own (RECURRENCE-ID): a change of the series does not
        reach it -- said, with its dates (loop 23). Delete removes the whole resource, overrides included. */
+    /* What a CalDAV resource holds of a series: is it one, is its first part a single date, which dates are changed on their own. */
+    const seriesOf = (raw) => {
+        const blocks = String(raw).replace(/\r?\n[ \t]/g, '').split(/BEGIN:VEVENT/i).slice(1).map((b) => b.split(/END:VEVENT/i)[0]);
+        return { series: blocks.some((b) => /^RRULE/im.test(b)), first: /^RECURRENCE-ID/im.test(blocks[0] ?? ''),
+            own: blocks.filter((b) => /^RECURRENCE-ID/im.test(b)).map((b) => /^RECURRENCE-ID[^:]*:(\d{4})(\d{2})(\d{2})/im.exec(b)).filter(Boolean).map((m) => `${m[1]}-${m[2]}-${m[3]}`) };
+    };
     async function wholeSeries(target, ctx, id, act, { removes = false } = {}) {
         let series = false; let own = [];
         try {
-            const text = (await davGet(target, ctx, id)).text.replace(/\r?\n[ \t]/g, '');
-            const blocks = text.split(/BEGIN:VEVENT/i).slice(1).map((b) => b.split(/END:VEVENT/i)[0]);
-            series = blocks.some((b) => /^RRULE/im.test(b));
-            if (series && /^RECURRENCE-ID/im.test(blocks[0] ?? '') && !removes) no(`${target.title}: this event's first part is one date of a series, not the series -- nothing was done; change it in a calendar program`);
-            own = blocks.filter((b) => /^RECURRENCE-ID/im.test(b)).map((b) => /^RECURRENCE-ID[^:]*:(\d{4})(\d{2})(\d{2})/im.exec(b)).filter(Boolean).map((m) => `${m[1]}-${m[2]}-${m[3]}`);
+            const got = seriesOf((await davGet(target, ctx, id)).text);
+            series = got.series;
+            if (series && got.first && !removes) no(`${target.title}: this event's first part is one date of a series, not the series -- nothing was done; change it in a calendar program`);
+            own = got.own;
         } catch (e) { if (e instanceof Refused) throw e; /* the act reads it itself, and says */ }
         const r = await act();
         if (!series) return r;
@@ -900,7 +905,7 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
             const { text, url } = await davGet(target, ctx, a.id);
             const e = eventOf(text);
             const me = String(target.config?.user ?? '').toLowerCase();
-            ev = { title: e.summary, start: e.start, end: e.end, where: e.location, organizer: e.organizer, attendees: e.attendees.map((x) => x.email).filter((x) => x.toLowerCase() !== me), url, mine: !e.organizer || e.organizer.toLowerCase() === me, series: /^RRULE/im.test(text.replace(/\r?\n[ \t]/g, '')) };
+            ev = { title: e.summary, start: e.start, end: e.end, where: e.location, organizer: e.organizer, attendees: e.attendees.map((x) => x.email).filter((x) => x.toLowerCase() !== me), url, mine: !e.organizer || e.organizer.toLowerCase() === me, series: seriesOf(text) };
         }
         /* What the act does to the others, for the card (#12): a person approves knowing who gets what. */
         try {
@@ -915,7 +920,11 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
                 if (gone.length && sent) effects.push(`removed: ${gone.join(', ')} (they get a cancellation)`);
             }
             if (verb === 'calendar.respond') effects.push(sent ? `the organiser${ev.organizer ? ` (${ev.organizer})` : ''} is told` : 'the organiser is NOT told (this server does not schedule)');
-            if (provider !== 'microsoft' && ev.series && ['calendar.update', 'calendar.delete', 'calendar.respond'].includes(verb)) effects.unshift('the WHOLE repeating series (every occurrence), not one date');
+            if (provider !== 'microsoft' && ev.series?.series && ['calendar.update', 'calendar.delete', 'calendar.respond'].includes(verb)) {
+                const own = ev.series.own;
+                effects.unshift(verb === 'calendar.delete' || !own.length ? 'the WHOLE repeating series (every occurrence), not one date'
+                    : `the repeating series, not one date; ${own.length === 1 ? 'a date' : 'dates'} changed on ${own.length === 1 ? 'its' : 'their'} own (${own.join(', ')}) keep${own.length === 1 ? 's' : ''} ${own.length === 1 ? 'its' : 'their'} own values`);
+            }
             if (effects.length) ev.effects = effects;
         } catch { /* the card says less */ }
         delete ev.mine; delete ev.series;
