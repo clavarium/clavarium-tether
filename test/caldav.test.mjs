@@ -279,3 +279,13 @@ test('loop 15: an end alone on a CalDAV all-day event follows the same rule as c
     assert.match(r.text, /Now 2030-11-10, all day/);
     assert.match(s.files.get(id).text, /DTEND;VALUE=DATE:20301111/);
 });
+
+test('loop 17: a file put in an event whose read-back fails is "may have been done", never "not done"', async () => {
+    const s = davServer(); let puts = 0;
+    const flaky = { ...s, fetch: async (url, o = {}) => { if (o.method === 'PUT') puts++; if ((o.method || 'GET') === 'GET' && puts) return new Response('', { status: 503 }); return s.fetch(url, o); } };
+    const e = await run(flaky, 'calendar.attach', { id: '/cal/me/work/b.ics', attach: 'SGVsbG8=', attachName: 'devis.pdf' }).catch((x) => x);
+    assert.match(e.message, /it may have been done: read the event before asking again/);
+    const { failed } = await import('../server/mcp.mjs');
+    assert.match(failed(e.message), /^Uncertain/);
+    assert.match(failed('Box: that message was marked deleted, but could not be removed now: the next clean-up of Trash by any mail program removes it for good'), /^Done in part/);
+});

@@ -139,3 +139,12 @@ test('loop 5: a photo on a vCard 4 is a data: URI; one the server drops is said,
     const T2 = { id: 'b', title: 'Book', config: { carddav: 'https://dav.example.com/book/', user: 'me@example.com' }, secrets: { password: 'p' } };
     await assert.rejects(contacts({ fetch }).run('contacts.attach', T2, { id: 'https://dav.example.com/book/x.vcf', attach: 'QUJD' }, { secret: async () => 'PW' }), /did not keep the photo/);
 });
+
+test('loop 17: a photo sent whose read-back fails is "may have been done"', async () => {
+    const { contacts } = await import('../host/connectors/contacts.mjs');
+    let put = false;
+    const card = 'BEGIN:VCARD\r\nVERSION:3.0\r\nUID:x\r\nFN:A\r\nEND:VCARD\r\n';
+    const fetch = async (url, o = {}) => { if (o.method === 'PUT') { put = true; return new Response(null, { status: 204 }); } return put ? new Response('', { status: 503 }) : new Response(card, { status: 200, headers: { etag: '"1"' } }); };
+    const T2 = { id: 'b', title: 'Book', config: { carddav: 'https://dav.example.com/book/', user: 'me@example.com' }, secrets: { password: 'p' } };
+    await assert.rejects(contacts({ fetch }).run('contacts.attach', T2, { id: 'https://dav.example.com/book/x.vcf', attach: 'QUJD' }, { secret: async () => 'PW' }), /it may have been done: read the contact/);
+});

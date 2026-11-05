@@ -365,7 +365,9 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
             if (mine && externals.length && a.share !== true) no(`${externals.length} external participant(s): ${externals.join(', ')}. The file would reach them with the event. Add --share (CLI) or share:true (MCP) to attach anyway.`);
             const lines = [...props(text, 'ATTACH').map((p) => p.raw), `ATTACH;FMTTYPE=application/octet-stream;ENCODING=BASE64;VALUE=BINARY;X-FILENAME=${name}:${bytes}`];
             await davPut(target, ctx, url, setProps(text, 'ATTACH', lines), { etag });
-            const back = await davGet(target, ctx, a.id);
+            /* Put: a read-back that fails says it may be there, never "not done" (loop 17). */
+            let back;
+            try { back = await davGet(target, ctx, a.id); } catch (e) { no(`${target.title}: the file was sent to the event, but reading it back failed (${e?.message ?? e}) -- it may have been done: read the event before asking again`); }
             const count = (t) => eventOf(t).files.filter((f) => f.name === name).length;
             if (count(back.text) <= count(text)) no(`${target.title}: the calendar did not keep the file (this server takes no file inside an event) -- send it by mail instead`);
             /* It reaches the others only through the server's scheduling (loop 2: it was said sent regardless). */
@@ -709,7 +711,7 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
             if (!res.ok) no(`${target.title}: the event was not changed (${res.status} ${await bodyError(res)})`.trim());
             /* Checked, not trusted: a meeting that should be there and is not is put back (a new link, said so). */
             if (keepTeams) {
-                const after = await call(target, ctx, 'GET', `${API.microsoft.event(String(a.id))}?$select=isOnlineMeeting`);
+                const after = await call(target, ctx, 'GET', `${API.microsoft.event(String(a.id))}?$select=isOnlineMeeting`).catch(() => ({ ok: false, status: 'no answer' }));
                 if (!after.ok) return { text: `Updated the event. Whether its Teams meeting is still there could not be checked (${after.status}): read the event.${when}${told(who, patch)}`, size: 0, watch: watchOf(a, who, patch) };
                 const still = Boolean((await after.json().catch(() => ({}))).isOnlineMeeting);
                 if (!still) {

@@ -332,7 +332,9 @@ export function contacts({ fetch: fetchImpl = globalThis.fetch } = {}) {
                 const type = photoType(a.attach, a.attachName);
                 await cardPut(target, ctx, url, editCard(text, { photo: a.attach, photoType: type }), { etag });
                 /* Read back: a server that drops the photo is said, not "set" (loop 5). */
-                if (!cardOf((await cardGet(target, ctx, id)).text).photo) no(`${target.title}: the address book did not keep the photo`);
+                let back;
+                try { back = await cardGet(target, ctx, id); } catch (e) { no(`${target.title}: the photo was sent, but reading the contact back failed (${e?.message ?? e}) -- it may have been done: read the contact before asking again`); }
+                if (!cardOf(back.text).photo) no(`${target.title}: the address book did not keep the photo`);
                 return { text: `Set the photo on ${id}.`, size: 0 };
             }
             const res = await req(target, ctx, 'PUT', `https://graph.microsoft.com/v1.0/me/contacts/${encodeURIComponent(id)}/photo/$value`, { headers: { 'Content-Type': photoType(a.attach, a.attachName) === 'PNG' ? 'image/png' : 'image/jpeg' }, body: Buffer.from(String(a.attach), 'base64') });

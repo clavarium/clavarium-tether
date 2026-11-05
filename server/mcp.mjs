@@ -104,7 +104,7 @@ export const sayNotices = (list) => list.map((n) => `- ${String(n.at ?? '').slic
 export function failed(text) {
     const t = String(text ?? '');
     if (/may have been (done|sent)|MAY have been|it may have been|maybe sent/i.test(t)) return `Uncertain, check before asking again: ${t}`;
-    if (/done on \d+ of \d+|was changed, but|copied (to the Trash )?but|Sent, but/i.test(t)) return `Done in part: ${t}`;
+    if (/done on \d+ of \d+|was changed, but|copied (to the Trash )?but|Sent, but|, but could not/i.test(t)) return `Done in part: ${t}`;
     return `Not done: ${t}`;
 }
 

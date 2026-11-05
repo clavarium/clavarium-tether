@@ -551,3 +551,18 @@ test('loop 15: a Microsoft all-day change says the days the event now covers, fr
     assert.match(r2.text, /Now 2030-11-10, all day/);
     assert.equal(s.calls.filter((c) => c.method === 'PATCH').at(-1).body.end.dateTime, '2030-11-11T00:00:00', 'never an empty event');
 });
+
+test('loop 17: a Teams check that throws after a done change says "could not be checked", never "not done"', async () => {
+    let patched = false;
+    const fetch = async (url, o = {}) => {
+        const method = o.method || 'GET';
+        if (url.includes('login.microsoftonline.com')) return json({ access_token: 'T', expires_in: 3600 });
+        if (method === 'PATCH') { patched = true; return json({}); }
+        if (url.includes('isOrganizer')) return json({ isOrganizer: true, attendees: [] });
+        if (url.includes('$select=isOnlineMeeting,onlineMeetingProvider')) return json({ isOnlineMeeting: true, body: { contentType: 'html', content: '' } });
+        if (patched) throw Object.assign(new Error('timeout'), { name: 'TimeoutError' });
+        return json({}, 404);
+    };
+    const r = await calendar({ fetch }).run('calendar.update', M, { id: 'E1', notes: 'n' }, ctx());
+    assert.match(r.text, /Whether its Teams meeting is still there could not be checked/);
+});

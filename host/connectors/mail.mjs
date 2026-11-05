@@ -804,7 +804,7 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
                 await mustHave(imap, uid, box);
                 if (trash.name.toLowerCase() === box.toLowerCase()) {
                     await imap.command(`UID STORE ${uid} +FLAGS (\\Deleted)`, 'that message could not be deleted');
-                    await imap.command(`UID EXPUNGE ${uid}`, 'that message could not be removed');
+                    await imap.command(`UID EXPUNGE ${uid}`, `that message was marked deleted, but could not be removed now: the next clean-up of ${trash.shown} by any mail program removes it for good`);
                     return { text: `Deleted #${uid} for good: it was already in ${trash.shown}, so it cannot be restored.`, size: 0 };
                 }
                 const caps = (await imap.command('CAPABILITY', 'the server capabilities could not be read')).find((l) => /^\* CAPABILITY/i.test(l)) ?? '';
