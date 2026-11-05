@@ -523,7 +523,11 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
             });
             if (!found) return 'cancelled';
             /* A try begun before (a keeper stopped mid-send, a server silent after the message): in Sent already? */
-            const already = rec.trying ? await withImap(target, ctx, async (imap) => hasMessage(imap, await sentOf(imap), rec.id)).catch(() => false) : false;
+            /* Not found there proves nothing sent only where a sent mail always lands in Sent (Gmail files it itself);
+               a classic box gets its copy from Tether after the send, so a cut in between is "maybe sent", never sent
+               again. A Sent that cannot be searched: tried again next minute, nothing sent (loop 10). */
+            const already = rec.trying ? await withImap(target, ctx, async (imap) => hasMessage(imap, await sentOf(imap), rec.id)) : false;
+            if (!already && rec.trying && !isOAuth(target)) throw Object.assign(new Error('a try was cut after it began, and the message is not in Sent'), { unsure: true });
             if (!already) {
                 rec.trying = host.now(); keep();
                 const raw = found.raw.replace(/^Date: .*$/m, `Date: ${new Date(host.now()).toUTCString()}`);

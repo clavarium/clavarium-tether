@@ -266,3 +266,18 @@ test('loop 5: an attachment with no bytes is refused, never dropped in silence',
     const { check } = await import('../server/verbs.mjs');
     assert.throws(() => check('mail.send', { target: 'm', to: 'a@example.com', subject: 's', body: 'b', attachments: [{ name: 'a.pdf', bytes: 'QUJD' }, { name: 'b.pdf', bytes: '' }] }), /b\.pdf: no bytes -- nothing was done/);
 });
+
+test('loop 10: a classic box whose scheduled try was cut and is not in Sent is told "maybe sent", never sent again', async () => {
+    const clock = { t: Date.now() };
+    const s = imapBox(); const m = smtp();
+    const conn = mail({ connect: s.connect, smtpConnect: m.connect, smtpSecure: m.secure });
+    const h = hostOf(BOX, clock); conn.wake(h.hand);
+    await conn.run('mail.send', BOX, { to: 'bob@example.com', subject: 'Coupé', body: 'x', at: new Date(clock.t + 120_000).toISOString() }, ctx());
+    const { writeFileSync, readFileSync } = await import('node:fs');
+    const file = join(h.hand.dir, 'mail-later.json');
+    writeFileSync(file, JSON.stringify(JSON.parse(readFileSync(file, 'utf8')).map((x) => ({ ...x, trying: clock.t }))));
+    conn.wake(h.hand);
+    clock.t += 180_000; await conn.tick();
+    assert.equal(m.messages.length, 0, 'not sent again');
+    assert.equal(h.notices[0].kind, 'mail.later-unsure');
+});

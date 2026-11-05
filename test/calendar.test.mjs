@@ -225,6 +225,7 @@ test('calendar.delete removes an event (Microsoft)', async () => {
     const fetch = async (url, opts = {}) => {
         calls.push({ url, method: opts.method || 'GET' });
         if (url.includes('login.microsoftonline.com')) return json({ access_token: 'T', expires_in: 3600 });
+        if (url.includes('isOrganizer')) return json({ isOrganizer: true, attendees: [] });
         return new Response(null, { status: 204 });
     };
     const r = await calendar({ fetch }).run('calendar.delete', M, { id: 'EVID' }, ctx());
@@ -362,6 +363,7 @@ test('update --notes keeps an existing Teams meeting (never erases it); --online
     const fetch = async (url, opts = {}) => {
         calls.push({ url, method: opts.method || 'GET', body: opts.body });
         if (url.includes('login.microsoftonline.com')) return json({ access_token: 'T', expires_in: 3600 });
+        if (url.includes('isOrganizer')) return json({ isOrganizer: true, attendees: [] });
         if (url.includes('$select=isOnlineMeeting')) return json({ isOnlineMeeting: true, onlineMeetingProvider: 'teamsForBusiness', onlineMeeting: { joinUrl: 'https://teams.microsoft.com/l/meetup-join/abc' }, body: { contentType: 'html', content: '<html><body><div>old notes</div><div>________________<br><a href="https://teams.microsoft.com/l/meetup-join/abc">Join</a><br>________________</div></body></html>' } });
         if (opts.method === 'PATCH') return json({ id: 'm1' });
         return json({ error: { message: 'no' } }, 404);
@@ -374,7 +376,7 @@ test('update --notes keeps an existing Teams meeting (never erases it); --online
     assert.doesNotMatch(patch.body.content, /old notes/, 'the old notes replaced');
     assert.equal(patch.isOnlineMeeting, true, 'the Teams meeting is preserved when the notes change');
     assert.match(r.text, /Teams meeting is kept/);
-    const mk = (calls2) => async (url, opts = {}) => { calls2.push({ url, method: opts.method || 'GET', body: opts.body }); if (url.includes('login.microsoftonline.com')) return json({ access_token: 'T', expires_in: 3600 }); if (opts.method === 'PATCH') return json({ id: 'm1' }); return json({ error: { message: 'no' } }, 404); };
+    const mk = (calls2) => async (url, opts = {}) => { calls2.push({ url, method: opts.method || 'GET', body: opts.body }); if (url.includes('login.microsoftonline.com')) return json({ access_token: 'T', expires_in: 3600 }); if (url.includes('isOrganizer')) return json({ isOrganizer: true, attendees: [] }); if (opts.method === 'PATCH') return json({ id: 'm1' }); return json({ error: { message: 'no' } }, 404); };
     const a = []; await calendar({ fetch: mk(a) }).run('calendar.update', M, { id: 'm1', online: 'teams' }, ctx());
     assert.equal(JSON.parse(a.find((c) => c.method === 'PATCH').body).isOnlineMeeting, true);
     assert.equal(a.findIndex((c) => c.url.includes('$select=isOnlineMeeting')) > a.findIndex((c) => c.method === 'PATCH'), true, 'no needless fetch before the change when --online is explicit (only the check after)');
@@ -387,6 +389,7 @@ test('update --notes: a Teams meeting Microsoft dropped anyway is checked and pu
     const fetch = async (url, opts = {}) => {
         calls.push({ url, method: opts.method || 'GET', body: opts.body });
         if (url.includes('login.microsoftonline.com')) return json({ access_token: 'T', expires_in: 3600 });
+        if (url.includes('isOrganizer')) return json({ isOrganizer: true, attendees: [] });
         if (url.includes('$select=isOnlineMeeting,onlineMeetingProvider')) return json({ isOnlineMeeting: true, onlineMeetingProvider: 'teamsForBusiness', onlineMeeting: { joinUrl: 'https://teams.microsoft.com/l/meetup-join/x' }, body: { content: '<p>no block here</p>' } });
         if (url.endsWith('$select=isOnlineMeeting')) { gets++; return json({ isOnlineMeeting: false }); }
         if (opts.method === 'PATCH') return json({ id: 'm1' });
@@ -513,4 +516,13 @@ test('loop 8: Microsoft -- categories alone go to nobody; an invitee\'s file sta
     s = graphCal(() => ORG({ isOrganizer: false, organizer: { emailAddress: { address: 'boss@example.org' } } }));
     const at = await calendar({ fetch: s.fetch }).run('calendar.attach', M, { id: 'E1', attach: 'SGk=', attachName: 'a.pdf' }, ctx());
     assert.match(at.text, /You are not the organiser: the file stays on your copy/);
+});
+
+test('loop 10: Microsoft delete/update refuse when who it concerns cannot be read; a Teams meeting not made is said', async () => {
+    const fail = async (url, o = {}) => (url.includes('login.microsoftonline.com') ? json({ access_token: 'T', expires_in: 3600 }) : (o.method || 'GET') === 'GET' ? json({ error: { message: 'busy' } }, 503) : new Response(null, { status: 204 }));
+    await assert.rejects(calendar({ fetch: fail }).run('calendar.delete', M, { id: 'E1' }, ctx()), /could not be read first.*nothing was done/);
+    await assert.rejects(calendar({ fetch: fail }).run('calendar.update', M, { id: 'E1', title: 'x' }, ctx()), /could not be read first.*nothing was done/);
+    const made = async (url, o = {}) => (url.includes('login.microsoftonline.com') ? json({ access_token: 'T', expires_in: 3600 }) : json({ id: 'E9', isOnlineMeeting: false }));
+    const r = await calendar({ fetch: made }).run('calendar.create', M, { title: 'T', start: '2030-11-05T14:00', end: '2030-11-05T15:00', with: 'a@example.com' }, ctx());
+    assert.match(r.text, /Microsoft did NOT make its Teams meeting/);
 });

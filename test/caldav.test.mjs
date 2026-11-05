@@ -251,3 +251,10 @@ test('loop 5: an invitee changing an event on CalDAV is told the others do not s
     const r = await run(s, 'calendar.update', { id: '/cal/me/work/a.ics', title: 'Chantier (moi)' });
     assert.match(r.text, /You are not the organiser \(boss@example\.com\): the change stays on this calendar, the others do not see it\./);
 });
+
+test('loop 10: a second file of the same name that the server drops is said, not "attached"', async () => {
+    const s = davServer();
+    await run(s, 'calendar.attach', { id: '/cal/me/work/b.ics', attach: 'SGVsbG8=', attachName: 'devis.pdf' });
+    const dropNew = { ...s, fetch: async (url, o = {}) => (o.method === 'PUT' ? s.fetch(url, { ...o, body: o.body.replace(/\r\nATTACH[^\r\n]*(\r\n [^\r\n]*)*(?=\r\n(?!ATTACH))(?![\s\S]*\r\nATTACH)/, '') }) : s.fetch(url, o)) };
+    await assert.rejects(run(dropNew, 'calendar.attach', { id: '/cal/me/work/b.ics', attach: 'V29ybGQ=', attachName: 'devis.pdf' }), /did not keep the file/);
+});

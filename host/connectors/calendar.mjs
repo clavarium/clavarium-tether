@@ -311,8 +311,8 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
         },
         async remove(target, a, ctx) {
             const url = await urlOf(target, ctx, a.id);
-            let ev = null;
-            try { ev = eventOf((await davGet(target, ctx, url)).text); } catch (e) { if (/no such event/.test(e?.message ?? '')) throw e; }
+            /* Read first: who it concerns is said; unread, nothing is deleted (loop 10). */
+            const ev = eventOf((await davGet(target, ctx, url)).text);
             const res = await davRequest(target, ctx)('DELETE', url, {});
             if (res.status === 404) no('no such event');
             if (!res.ok) no(`${target.title}: the event was not deleted (${res.status})`);
@@ -355,7 +355,8 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
             const lines = [...props(text, 'ATTACH').map((p) => p.raw), `ATTACH;FMTTYPE=application/octet-stream;ENCODING=BASE64;VALUE=BINARY;X-FILENAME=${name}:${bytes}`];
             await davPut(target, ctx, url, setProps(text, 'ATTACH', lines), { etag });
             const back = await davGet(target, ctx, a.id);
-            if (!eventOf(back.text).files.some((f) => f.name === name)) no(`${target.title}: the calendar did not keep the file (this server takes no file inside an event) -- send it by mail instead`);
+            const count = (t) => eventOf(t).files.filter((f) => f.name === name).length;
+            if (count(back.text) <= count(text)) no(`${target.title}: the calendar did not keep the file (this server takes no file inside an event) -- send it by mail instead`);
             /* It reaches the others only through the server's scheduling (loop 2: it was said sent regardless). */
             const others = ev.attendees.map((x) => x.email).filter((x) => x.toLowerCase() !== userOf(target).toLowerCase());
             const who = !others.length ? ' Visible to you alone (the event has no participants).'
@@ -551,7 +552,8 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
             const res = await call(target, ctx, 'POST', api.create, payload);
             if (!res.ok) no(`${target.title}: the event was not created (${res.status} ${await bodyError(res)})`.trim());
             const made = await res.json().catch(() => ({}));
-            return { text: `Created: ${a.title} (${a.start})${online === 'teams' ? ', with a Teams meeting' : ''}${attendees.length ? `, invitations to ${attendees.join(', ')} (sent by Microsoft)` : ''}. Its id is ${made.id ?? '(unknown)'}.`, size: 0, watch: attendees.length && made.id ? { id: made.id, title: a.title, start: a.start } : null };
+            const teams = online !== 'teams' ? '' : made.isOnlineMeeting === false ? ', but Microsoft did NOT make its Teams meeting (add it with online "teams")' : made.isOnlineMeeting === true ? ', with a Teams meeting' : ', with a Teams meeting asked (read the event for its join link)';
+            return { text: `Created: ${a.title} (${a.start})${teams}${attendees.length ? `, invitations to ${attendees.join(', ')} (sent by Microsoft)` : ''}. Its id is ${made.id ?? '(unknown)'}.`, size: 0, watch: attendees.length && made.id ? { id: made.id, title: a.title, start: a.start } : null };
         },
         /* Join a file to an event. An act. Microsoft takes the bytes inline (Graph
            fileAttachment); a Google calendar attach is a Drive link, added once the
@@ -639,7 +641,7 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
             if (!action) no('answer is accept, decline or tentative');
             if (provider !== 'microsoft') return davVerbs.respond(target, a, ctx, PARTSTAT[String(a.answer).toLowerCase().trim()]);
             const body = { sendResponse: true, ...(a.comment ? { comment: String(a.comment) } : {}) };
-            const who = await peopleOf(target, ctx, a.id);
+            const who = await peopleOf(target, ctx, a.id).catch(() => null);   /* only to name the organiser */
             const res = await call(target, ctx, 'POST', `https://graph.microsoft.com/v1.0/me/events/${encodeURIComponent(String(a.id))}/${action}`, body);
             if (!res.ok) no(`${target.title}: the response was not sent (${res.status} ${await bodyError(res)})`.trim());
             /* Said as on CalDAV (loop 4): who is told. */
@@ -754,13 +756,14 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
         },
     };
     /* Who an event concerns (Microsoft): its organiser, whether that is this account, its invitees. */
+    /* Read before an act that concerns the others: an unread list is never taken as "nobody" (loop 10). */
     async function peopleOf(target, ctx, id) {
-        try {
-            const res = await call(target, ctx, 'GET', `${API.microsoft.event(String(id))}?$select=subject,start,isOrganizer,organizer,attendees`);
-            if (!res.ok) return null;
-            const j = await res.json();
-            return { isOrganizer: j.isOrganizer !== false, organizer: j.organizer?.emailAddress?.address ?? '', attendees: (j.attendees ?? []).map((x) => x.emailAddress?.address).filter(Boolean), title: j.subject ?? '', start: j.start?.dateTime ?? '' };
-        } catch { return null; }
+        const res = await call(target, ctx, 'GET', `${API.microsoft.event(String(id))}?$select=subject,start,isOrganizer,organizer,attendees`);
+        if (res.status === 404) no('no such event');
+        if (!res.ok) no(`${target.title}: the event could not be read first, to say who it concerns (${res.status}) -- nothing was done`);
+        const j = await res.json().catch(() => null);
+        if (!j) no(`${target.title}: the event could not be read first -- nothing was done`);
+        return { isOrganizer: j.isOrganizer !== false, organizer: j.organizer?.emailAddress?.address ?? '', attendees: (j.attendees ?? []).map((x) => x.emailAddress?.address).filter(Boolean), title: j.subject ?? '', start: j.start?.dateTime ?? '' };
     }
     /* What a change sends to the others (#12): the organiser's change goes to every invitee; with "with", the
        list is REPLACED -- one left out gets a cancellation. An invitee's change stays on this calendar. */

@@ -230,3 +230,8 @@ test('a search with more matches than shown says so, on both providers (loop 3)'
     };
     assert.match((await contacts({ fetch }).run('contacts.search', G, { text: 'martin' }, ctx())).text, /Showing the first 50 matches/);
 });
+
+test('loop 10: removing a phone a Microsoft contact does not have is refused, as on CardDAV', async () => {
+    const fetch = async (url, o = {}) => (url.includes('login.microsoftonline.com') ? json({ access_token: 'T', expires_in: 3600 }) : (o.method || 'GET') === 'GET' ? json({ displayName: 'C', businessPhones: [] }) : new Response(null, { status: 204 }));
+    await assert.rejects(contacts({ fetch }).run('contacts.update', M, { id: 'm1', phone: '', type: 'work' }, ctx()), /no work phone to remove/);
+});
