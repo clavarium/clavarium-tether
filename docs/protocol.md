@@ -93,14 +93,24 @@ and every secret the keeper handed out is replaced by `[secret]`.
 | File | Written by | What it holds |
 |---|---|---|
 | `asks.jsonl` | the agent | `{id, at, op, args}`, one per call |
-| `answers.jsonl` | the keeper | `{ask, at, held: true, until, request}` while a person decides, then `{ask, at, ok, text, data?}` |
+| `answers.jsonl` | the keeper | `{ask, at, held: true, until, request}` while a person decides, `{ask, at, held: true, running: true, until}` once the act has begun, then `{ask, at, ok, text, data?}` |
+| `notices.jsonl` | the keeper | `{id, at, agent, target?, kind, text, ref?}`: something that happened later to what the agent did (`mail.bounced`, `mail.delayed`, `mail.later-failed`, `mail.later-late`) |
+| `notices.read` | the agent's command | how many notices it has already been told |
 
 The folder is `--dir`, else `$TETHER_DIR`, else the nearest `.tether` from
 where the command stands. The keeper knows who asks by the folder. An ask
 waits 20 seconds for the keeper to take it; once held, until `until` and 30
 seconds more. An ask older than a minute when the keeper first sees it is
 answered "too late" and never done; one held by a keeper that restarted is
-answered "not answered" and never done.
+answered "not answered" and never done. Once the act begins, the keeper writes
+a running hold (ten minutes; a command's timeout and a minute when longer): the
+ask keeps waiting, and if no answer comes it says the act MAY have been done,
+never "nothing was done". A keeper restarted while an act ran answers "it may
+have been done: check before asking again", and never runs it a second time.
+
+A notice not told yet comes first in the agent's next MCP answer ("Since your
+last call: ..."), once; the `notices` tool (and `tether notices [--all]`)
+reads them.
 
 Exit codes of the command: 0 done, 1 refused, 2 no folder, 3 nobody keeps the
 targets, 4 not answered in time, 64 not understood.
@@ -296,6 +306,7 @@ own serve server and pairing UI.
         ask: (request) => Promise<decision>,      // show it (a card, a notification); optional
         secrets: (name) => Promise<string>,       // from the host's secret store
         connectors: { name: connector },          // `local: true` adds the local one
+        notify: (notice) => {},                   // something happened later: show it, wake the agent; optional
         timeout: 10 * 60_000,
     });
     setInterval(() => k.pump(), 500);           // take what the agents asked
@@ -305,6 +316,7 @@ own serve server and pairing UI.
     k.journal({ agent, target, since, limit });
     k.act(op, args, person);                    // the page's ops, below: Promise<{ ok, text, data }>
     k.onChange(fn);                             // something the page shows changed
+    k.notice({ agent, target, kind, text, ref }); // something that happened later (connectors call it)
     k.close();                                  // connectors down
 
 `ask` may resolve to `"yes"`, `"no"`, `"always"` or `{decision, by, word}`;

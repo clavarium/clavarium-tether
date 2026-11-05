@@ -7,13 +7,14 @@
 import { realpathSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ask, findFolder } from '../server/mcp.mjs';
+import { ask, findFolder, notices, sayNotices } from '../server/mcp.mjs';
 import { NAME, VERSION, FOLDER, ENV_DIR } from '../server/name.mjs';
 
 export const HELP = `${NAME}: act on the targets you were given (machines, folders, browsers, mailboxes, calendars, address books).
 
   ${NAME}                                  your targets, your level on each, its rules
   ${NAME} pending                          your requests still waiting for a person to approve
+  ${NAME} notices [--all]                  what happened later to what you did (a mail that came back...)
   ${NAME} withdraw ID [reason]             take back a waiting request (it can no longer be approved)
   ${NAME} run TARGET "command" [--timeout S]   run a command: its output and exit code
   ${NAME} open TARGET                      open a terminal
@@ -106,6 +107,7 @@ export function read(argv) {
     switch (verb) {
         case 'targets': return ['targets', {}];
         case 'pending': return ['pending', {}];
+        case 'notices': return ['notices', { all: flags.all === true }];
         case 'withdraw': return target ? ['withdraw', { id: target, ...(flags.reason !== undefined ? { reason: flags.reason } : rest.length ? { reason: rest.join(' ') } : {}) }] : { refused: `${NAME} withdraw ID [reason]   (ID from "${NAME} pending")` };
         case 'run': return need(target && rest.length, 'run TARGET "command"') ?? ['terminal.run', { target, command: rest.join(' '), ...(flags.timeout !== undefined ? { timeout: Number(flags.timeout) } : {}), ...why }];
         case 'open': return need(target, 'open TARGET') ?? ['terminal.open', { target, ...why }];
@@ -244,6 +246,8 @@ export async function run(argv, { env = process.env, cwd = process.cwd(), wait, 
     }
     const folder = findFolder({ dir, env, from: cwd });
     if (!folder) return { code: 2, out: '', err: `No ${FOLDER} folder here or above. Run it from your work folder, or give --dir FOLDER.\n` };
+    /* What happened later: read in the folder, no keeper asked. */
+    if (what[0] === 'notices') { const list = notices(folder, { all: what[1].all === true }); return { code: 0, out: `${list.length ? sayNotices(list) : 'Nothing new happened since.'}\n`, err: '' }; }
     const r = await ask(folder, what[0], what[1], { ...(wait ? { wait } : {}), onHeld });
     /* mail attachment --out DIR: write the file here (the client's side), rather than
        printing its base64. The connector hands back "name (type, size)\n\n<base64>". */

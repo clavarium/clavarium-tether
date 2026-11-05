@@ -33,6 +33,7 @@ export const WAIT_MS = 60_000;
 export const GRACE_MS = 30_000;
 export const NO_KEEPER = `No answer: nobody keeps these targets right now (their application, or "${NAME} serve", is not running). Nothing was done.`;
 export const NOT_ANSWERED = 'No answer came in time. Nothing is known to have been done.';
+export const MAY_BE_DONE = 'No answer came in time, but the act had started: it may have been done. Check (a list, a read) before asking again.';
 
 const parsed = (line) => { try { const j = JSON.parse(line); return j && typeof j === 'object' && !Array.isArray(j) ? j : null; } catch { return null; } };
 export function lines(file) {
@@ -57,24 +58,46 @@ export async function ask(dir, verb, args = {}, { wait = WAIT_MS, grace = GRACE_
     const id = randomUUID();
     appendFileSync(join(dir, 'asks.jsonl'), `${JSON.stringify({ id, at: new Date().toISOString(), op: verb, args })}\n`);
     let until = Date.now() + wait;
-    let held = false; let heldUntil = null;
+    let held = false; let heldUntil = null; let running = false;
     for (;;) {
         const mine = lines(join(dir, 'answers.jsonl')).filter((a) => a.ask === id);
         const answer = mine.find((a) => a.held !== true);
         if (answer) return { ok: answer.ok === true, text: String(answer.text ?? ''), ...(answer.data !== undefined ? { data: answer.data } : {}), ...(held ? { held } : {}) };
-        /* The latest hold counts: a job run in a person's browser holds the ask again, longer. */
+        /* The latest hold counts: a job run in a person's browser holds the ask again, longer.
+           A hold marked running is the act itself, begun: it is waited for, and is no person's. */
         const hold = mine.filter((a) => a.held === true).at(-1);
         if (hold && hold.until !== heldUntil) {
-            const first = !held;
-            held = true; heldUntil = hold.until;
+            heldUntil = hold.until;
             const end = Date.parse(hold.until);
             until = (Number.isFinite(end) ? end : Date.now()) + grace;
-            if (first) { try { onHeld?.(hold.until); } catch { /* the caller's */ } }
+            if (hold.running === true) running = true;
+            else {
+                const first = !held;
+                held = true;
+                if (first) { try { onHeld?.(hold.until); } catch { /* the caller's */ } }
+            }
         }
-        if (Date.now() >= until) return held ? { ok: false, text: NOT_ANSWERED, held, late: true } : { ok: false, text: NO_KEEPER, nokeeper: true };
+        if (Date.now() >= until) {
+            if (running) return { ok: false, text: MAY_BE_DONE, ...(held ? { held } : {}), late: true, running: true };
+            return held ? { ok: false, text: NOT_ANSWERED, held, late: true } : { ok: false, text: NO_KEEPER, nokeeper: true };
+        }
         await new Promise((r) => setTimeout(r, every));
     }
 }
+
+/* WHAT HAPPENED LATER (a mail that came back, a scheduled send that failed): the keeper
+ * appends a notice to the folder's notices.jsonl; here, those not read yet. Reading
+ * marks them read (notices.read: how many were). `all`: the last ones, read or not. */
+export function notices(dir, { all = false, mark = true, last = 50 } = {}) {
+    const list = lines(join(dir, 'notices.jsonl')).filter((n) => typeof n.text === 'string');
+    let seen = 0;
+    try { seen = Number(readFileSync(join(dir, 'notices.read'), 'utf8').trim()) || 0; } catch { /* none read yet */ }
+    if (seen > list.length) seen = 0;   /* the file was started again */
+    const fresh = list.slice(seen);
+    if (mark && fresh.length) { try { writeFileSync(join(dir, 'notices.read'), String(list.length)); } catch { /* told again next time */ } }
+    return all ? list.slice(-last) : fresh;
+}
+export const sayNotices = (list) => list.map((n) => `- ${String(n.at ?? '').slice(0, 16).replace('T', ' ')} UTC${n.target?.title ? ` (${n.target.title})` : ''}: ${n.text}`).join('\n');
 
 /* ---- MCP ---- */
 const S = (description) => ({ type: 'string', description });
@@ -97,7 +120,8 @@ const tool = (name, description, properties = {}, required = []) => ({ name, des
 export const TOOLS = [
     tool('targets', 'What you were given: each target, its kind, your level on it and its allow rules.'),
     tool('pending', 'Your own requests still waiting for a person to approve (id, what, why). Use it to find one to withdraw.'),
-    tool('withdraw', 'Take back one of your own waiting requests (its id from pending): it leaves the person\'s screen as "withdrawn by the AI" and can no longer be approved. For a request you sent by mistake or that became wrong before it was approved.', { id: S('the request id, from pending'), reason: S('a short why, shown to the person, optional') }, ['id']),
+    tool('notices', 'What happened LATER to what you did: a mail that came back undelivered (or is delayed), a scheduled mail that could not leave or left late. New ones are also put before the answer of your next call, once. all:true shows the last ones again, read or not.', { all: { type: 'boolean', description: 'the last 50, already seen too' } }),
+    tool('withdraw','Take back one of your own waiting requests (its id from pending): it leaves the person\'s screen as "withdrawn by the AI" and can no longer be approved. For a request you sent by mistake or that became wrong before it was approved.', { id: S('the request id, from pending'), reason: S('a short why, shown to the person, optional') }, ['id']),
     tool('terminal-open', 'Open a terminal on a target (a computer or a machine reached by SSH).', { target: TARGET, why: WHY }, ['target']),
     tool('terminal-read', 'Read the screen of the terminal you opened on a target.', { target: TARGET, lines: { type: 'number', description: 'how many lines back (40 by default)' } }, ['target']),
     tool('terminal-type', 'Type keys in the terminal you opened on a target (a person may have to approve).', { target: TARGET, text: { type: 'string' }, enter: { type: 'boolean', description: 'press Enter after' }, why: WHY }, ['target', 'text']),
@@ -177,6 +201,10 @@ export function serve(dir, { input = process.stdin, output = process.stdout, wai
         if (m.method === 'ping') return reply(m.id, {});
         if (m.method === 'tools/call') {
             const { name, arguments: a = {} } = m.params ?? {};
+            if (name === 'notices') {
+                const list = notices(dir, { all: a.all === true || a.all === 'true' });
+                return reply(m.id, { content: [{ type: 'text', text: list.length ? sayNotices(list) : 'Nothing new happened since.' }] });
+            }
             const what = asked(name, a);
             if (!what) return reply(m.id, undefined, { code: -32601, message: `no tool ${name}` });
             /* A file handed over (a firmware): copied from the agent's machine into its folder's files/, where the keeper takes it. */
@@ -192,7 +220,10 @@ export function serve(dir, { input = process.stdin, output = process.stdout, wai
                 }
             }
             const r = await ask(dir, what[0], what[1], wait ? { wait } : {});
-            return reply(m.id, { content: [{ type: 'text', text: r.ok ? r.text : `Not done: ${r.text}` }], ...(r.ok ? {} : { isError: true }) });
+            /* MCP over standard input cannot wake the agent: what happened later comes first in its next answer. */
+            const fresh = notices(dir);
+            const since = fresh.length ? `Since your last call:\n${sayNotices(fresh)}\n\n` : '';
+            return reply(m.id, { content: [{ type: 'text', text: `${since}${r.ok ? r.text : `Not done: ${r.text}`}` }], ...(r.ok ? {} : { isError: true }) });
         }
         return reply(m.id, undefined, { code: -32601, message: `no method ${m.method}` });
     });

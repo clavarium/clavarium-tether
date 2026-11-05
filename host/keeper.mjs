@@ -18,6 +18,8 @@
  *   k.journal({ agent, target, since, limit })
  *   k.act(op, args, who)          a person's change from the page, or an agent's call: Promise<{ ok, text, data }>
  *   k.onChange(fn)                something a page shows changed
+ *   k.notice({ agent, target, kind, text, ref })   something that happened LATER (a mail returned,
+ *                                 a scheduled send that failed): told to the agent and to the person
  *
  * WHO ASKS IS SAID BY THE FOLDER. The application gives each folder its who
  * ({ id, kind: "agent", name }); what an ask says of itself is never believed.
@@ -28,10 +30,11 @@
  */
 import { appendFileSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { openStore } from '../server/store.mjs';
 import { VERBS, Refused, check, detail as detailOf, no, oneLine } from '../server/verbs.mjs';
 import { decide as rightsOf, ruleFrom, LEVELS } from '../server/rights.mjs';
-import { lines } from '../server/mcp.mjs';
+import { lines, notices as noticesOf, sayNotices } from '../server/mcp.mjs';
 import { openJournal, hide } from './journal.mjs';
 import { approvals as openApprovals, TIMEOUT_MS } from './approvals.mjs';
 import { cardOf } from '../server/cards.mjs';
@@ -82,7 +85,13 @@ function withFile(dir, a) {
     try { const image = readFileSync(file).toString('base64'); rmSync(file, { force: true }); return { ...rest, image }; } catch { return rest; }
 }
 
-export function keeper(dir, { sides = () => [], ask, secrets = async () => { throw new Refused('no secret store was given'); }, connectors = {}, local = false, timeout = TIMEOUT_MS, now = () => Date.now() } = {}) {
+/* How long an act may run before its agent stops waiting (it is then told the act may have been done). */
+export const RUN_MS = 10 * 60_000;
+const runFor = (verb, a) => (verb === 'terminal.run' && Number(a.timeout) > 0 ? Math.max(RUN_MS, Number(a.timeout) * 1000 + 60_000) : RUN_MS);
+/* What a late notice is: mail.bounced, mail.delayed, mail.later-failed... */
+const NOTICE_KIND = /^[a-z][a-z0-9.-]{0,40}$/;
+
+export function keeper(dir, { sides = () => [], ask, notify, secrets = async () => { throw new Refused('no secret store was given'); }, connectors = {}, local = false, timeout = TIMEOUT_MS, now = () => Date.now() } = {}) {
     const store = openStore(dir, { now });
     const known = new Set();                         // every secret value handed to a connector
     const journal = openJournal(dir, { now, secrets: () => known });
@@ -124,11 +133,30 @@ export function keeper(dir, { sides = () => [], ask, secrets = async () => { thr
     /* A connector with work of its own at a set time (a mail sent later) is woken
        once with the keeper's hand, then ticked each minute. */
     const tickers = Object.values(conns).filter((c) => typeof c?.tick === 'function');
-    for (const c of tickers) c.wake?.({ dir, now, target: (id) => store.target(id), ctx: ctxOf, stopped: (id) => store.stopped(id), note: (line) => journal.append({ ...line, ...(line.agent ? { agent: { id: line.agent.id, name: nameOf(line.agent.id) } } : {}) }) });
+    for (const c of tickers) c.wake?.({ dir, now, target: (id) => store.target(id), ctx: ctxOf, stopped: (id) => store.stopped(id), note: (line) => journal.append({ ...line, ...(line.agent ? { agent: { id: line.agent.id, name: nameOf(line.agent.id) } } : {}) }), notice: (n) => notice(n) });
     const ticker = tickers.length ? setInterval(() => { for (const c of tickers) Promise.resolve(c.tick()).catch(() => { /* tried again next minute */ }); }, 60_000) : null;
     ticker?.unref?.();
     store.onChange((w) => changed({ store: w }));
     journal.onAppend((l) => changed({ journal: l }));
+
+    /* ---- what happened later ----
+       A mail that came back, a scheduled send that failed: no ask waits for it. A notice is
+       journaled (op "notice"), appended to the agent's folder (notices.jsonl: its MCP server
+       tells it on its next call, or with the notices tool), handed to the application
+       (`notify`: to show it to the person and wake the agent), and said to the pages (onChange). */
+    function notice({ agent, target, kind, text, ref } = {}) {
+        const id = oneLine(agent && typeof agent === 'object' ? agent.id : agent, 100);
+        const k = oneLine(kind, 41);
+        if (!NOTICE_KIND.test(k)) no('a notice needs a kind, like mail.bounced');
+        const t = target && typeof target === 'object' && target.id ? { id: oneLine(target.id, 100), title: oneLine(target.title ?? store.target(target.id)?.title, 200) } : null;
+        const n = { id: randomUUID(), at: new Date(now()).toISOString(), agent: id || null, ...(t ? { target: t } : {}), kind: k, text: hide(oneLine(text, 1000), known), ...(ref ? { ref: oneLine(ref, 300) } : {}) };
+        journal.append({ op: 'notice', agent: id ? { id, name: nameOf(id) } : undefined, target: t ?? undefined, kind: k, detail: n.text, ref: n.ref });
+        const side = id ? sides().find((s) => s.who?.id === id) : null;
+        if (side) { try { mkdirSync(side.dir, { recursive: true }); appendFileSync(join(side.dir, 'notices.jsonl'), `${JSON.stringify(n)}\n`); } catch { /* journaled and told anyway */ } }
+        try { notify?.(n); } catch { /* the application's */ }
+        changed({ notice: n });
+        return n;
+    }
 
     const agents = () => sides().map((s) => s.who);
     const nameOf = (id) => agents().find((w) => w.id === id)?.name ?? id;
@@ -137,7 +165,7 @@ export function keeper(dir, { sides = () => [], ask, secrets = async () => { thr
     const minutes = Math.round(timeout / 60_000);
 
     /* ---- an agent's call ---- */
-    async function call(verb, given, who, { held } = {}) {
+    async function call(verb, given, who, { held, started: begun } = {}) {
         const me = agentRef(who);
         if (store.stopped(who.id)) {
             journal.append({ agent: me, verb, decision: 'stopped' });
@@ -153,6 +181,11 @@ export function keeper(dir, { sides = () => [], ask, secrets = async () => { thr
         if (verb === 'pending') {
             const list = queue.list(me.id).map((r) => ({ id: r.id, verb: r.verb, target: r.target?.title ?? null, detail: r.detail ?? '', why: r.why ?? '', since: r.at }));
             return { text: list.length ? list.map((r) => `${r.id}  ${r.verb}${r.target ? ` on ${r.target}` : ''}${r.detail ? ` — ${r.detail}` : ''}${r.why ? ` (${r.why})` : ''}`).join('\n') : 'No request of yours is waiting for a person.', data: list };
+        }
+        if (verb === 'notices') {
+            const side = sides().find((s) => s.who?.id === who.id);
+            const list = side ? noticesOf(side.dir, { all: a.all === true }) : [];
+            return { text: list.length ? sayNotices(list) : 'Nothing new happened since.', data: list };
         }
         if (verb === 'withdraw') {
             queue.withdraw(oneLine(a.id, 100), me.id, a.reason);
@@ -219,6 +252,9 @@ export function keeper(dir, { sides = () => [], ask, secrets = async () => { thr
         const started = now();
         /* A connector whose work waits for a person (a job run in their browser) says how much longer: the agent's ask keeps waiting. */
         const ctx = { ...ctxOf(t, who.id), hold: (until) => { try { held?.({ until, id: `${verb}:${t.id}` }); } catch { /* the folder's */ } changed({ jobs: verb }); } };
+        /* The act begins: its agent keeps waiting while it runs, and a keeper restarted now knows
+           it may have been done -- never run twice, never answered "nothing was done". */
+        try { begun?.({ until: new Date(now() + runFor(verb, a)).toISOString() }); } catch { /* the folder's */ }
         let res; let ok = true; let error;
         try { res = await conn.run(verb, t, a, ctx); } catch (e) {
             ok = false; error = e instanceof Refused ? e.message : `failed: ${e?.message ?? e}`;
@@ -282,16 +318,18 @@ export function keeper(dir, { sides = () => [], ask, secrets = async () => { thr
             const answers = lines(join(side.dir, 'answers.jsonl'));
             const done = new Set(answers.filter((x) => x.held !== true).map((x) => x.ask));
             const holding = new Set(answers.filter((x) => x.held === true).map((x) => x.ask));
+            const running = new Set(answers.filter((x) => x.held === true && x.running === true).map((x) => x.ask));
             for (const q of lines(join(side.dir, 'asks.jsonl'))) {
                 if (typeof q.id !== 'string' || done.has(q.id)) continue;
                 const key = `${side.dir}\n${q.id}`;
                 if (busy.has(key)) continue;
                 n++;
                 /* Held by a keeper that is no longer the one running: the person never saw it here. */
+                if (running.has(q.id)) { write(side, { ask: q.id, ok: false, text: 'not answered: its keeper restarted while doing it -- it may have been done: check (a list, a read) before asking again' }); continue; }
                 if (holding.has(q.id)) { write(side, { ask: q.id, ok: false, text: 'not answered: its keeper restarted; nothing was done, ask again' }); continue; }
                 if (!(now() - Date.parse(q.at) < TOO_LATE_MS)) { write(side, { ask: q.id, ok: false, text: 'too late: this ask waited too long and was not done' }); continue; }
                 busy.add(key);
-                act(oneLine(q.op, 40), withFile(side.dir, q.args && typeof q.args === 'object' ? q.args : {}), side.who, { held: (request) => write(side, { ask: q.id, held: true, until: request.until, request: request.id }) })
+                act(oneLine(q.op, 40), withFile(side.dir, q.args && typeof q.args === 'object' ? q.args : {}), side.who, { held: (request) => write(side, { ask: q.id, held: true, until: request.until, request: request.id }), started: ({ until }) => write(side, { ask: q.id, held: true, running: true, until }) })
                     .then((r) => write(side, { ask: q.id, ok: r.ok, text: r.text, ...(r.data && !Array.isArray(r.data) ? { data: r.data } : {}) }))
                     .catch((e) => write(side, { ask: q.id, ok: false, text: `failed: ${e?.message ?? e}` }))
                     .finally(() => busy.delete(key));
@@ -325,6 +363,7 @@ export function keeper(dir, { sides = () => [], ask, secrets = async () => { thr
         },
         journal: (query) => journal.read(query),
         onChange(fn) { listeners.add(fn); return () => listeners.delete(fn); },
+        notice,
         connectors: conns,
         /* Every connector taken down: terminals, running commands. */
         async close() { clearInterval(ticker); queue.stop('*'); for (const c of Object.values(conns)) { try { await (c.shutdown ?? c.close)?.call(c, '*'); } catch { /* down anyway */ } } },

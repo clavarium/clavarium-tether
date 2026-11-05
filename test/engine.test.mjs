@@ -539,3 +539,79 @@ test('a waiting call carries a card: plain facts for a person, and what it is ab
     await tick(); await tick();
     assert.deepEqual(k.approvals()[0].card.about, { title: 'Comité', start: '2030-11-05 14:00', clashes: ['Point banque (14:00)'], asked: 'terminal.run', id: undefined });
 });
+
+test('a notice (something that happened later) reaches the journal, the agent\'s folder, the application, and the agent once', async () => {
+    const { PassThrough } = await import('node:stream');
+    const { serve, notices } = await import('../server/mcp.mjs');
+    const side = tmp(); const told = [];
+    const k = keeper(tmp(), { sides: () => [{ dir: side, who: BOT }], connectors: { fake: fake() }, notify: (n) => told.push(n) });
+    k.store.putTarget({ id: 'web', title: 'Web', kind: 'ssh', connector: 'fake' });
+    k.store.grant('web', BOT.id, 'watch');
+    k.notice({ agent: BOT.id, target: { id: 'web' }, kind: 'mail.bounced', text: 'The mail to x@example.com ("Quote") was not delivered: 550 5.1.1 user unknown', ref: '<m1@example.com>' });
+    assert.equal(told.length, 1, 'the application is told (to show the person, to wake the agent)');
+    assert.equal(told[0].target.title, 'Web');
+    const line = k.journal({ limit: 1 })[0];
+    assert.equal(line.op, 'notice'); assert.equal(line.kind, 'mail.bounced'); assert.equal(line.ref, '<m1@example.com>');
+    assert.throws(() => k.notice({ agent: BOT.id, kind: 'Bad Kind!', text: 'x' }), /needs a kind/);
+    const input = new PassThrough(); const output = new PassThrough();
+    const got = []; output.on('data', (d) => got.push(...String(d).trim().split('\n').map((l) => JSON.parse(l))));
+    const rl = serve(side, { input, output, wait: 2000 });
+    const timer = setInterval(() => k.pump(), 10);
+    try {
+        input.write(`${JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'files-read', arguments: { target: 'web', path: 'a' } } })}\n`);
+        input.write(`${JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'files-read', arguments: { target: 'web', path: 'b' } } })}\n`);
+        for (let i = 0; i < 200 && got.length < 2; i++) await new Promise((r) => setTimeout(r, 10));
+        const texts = got.sort((a, b) => a.id - b.id).map((m) => m.result.content[0].text);
+        assert.equal(texts.filter((t) => /^Since your last call:\n- .*\(Web\): The mail to x@example\.com/.test(t)).length, 1, 'put before ONE next answer, once');
+        assert.ok(texts.some((t) => t === 'did files.read'), 'the other answer is plain');
+        input.write(`${JSON.stringify({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'notices', arguments: {} } })}\n`);
+        input.write(`${JSON.stringify({ jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'notices', arguments: { all: true } } })}\n`);
+        for (let i = 0; i < 200 && got.length < 4; i++) await new Promise((r) => setTimeout(r, 10));
+        const by = Object.fromEntries(got.map((m) => [m.id, m.result.content[0].text]));
+        assert.equal(by[3], 'Nothing new happened since.');
+        assert.match(by[4], /550 5\.1\.1/, 'all: shown again');
+        assert.equal(notices(side).length, 0);
+        const cli = await run(['notices', '--all'], { env: { [ENV_DIR]: side } });
+        assert.equal(cli.code, 0); assert.match(cli.out, /was not delivered/);
+    } finally { clearInterval(timer); rl.close(); }
+});
+
+test('an act that runs long: the agent keeps waiting, is told it may have been done, and a restarted keeper never runs it again', async () => {
+    const side = tmp();
+    let release; const slow = { run: () => new Promise((r) => { release = () => r({ text: 'done late', size: 0 }); }), close() {} };
+    const k = keeper(tmp(), { sides: () => [{ dir: side, who: BOT }], connectors: { slow } });
+    k.store.putTarget({ id: 'web', title: 'Web', kind: 'ssh', connector: 'slow' });
+    k.store.grant('web', BOT.id, 'free');
+    const timer = setInterval(() => k.pump(), 10);
+    try {
+        const p = ask(side, 'terminal.run', { target: 'web', command: 'make' }, { wait: 150, every: 10 });
+        await new Promise((r) => setTimeout(r, 300));
+        release();
+        const r = await p;
+        assert.equal(r.ok, true, 'past the first wait, the running act is still waited for');
+        assert.equal(r.text, 'done late');
+        assert.equal(r.held, undefined, 'no person held it');
+        const line = readFileSync(join(side, 'answers.jsonl'), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)).find((x) => x.running);
+        assert.ok(line && line.held === true && Date.parse(line.until) > Date.now() + 9 * 60_000, 'a running hold, ten minutes long');
+        /* it never answers within its hold: the agent is told it may have been done, never "nothing was done" */
+        writeFileSync(join(side, 'answers.jsonl'), '');
+        const { ask: askIt } = await import('../server/mcp.mjs');
+        const p2 = askIt(side, 'terminal.run', { target: 'web', command: 'make' }, { wait: 150, grace: 50, every: 10 });
+        await new Promise((r) => setTimeout(r, 100));
+        const asks = readFileSync(join(side, 'asks.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+        appendFileSync(join(side, 'answers.jsonl'), `${JSON.stringify({ ask: asks.at(-1).id, held: true, running: true, until: new Date(Date.now() + 50).toISOString() })}\n`);
+        clearInterval(timer);
+        const r2 = await p2;
+        assert.equal(r2.ok, false); assert.equal(r2.running, true);
+        assert.match(r2.text, /may have been done/);
+        release();
+    } finally { clearInterval(timer); }
+    /* a keeper restarted while an act ran: it answers "may have been done", and does not run it again */
+    const side2 = tmp(); const conn = fake();
+    const k2 = keeper(tmp(), { sides: () => [{ dir: side2, who: BOT }], connectors: { fake: conn } });
+    appendFileSync(join(side2, 'asks.jsonl'), `${JSON.stringify({ id: 'mid', at: new Date().toISOString(), op: 'terminal.run', args: { target: 'web', command: 'x' } })}\n`);
+    appendFileSync(join(side2, 'answers.jsonl'), `${JSON.stringify({ ask: 'mid', held: true, running: true, until: new Date(Date.now() + 60_000).toISOString() })}\n`);
+    assert.equal(k2.pump(), 1);
+    assert.match(readFileSync(join(side2, 'answers.jsonl'), 'utf8'), /restarted while doing it -- it may have been done/);
+    assert.equal(conn.calls.length, 0, 'never run twice');
+});
