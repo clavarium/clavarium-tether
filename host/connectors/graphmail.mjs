@@ -231,7 +231,8 @@ export function graphMail({ fetch: fetchImpl = globalThis.fetch, token }) {
             const self = String(target.config?.user ?? '').toLowerCase();
             let replyTo;
             if (verb === 'mail.reply') {
-                const to = (addr(m?.replyTo).length ? addr(m.replyTo) : addr([m?.from])).filter((x) => x !== self);
+                let to = (addr(m?.replyTo).length ? addr(m.replyTo) : addr([m?.from])).filter((x) => x !== self);
+                if (!to.length) to = addr(m?.toRecipients).filter((x) => x !== self);   /* one's own message: to whom it went, as the reply does */
                 const cc = a.all === true || a.all === 'true' ? [...addr(m?.toRecipients), ...addr(m?.ccRecipients)].filter((x) => x !== self && !to.includes(x)) : [];
                 replyTo = { to, cc: [...new Set([...cc, ...listOf(a.cc).map((x) => x.toLowerCase())])] };
             }
@@ -266,8 +267,13 @@ export function graphMail({ fetch: fetchImpl = globalThis.fetch, token }) {
             const all = a.all === true || a.all === 'true';
             later(a);
             const d = await call(target, ctx, 'POST', `/me/messages/${encodeURIComponent(id)}/${all ? 'createReplyAll' : 'createReply'}`, {});
-            const cc = [...(d?.ccRecipients ?? []).map((r) => r?.emailAddress?.address).filter(Boolean), ...listOf(a.cc)];
-            return finish(target, ctx, a, d, { to: (d?.toRecipients ?? []).map((r) => r?.emailAddress?.address).filter(Boolean), cc, keepAll: true });
+            /* As on IMAP (loop 51): never to this box; a reply to one's own message goes to whom it was sent. */
+            const self = String(target.config?.user ?? '').toLowerCase();
+            const mine = (list) => (list ?? []).map((r) => r?.emailAddress?.address).filter(Boolean).filter((x) => x.toLowerCase() !== self);
+            let to = mine(d?.toRecipients);
+            if (!to.length) { const o = await call(target, ctx, 'GET', `/me/messages/${encodeURIComponent(id)}?$select=toRecipients`).catch(() => null); to = mine(o?.toRecipients); }
+            const cc = [...mine(d?.ccRecipients), ...listOf(a.cc)].filter((x) => !to.includes(x));
+            return finish(target, ctx, a, d, { to, cc, keepAll: true });
         },
         /* Forward: Graph drafts it with the original's files; those not kept are
            taken off, the note goes above, then it is sent -- or left in Drafts. */

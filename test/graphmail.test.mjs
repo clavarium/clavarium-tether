@@ -314,3 +314,16 @@ test('loop 49: a step before the send that timed out says nothing was sent, neve
     const e = await graphMail({ fetch, token: mint }).reply(target, { uid: 'AAA', body: 'ok' }, ctx).catch((x) => x);
     assert.match(e.message, /did not answer in time -- nothing was sent$/);
 });
+
+test('loop 51: a Microsoft reply to one\'s own message goes to whom it was sent (never this box), card and act alike; attachments not a list is refused', async () => {
+    const t = { title: 'O', config: { provider: 'microsoft', user: 'a@example.com' } };
+    const f = fakeGraph({ 'POST /me/messages/AAA/createReply': { id: 'R6', toRecipients: [{ emailAddress: { address: 'a@example.com' } }], body: { content: '' } },
+        'GET /me/messages/AAA': { toRecipients: [{ emailAddress: { address: 'bob@example.com' } }], from: { emailAddress: { address: 'a@example.com' } }, subject: 's' }, 'PATCH /me/messages/R6': {}, 'POST /me/messages/R6/send': { _status: 202 } });
+    const r = await graphMail({ fetch: f.fetch, token: mint }).reply(t, { uid: 'AAA', body: 'ok' }, ctx);
+    assert.match(r.text, /^Sent to bob@example\.com/);
+    assert.deepEqual(f.calls.find((c) => c.method === 'PATCH').body.toRecipients.map((x) => x.emailAddress.address), ['bob@example.com']);
+    const about = await graphMail({ fetch: f.fetch, token: mint }).about(t, { uid: 'AAA', body: 'ok' }, ctx, 'mail.reply');
+    assert.deepEqual(about.replyTo.to, ['bob@example.com']);
+    const { check } = await import('../server/verbs.mjs');
+    assert.throws(() => check('mail.send', { target: 'm', to: 'x@example.com', subject: 's', body: 'b', attachments: { name: 'a', bytes: 'QQ==' } }), /attachments is a list/);
+});

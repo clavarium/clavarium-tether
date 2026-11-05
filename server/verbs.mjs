@@ -251,6 +251,8 @@ export function check(verb, a = {}) {
             if (a.draft === true || a.draft === 'true') out.draft = true;
             str('at', 64);
             if (a.signature === false || a.signature === 'false') out.signature = false;
+            /* Anything else than a list is refused, never ignored with the files left out (loop 51). */
+            if (a.attachments !== undefined && a.attachments !== null && !Array.isArray(a.attachments)) no('attachments is a list of { name, bytes } -- nothing was done');
             if (Array.isArray(a.attachments)) {
                 let total = 0;
                 /* More than kept: refused whole, never some dropped in silence (#51). */
