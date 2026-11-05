@@ -259,6 +259,73 @@ test('mail.send (classic): AUTH LOGIN on the SMTP server', async () => {
     assert.ok(!m.commands.some((x) => x.startsWith('AUTH XOAUTH2')), 'no token auth');
 });
 
+test('mail.send (classic): the same message is kept in the folder the server marks Sent, read; Google keeps its own (05-11)', async () => {
+    const { EventEmitter } = await import('node:events');
+    const appended = [];
+    const imap = () => {
+        const socket = new EventEmitter(); socket.destroy = () => {}; let pending = null;
+        const send = (t) => setImmediate(() => socket.emit('data', Buffer.from(t)));
+        socket.write = (data) => {
+            const text = Buffer.isBuffer(data) ? data.toString('utf8') : data;
+            if (pending) { appended.push({ box: pending.box, flags: pending.flags, message: text }); send(`${pending.tag} OK done\r\n`); pending = null; return; }
+            const line = text.replace(/\r\n$/, ''); const sp = line.indexOf(' '); const tag = line.slice(0, sp); const cmd = line.slice(sp + 1);
+            const ap = /^APPEND "((?:[^"\\]|\\.)*)" \(([^)]*)\) \{(\d+)\}$/.exec(cmd);
+            if (ap) { pending = { tag, box: ap[1], flags: ap[2] }; return send('+ Ready\r\n'); }
+            if (cmd.startsWith('LIST')) return send(`* LIST (\\HasNoChildren) "/" "INBOX"\r\n* LIST (\\HasNoChildren \\Sent) "/" "Elements envoyes"\r\n${tag} OK\r\n`);
+            return send(`${tag} OK\r\n`);
+        };
+        setImmediate(() => socket.emit('data', Buffer.from('* OK ready\r\n')));
+        return socket;
+    };
+    const m = smtpServer();
+    const classic = { id: 'c3', title: 'Box', config: { host: 'imap.example.com', smtpHost: 'smtp.example.com', user: 'alice@example.com' }, secrets: { password: 'pw' } };
+    const r = await mail({ fetch: okToken, connect: imap, smtpConnect: m.connect, smtpSecure: m.secure }).run('mail.send', classic, { to: 'bob@example.com', subject: 'Hi', body: 'yo' }, { secret: async () => 'PW' });
+    assert.equal(appended.length, 1, 'one copy');
+    assert.equal(appended[0].box, 'Elements envoyes', 'the folder marked \\Sent, whatever its name');
+    assert.match(appended[0].flags, /\\Seen/);
+    const mid = /^Message-ID: (.+)$/m.exec(appended[0].message)?.[1];
+    assert.ok(mid, 'the copy carries the Message-ID it was sent with');
+    assert.match(r.text, /A copy is in Elements envoyes\./);
+    appended.length = 0;
+    await mail({ fetch: okToken, connect: imap, smtpConnect: m.connect, smtpSecure: m.secure }).run('mail.send', { ...classic, config: { ...classic.config, saveSent: false } }, { to: 'bob@example.com', subject: 'Hi', body: 'yo' }, { secret: async () => 'PW' });
+    assert.equal(appended.length, 0, 'saveSent: false');
+    await mail({ fetch: okToken, connect: imap, smtpConnect: m.connect, smtpSecure: m.secure }).run('mail.send', TARGET, { to: 'bob@example.com', subject: 'Hi', body: 'yo' }, ctx());
+    assert.equal(appended.length, 0, 'Google keeps its own copy');
+});
+
+test('the Sent folder whatever the language or the config: a German one unmarked, none at all (then made) (05-11)', async () => {
+    const { EventEmitter } = await import('node:events');
+    const fake = (list) => {
+        const out = { appended: [], commands: [] };
+        out.connect = () => {
+            const socket = new EventEmitter(); socket.destroy = () => {}; let pending = null;
+            const send = (t) => setImmediate(() => socket.emit('data', Buffer.from(t)));
+            socket.write = (data) => {
+                const text = Buffer.isBuffer(data) ? data.toString('utf8') : data;
+                if (pending) { out.appended.push(pending.box); send(`${pending.tag} OK done\r\n`); pending = null; return; }
+                const line = text.replace(/\r\n$/, ''); const sp = line.indexOf(' '); const tag = line.slice(0, sp); const cmd = line.slice(sp + 1);
+                out.commands.push(cmd);
+                const ap = /^APPEND "((?:[^"\\]|\\.)*)" \(([^)]*)\) \{(\d+)\}$/.exec(cmd);
+                if (ap) { pending = { tag, box: ap[1] }; return send('+ Ready\r\n'); }
+                if (cmd.startsWith('LIST')) return send(`${list}${tag} OK\r\n`);
+                return send(`${tag} OK\r\n`);
+            };
+            setImmediate(() => socket.emit('data', Buffer.from('* OK ready\r\n')));
+            return socket;
+        };
+        return out;
+    };
+    const classic = { id: 'c4', title: 'Box', config: { host: 'imap.example.com', smtpHost: 'smtp.example.com', user: 'alice@example.com' }, secrets: { password: 'pw' } };
+    const de = fake('* LIST (\\HasNoChildren) "." "INBOX"\r\n* LIST (\\HasNoChildren) "." "INBOX.Gesendet"\r\n');
+    await mail({ fetch: okToken, connect: de.connect, smtpConnect: smtpServer().connect, smtpSecure: smtpServer().secure }).run('mail.send', classic, { to: 'bob@example.com', subject: 'Hi', body: 'yo' }, { secret: async () => 'PW' });
+    assert.deepEqual(de.appended, ['INBOX.Gesendet']);
+    const none = fake('* LIST (\\HasNoChildren) "/" "INBOX"\r\n');
+    const m = smtpServer();
+    await mail({ fetch: okToken, connect: none.connect, smtpConnect: m.connect, smtpSecure: m.secure }).run('mail.send', classic, { to: 'bob@example.com', subject: 'Hi', body: 'yo' }, { secret: async () => 'PW' });
+    assert.ok(none.commands.some((c) => /^CREATE "Sent"/.test(c)), 'made when there is none');
+    assert.deepEqual(none.appended, ['Sent']);
+});
+
 test('mail.send refuses a bad recipient address', async () => {
     const m = smtpServer();
     await assert.rejects(mail({ fetch: okToken, smtpConnect: m.connect, smtpSecure: m.secure }).run('mail.send', TARGET, { to: 'not an address', subject: 'x', body: 'y' }, ctx()), /not a usable address/);

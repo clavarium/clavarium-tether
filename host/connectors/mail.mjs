@@ -321,6 +321,20 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
         const boxes = lines.filter((l) => /^\* LIST/i.test(l)).map((l) => ({ flags: /^\* LIST \(([^)]*)\)/i.exec(l)?.[1] ?? '', name: (/"((?:[^"\\]|\\.)*)"\s*$/.exec(l)?.[1] ?? /\s(\S+)$/.exec(l)?.[1] ?? '').replace(/\\(.)/g, '$1') }));
         return (boxes.find((b) => /\\Drafts/i.test(b.flags)) ?? boxes.find((b) => /(^|\/)(drafts|brouillons)$/i.test(b.name)))?.name ?? 'Drafts';
     }
+    /* THE SENT FOLDER, WHATEVER THE LANGUAGE OR THE CONFIG (05-11): first the folder the server itself marks
+       \Sent (IMAP SPECIAL-USE, RFC 6154: Dovecot, Gmail, Outlook, Fastmail... say it whatever its name or its
+       language); else, for an older server, a folder named so in one of the common languages, at the top or
+       under INBOX; else none is there: "Sent" is made (CREATE ... (USE (\Sent)) when the server takes it). */
+    const SENT_NAMES = /(^|[/.])(sent|sent items|sent mail|sent messages|envoy[ée]s|[ée]l[ée]ments envoy[ée]s|messages envoy[ée]s|gesendet|gesendete (objekte|elemente)|enviados|elementos enviados|correo enviado|inviati|posta inviata|verzonden|verzonden items|enviadas|itens enviados|wys[łl]ane|odeslan[ée]|skickat|sendt|l[äa]hetetyt|отправленные|已发送|送信済み)$/i;
+    async function sentOf(imap) {
+        const lines = await imap.command('LIST "" "*"', 'the folders could not be listed');
+        const boxes = lines.filter((l) => /^\* LIST/i.test(l)).map((l) => ({ flags: /^\* LIST \(([^)]*)\)/i.exec(l)?.[1] ?? '', name: (/"((?:[^"\\]|\\.)*)"\s*$/.exec(l)?.[1] ?? /\s(\S+)$/.exec(l)?.[1] ?? '') }));
+        const found = boxes.find((b) => /\\Sent\b/i.test(b.flags)) ?? boxes.find((b) => SENT_NAMES.test(b.name));
+        if (found) return found.name;
+        /* None: made, as most mail programs do. A server that does not know USE gets a plain CREATE. */
+        try { await imap.command('CREATE "Sent" (USE (\\Sent))', 'the Sent folder could not be made'); } catch { await imap.command('CREATE "Sent"', 'the Sent folder could not be made'); }
+        return 'Sent';
+    }
     /* Send the built message, or keep it as a draft. */
     async function deliver(target, ctx, a, m) {
         const user = userOf(target);
@@ -367,12 +381,22 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
             auth = { user, password };
         }
         if (Number(target.config?.smtpPort) > 0) port = Number(target.config.smtpPort);
+        /* Built once: the same message (its Message-ID too) goes out and is kept in Sent. */
+        const raw = buildMessage({ ...m, from: user });
         try {
-            await smtpSend({ host: server, port, auth, from: user, ...m,
+            await smtpSend({ host: server, port, auth, from: user, to: m.to, cc: m.cc, bcc: m.bcc, raw,
                 ...(smtpConnect ? { connect: smtpConnect } : {}), ...(smtpSecure ? { secure: smtpSecure } : {}) });
         } catch (e) { if (e instanceof Refused) throw e; no(`${target.title}: ${e?.message ?? 'the message could not be sent'}`); }
         const copies = m.cc.length ? ` (cc ${m.cc.join(', ')})` : '';
-        return { text: `Sent to ${m.to.join(', ')}${copies}${files}.`, size: 0 };
+        /* A COPY IN SENT (05-11): Google and Microsoft keep one themselves; a classic box (IMAP/SMTP) does not --
+           without it the mail leaves no trace in the person's mailbox. Read, in the folder the server marks Sent.
+           A copy that fails does not undo the send: it is said. `saveSent: false` in the box's config turns it off. */
+        let kept = '';
+        if (!isOAuth(target) && target.config?.saveSent !== false) {
+            try { kept = ` A copy is in ${await withImap(target, ctx, async (imap) => { const box = await sentOf(imap); await imap.append(box, '\\Seen', raw, 'the copy could not be kept in Sent'); return box; })}.`; }
+            catch (e) { kept = ` (Sent, but its copy could not be kept in Sent: ${e?.message ?? 'IMAP refused it'}.)`; }
+        }
+        return { text: `Sent to ${m.to.join(', ')}${copies}${files}.${kept}`, size: 0 };
     }
 
     /* ---------- messages to send later (IMAP/SMTP) ----------
