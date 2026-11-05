@@ -428,7 +428,7 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
             }, { write: true });
             later.push({ id: messageId, target: target.id, agent: ctx.agent, when: at.getTime(), box, to: m.to, cc: m.cc, bcc: m.bcc, subject: String(m.subject ?? ''), tries: 0 });
             keep();
-            return { text: `Scheduled for ${wallClock(at)}, to ${m.to.join(', ')}${files} — it waits in ${box} until then (delete it there to cancel). The keeper must be running at that time; if not, it leaves as soon as it is back.`, size: 0 };
+            return { text: `Scheduled for ${wallClock(at)}, to ${m.to.join(', ')}${files} — it waits in ${box} until then (delete it there to cancel). The keeper must be running at that time; if not, it leaves as soon as it is back (and you are told).${LATER_TEXT}`, size: 0 };
         }
         if (draft) {
             const raw = buildMessage({ ...m, from: user });
@@ -544,6 +544,7 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
     const WATCH_MS = 48 * 3600_000;
     const DELAYED_MS = 5 * 86_400_000 + 3600_000;
     const WATCH_TEXT = ' Tether watches for a return for 48 h: a mail that comes back is told to you (and to the person).';
+    const LATER_TEXT = ' Once it leaves, Tether watches for a return for 48 h: a mail that comes back, or one that cannot leave, is told to you.';
     function watch(target, agent, { id, to, subject, from } = {}) {
         if (!host || !agent) return '';
         const at = Math.max(host.now(), Number(from) || 0);
@@ -622,7 +623,7 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
     }
 
     /* A mail Microsoft sent: watched like the others (its ref, its recipients, its time). */
-    const graphSent = (target, ctx, r) => { const { watch: w, ...rest } = r; if (w) rest.text += watch(target, ctx.agent, w); return rest; };
+    const graphSent = (target, ctx, r) => { const { watch: w, ...rest } = r; if (w && watch(target, ctx.agent, w)) rest.text += w.from ? LATER_TEXT : WATCH_TEXT; return rest; };
 
     let ticking = false;
     async function tick() {

@@ -300,7 +300,9 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
             const gone = before.attendees.map((x) => x.email).filter((x) => !after.attendees.some((y) => y.email.toLowerCase() === x.toLowerCase()));
             const sched = (others.length || gone.length) && mine ? await schedules(target, ctx) : false;
             const told = !mine || !(others.length || gone.length) ? '' : sched ? ` The calendar server sends the change to ${others.join(', ') || 'nobody left'}${gone.length ? `, and a cancellation to ${gone.join(', ')} (removed)` : ''}.` : ` Invitees (${[...others, ...gone].join(', ')}): ${NOT_TOLD}.`;
-            return { text: `Updated the event.${told}`, size: 0, watch: a.with !== undefined && others.length && sched ? { id: new URL(url).pathname, title: after.summary, start: after.start } : null };
+            /* The time set, said as Microsoft's result says it (loop 4). */
+            const when = a.start !== undefined || a.end !== undefined ? ` Now ${after.start}${after.end ? ` — ${after.end}` : ''} (${DAV_TZ}).` : '';
+            return { text: `Updated the event.${when}${told}`, size: 0, watch: a.with !== undefined && others.length && sched ? { id: new URL(url).pathname, title: after.summary, start: after.start } : null };
         },
         async remove(target, a, ctx) {
             const url = await urlOf(target, ctx, a.id);

@@ -231,3 +231,16 @@ test('a returned reply sent by Microsoft is tied by its subject even when accent
     assert.equal(h.notices.length, 1);
     assert.match(h.notices[0].text, /"RE: Réunion été" to bob@example\.com was NOT delivered/);
 });
+
+test('a scheduled mail says, on both kinds of box, that it is watched once it leaves (loop 4)', async () => {
+    const s = imapBox(); const m = smtp();
+    const conn = mail({ connect: s.connect, smtpConnect: m.connect, smtpSecure: m.secure });
+    conn.wake(hostOf(BOX, { t: Date.now() }).hand);
+    const r = await conn.run('mail.send', BOX, { to: 'bob@example.com', subject: 's', body: 'b', at: new Date(Date.now() + 3600_000).toISOString() }, ctx());
+    assert.match(r.text, /Once it leaves, Tether watches for a return for 48 h/);
+    const MS = { id: 'ms', title: 'Outlook', config: { provider: 'microsoft', user: 'me@example.com' }, secrets: { refresh: 'r' } };
+    const fetch = async (url) => (url.includes('login.microsoftonline') ? new Response(JSON.stringify({ access_token: 'A', expires_in: 3600 }), { status: 200 }) : new Response(null, { status: 202 }));
+    const g = mail({ fetch }); g.wake(hostOf(MS, { t: Date.now() }).hand);
+    const r2 = await g.run('mail.send', MS, { to: 'bob@example.com', subject: 's', body: 'b', at: new Date(Date.now() + 3600_000).toISOString() }, { ...ctx(), secret: async () => 'R' });
+    assert.match(r2.text, /Outbox .*Once it leaves, Tether watches for a return for 48 h/);
+});

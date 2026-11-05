@@ -236,3 +236,9 @@ test('CalDAV: the answers of invitees are watched only on a server that schedule
         assert.equal(/watches the answers/.test(r.text), yes);
     }
 });
+
+test('CalDAV: a change of time says the time set, as on Microsoft (loop 4)', async () => {
+    const s = davServer();
+    const r = await run(s, 'calendar.update', { id: '/cal/me/work/b.ics', start: '2030-11-05T15:00', end: '2030-11-05T16:00' });
+    assert.match(r.text, /^Updated the event\. Now 2030-11-05 15:00 — 2030-11-05 16:00 \(Europe\/Paris\)\./);
+});
