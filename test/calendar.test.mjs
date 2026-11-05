@@ -423,6 +423,7 @@ function graphCal(event) {
         calls.push({ url, method, body: o.body ? JSON.parse(o.body) : undefined });
         if (method === 'GET' && url.includes('/me/events/E1')) return event ? json(event()) : json({ error: { message: 'gone' } }, 404);
         if (method === 'POST' && url.endsWith('/me/events')) return json({ id: 'E1' });
+        if (method === 'POST') return new Response(null, { status: 202 });
         if (method === 'DELETE') return new Response(null, { status: 204 });
         if (method === 'PATCH') return json({});
         return json({ error: { message: 'nope' } }, 404);
@@ -481,4 +482,10 @@ test('an invitee who declines an event the agent made is told once (notice calen
     assert.match(notices[0].text, /a@example\.com declined "Comité"/);
     clock.t = Date.parse('2030-11-06T00:00:00Z'); await conn.tick();
     assert.equal(conn.watched().length, 0);
+});
+
+test('Microsoft: an answer to an invitation says the organiser is told, as on CalDAV (loop 4)', async () => {
+    const s = graphCal(() => ORG({ isOrganizer: false, organizer: { emailAddress: { address: 'boss@example.com' } } }));
+    const r = await calendar({ fetch: s.fetch }).run('calendar.respond', M, { id: 'E1', answer: 'accept' }, ctx());
+    assert.equal(r.text, 'Accepted the invitation. Microsoft tells the organiser (boss@example.com).');
 });

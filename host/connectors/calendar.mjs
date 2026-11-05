@@ -623,9 +623,11 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
             if (!action) no('answer is accept, decline or tentative');
             if (provider !== 'microsoft') return davVerbs.respond(target, a, ctx, PARTSTAT[String(a.answer).toLowerCase().trim()]);
             const body = { sendResponse: true, ...(a.comment ? { comment: String(a.comment) } : {}) };
+            const who = await peopleOf(target, ctx, a.id);
             const res = await call(target, ctx, 'POST', `https://graph.microsoft.com/v1.0/me/events/${encodeURIComponent(String(a.id))}/${action}`, body);
             if (!res.ok) no(`${target.title}: the response was not sent (${res.status} ${await bodyError(res)})`.trim());
-            return { text: `${action === 'accept' ? 'Accepted' : action === 'decline' ? 'Declined' : 'Tentatively accepted'} the invitation.`, size: 0 };
+            /* Said as on CalDAV (loop 4): who is told. */
+            return { text: `${action === 'accept' ? 'Accepted' : action === 'decline' ? 'Declined' : 'Tentatively accepted'} the invitation. Microsoft tells the organiser${who?.organizer ? ` (${who.organizer})` : ''}.`, size: 0 };
         },
         /* Change an event: any of title, start, end, where. An act. Microsoft over
            Graph (PATCH); a Google edit (CalDAV PUT) comes with parity. */
