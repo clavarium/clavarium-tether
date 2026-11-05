@@ -576,3 +576,8 @@ test('loop 18: an event made whose decline watch cannot be saved is still said m
     const r = await conn.run('calendar.create', M, { title: 'Comité', start: '2030-11-05T14:00', end: '2030-11-05T15:00', with: 'a@example.com' }, { ...ctx(), agent: 'agent:a' });
     assert.match(r.text, /^Created: Comité.*its watch list could not be saved/);
 });
+
+test('loop 32: removing a Microsoft category says events keep the name', async () => {
+    const fetch = async (url, o = {}) => (url.includes('login.microsoftonline.com') ? json({ access_token: 'T', expires_in: 3600 }) : (o.method || 'GET') === 'GET' ? json({ value: [{ id: 'c1', displayName: 'Interne' }] }) : new Response(null, { status: 204 }));
+    assert.match((await calendar({ fetch }).run('calendar.category-delete', M, { name: 'Interne' }, ctx())).text, /Events already tagged keep the name/);
+});

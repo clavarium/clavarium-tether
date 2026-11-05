@@ -802,7 +802,7 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
             const id = await categoryId(target, a, ctx, a.name);
             const res = await call(target, ctx, 'DELETE', `https://graph.microsoft.com/v1.0/me/outlook/masterCategories/${encodeURIComponent(id)}`);
             if (!res.ok && res.status !== 204) no(`${target.title}: the category was not removed (${res.status} ${await bodyError(res)})`.trim());
-            return { text: `Removed the category "${a.name}".`, size: 0 };
+            return { text: `Removed the category "${a.name}" from the list. Events already tagged keep the name (Outlook stores it on each event).`, size: 0 };
         },
     };
     /* Who an event concerns (Microsoft): its organiser, whether that is this account, its invitees. */
@@ -924,7 +924,7 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
             const seen = ['title', 'start', 'end', 'where', 'notes', 'with', 'online'].some((k) => a[k] !== undefined) || (provider !== 'microsoft' && a.categories !== undefined);
             if (verb === 'calendar.update' && ev.mine && seen && (now.length || gone.length)) {
                 effects.push(sent ? `the update goes to ${now.join(', ') || 'nobody'}` : `the invitees (${[...now, ...gone].join(', ')}) are NOT told`);
-                if (gone.length && sent) effects.push(`removed: ${gone.join(', ')} (they get a cancellation)`);
+                if (gone.length) effects.push(`removed: ${gone.join(', ')}${sent ? ' (they get a cancellation)' : ''}`);
             }
             if (verb === 'calendar.respond') effects.push(sent ? `the organiser${ev.organizer ? ` (${ev.organizer})` : ''} is told` : 'the organiser is NOT told (this server does not schedule)');
             if (provider !== 'microsoft' && ev.series?.series && ['calendar.update', 'calendar.delete', 'calendar.respond', 'calendar.attach', 'calendar.detach'].includes(verb)) {

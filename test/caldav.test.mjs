@@ -370,3 +370,11 @@ test('loop 28-29: a category rename reaches every VEVENT, dates changed on their
     assert.match((await run(s, 'calendar.category-delete', { name: 'congé' })).text, /Removed the category "congé" from 1 event/);
     assert.doesNotMatch(s.files.get('/cal/me/work/o.ics').text, /Congé/);
 });
+
+test('loop 32: invitees removed on a server that does not schedule are named on the card', async () => {
+    const s = scheduling(davServer(), false);
+    const made = await run(s, 'calendar.create', { title: 'RDV', start: '2030-11-04T10:00', end: '2030-11-04T11:00', with: 'client@example.org' });
+    const id = /Its id is (\S+)\./.exec(made.text)[1];
+    const about = await calendar({ fetch: s.fetch }).describe('calendar.update', T, { id, with: '' }, ctx());
+    assert.ok(about.effects.includes('removed: client@example.org'));
+});

@@ -255,6 +255,12 @@ export function check(verb, a = {}) {
                 if (total > ATTACH_MAX) no(`the attachments are too large to send together (over ${Math.round(ATTACH_MAX / 1024 / 1024)} MB of files)`);
                 if (files.length) out.attachments = files;
             }
+            /* Both forms given: the one file joins the list, never dropped in silence (loop 32). */
+            if (out.attach !== undefined && Array.isArray(out.attachments)) {
+                out.attachments = [...out.attachments, { name: out.attachName || 'attachment', bytes: out.attach }];
+                if (out.attachments.reduce((k, f) => k + f.bytes.length, 0) > ATTACH_MAX) no(`the attachments are too large to send together (over ${Math.round(ATTACH_MAX / 1024 / 1024)} MB of files)`);
+                delete out.attach; delete out.attachName;
+            }
             break;
         }
         case 'withdraw': str('id', 100); str('reason', 300); break;

@@ -660,3 +660,11 @@ test('loop 28: a Microsoft create card shows the Teams meeting it adds by defaul
     assert.equal(cardOf('calendar.create', { title: 'T', start: 's', end: 'e', with: 'a@example.com' }, { config: { provider: 'microsoft' } }).online, 'teams (by default)');
     assert.equal(cardOf('calendar.create', { title: 'T', start: 's', end: 'e', with: 'a@example.com' }, { config: { caldav: 'x' } }).online, undefined);
 });
+
+test('loop 32: attach and attachments together all go; a card names the fields an update empties', async () => {
+    const out = check('mail.send', { target: 'm', to: 'a@example.com', subject: 's', body: 'b', attachments: [{ name: 'a.pdf', bytes: 'QUJD' }], attach: 'REVG', attachName: 'b.pdf' });
+    assert.deepEqual(out.attachments.map((f) => f.name), ['a.pdf', 'b.pdf']);
+    assert.equal(out.attach, undefined);
+    const { cardOf } = await import('../server/cards.mjs');
+    assert.deepEqual(cardOf('calendar.update', { id: 'e', where: '', with: '', categories: [] }, {}).cleared, ['where', 'with', 'categories']);
+});
