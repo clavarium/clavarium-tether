@@ -580,7 +580,9 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
     function match(rec, b) {
         if (rec.id && b.raw.includes(rec.id)) return true;
         const subj = rec.subject.trim();
-        return subj.length >= 3 && (b.subject.includes(subj) || b.raw.includes(`Subject: ${subj}`)) && b.recipients.some((r) => rec.to.includes(r.to));
+        /* The returned headers carry an accented subject encoded (=?UTF-8?...?=): read decoded. */
+        b.plain ??= decodeWords(b.raw).replace(/\r?\n[ \t]+/g, ' ');
+        return subj.length >= 3 && (b.subject.includes(subj) || b.plain.includes(`Subject: ${subj}`)) && b.recipients.some((r) => rec.to.includes(r.to));
     }
     async function scanBounces() {
         const now = host.now();

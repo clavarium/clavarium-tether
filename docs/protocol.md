@@ -120,6 +120,7 @@ targets, 4 not answered in time, 64 not understood.
 | Command | MCP tool | Verb |
 |---|---|---|
 | `tether` / `tether targets` | `targets` | `targets` |
+| `tether notices [--all]` | `notices` | `notices` (read in the folder) |
 | `tether open TARGET` | `terminal-open` | `terminal.open` |
 | `tether read TARGET [--lines N]` | `terminal-read` | `terminal.read` |
 | `tether type TARGET "keys" [--enter]` | `terminal-type` | `terminal.type` |

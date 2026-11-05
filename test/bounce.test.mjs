@@ -211,3 +211,23 @@ test('a scheduled mail the server took but never confirmed is not sent again, an
     assert.equal(h.notices[0]?.kind, 'mail.later-unsure');
     assert.match(h.notices[0].text, /MAY have been sent/);
 });
+
+test('a returned reply sent by Microsoft is tied by its subject even when accented (encoded in the returned headers) (loop 3)', async () => {
+    const clock = { t: Date.parse('2026-11-05T09:00:00Z') };
+    const MS = { id: 'ms', title: 'Outlook', config: { provider: 'microsoft', user: 'me@example.com' }, secrets: { refresh: 'r' } };
+    const fetch = async (url, o = {}) => {
+        if (url.includes('login.microsoftonline')) return new Response(JSON.stringify({ access_token: 'A', expires_in: 3600 }), { status: 200 });
+        const path = url.replace('https://graph.microsoft.com/v1.0', '');
+        if (path === '/me/messages/AAA/createReply') return Response.json({ id: 'R1', subject: 'RE: Réunion été', toRecipients: [{ emailAddress: { address: 'bob@example.com' } }], body: { content: '' } });
+        if (path === '/me/messages/R1' || path === '/me/messages/R1/send') return new Response(null, { status: 202 });
+        if (path.startsWith('/me/mailFolders/inbox/messages')) return Response.json({ value: [{ id: 'N1', subject: 'Undeliverable: RE: Réunion été', from: { emailAddress: { address: 'postmaster@example.org' } } }] });
+        if (path === '/me/messages/N1/$value') return new Response(dsn('<other@x>', 'bob@example.com').replace('Subject: Devis', 'Subject: =?UTF-8?B?UkU6IFLDqXVuaW9uIMOpdMOp?='));
+        return new Response('{}', { status: 404 });
+    };
+    const conn = mail({ fetch });
+    const h = hostOf(MS, clock); conn.wake(h.hand);
+    await conn.run('mail.reply', MS, { uid: 'AAA', body: 'ok' }, { ...ctx(), secret: async () => 'REFRESH' });
+    clock.t += 3 * 60_000; await conn.tick();
+    assert.equal(h.notices.length, 1);
+    assert.match(h.notices[0].text, /"RE: Réunion été" to bob@example\.com was NOT delivered/);
+});
