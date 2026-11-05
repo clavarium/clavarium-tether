@@ -743,7 +743,14 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
             return withImap(target, ctx, async (imap) => {
                 /* The uid is the one of the folder it was listed in (from): another folder's same number is another message. */
                 await imap.command(`SELECT ${quoted(boxOf(target, a.from))}`, 'that mailbox could not be opened');
-                await imap.command(`UID MOVE ${uid} ${quoted(String(a.mailbox))}`, 'that message could not be moved (the destination folder may not exist)');
+                /* A server without MOVE (RFC 6851; older Dovecot, Exchange 2010...): COPY, then that one uid expunged, as delete does. */
+                const caps = (await imap.command('CAPABILITY', 'the server capabilities could not be read')).find((l) => /^\* CAPABILITY/i.test(l)) ?? '';
+                if (/\sMOVE(\s|$)/i.test(caps)) await imap.command(`UID MOVE ${uid} ${quoted(String(a.mailbox))}`, 'that message could not be moved (the destination folder may not exist)');
+                else {
+                    await imap.command(`UID COPY ${uid} ${quoted(String(a.mailbox))}`, 'that message could not be moved (the destination folder may not exist)');
+                    await imap.command(`UID STORE ${uid} +FLAGS (\\Deleted)`, 'that message was copied but could not be removed from its folder');
+                    await imap.command(`UID EXPUNGE ${uid}`, 'that message was copied but could not be removed from its folder');
+                }
                 return { text: `Moved #${uid} to ${a.mailbox}.`, size: 0 };
             }, { write: true });
         },

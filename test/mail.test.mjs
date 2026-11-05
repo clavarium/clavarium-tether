@@ -342,12 +342,16 @@ test('a classic IMAP box (host + password) signs in with LOGIN, not a token', as
 });
 
 test('mail.move opens read-write and UID MOVEs; mail.flag UID STOREs the system flag', async () => {
-    const s = imapServer(STORE);
+    const s = trashServer('', 'IMAP4rev1 MOVE');
     const c = mail({ fetch: okToken, connect: s.connect });
     const moved = await c.run('mail.move', TARGET, { uid: '6', mailbox: 'Archive' }, ctx());
     assert.ok(moved.text.includes('Moved #6 to Archive'), 'confirms the move');
     assert.ok(s.commands.some((x) => x.startsWith('SELECT')), 'opened read-write (SELECT, not EXAMINE)');
     assert.ok(s.commands.some((x) => /^UID MOVE 6 "Archive"/.test(x)), 'UID MOVE to the folder');
+    /* a server without MOVE: copied, then that one uid expunged (audit 05-11) */
+    const old = trashServer('', 'IMAP4rev1 UIDPLUS');
+    await mail({ fetch: okToken, connect: old.connect }).run('mail.move', TARGET, { uid: '6', mailbox: 'Archive' }, ctx());
+    assert.deepEqual(old.commands.filter((x) => /^UID (COPY|STORE|EXPUNGE|MOVE)/.test(x)), ['UID COPY 6 "Archive"', 'UID STORE 6 +FLAGS (\\Deleted)', 'UID EXPUNGE 6']);
     const s2 = imapServer(STORE);
     const flagged = await mail({ fetch: okToken, connect: s2.connect }).run('mail.flag', TARGET, { uid: '5', flag: 'read' }, ctx());
     assert.ok(flagged.text.includes('Marked #5 read'), 'confirms the mark');
