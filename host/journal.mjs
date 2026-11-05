@@ -1,6 +1,7 @@
 /* THE JOURNAL: one line per call and per change of rights, appended, never
  * rewritten. Who, which target, which verb, what exactly (the detail), the
- * decision and by whom, when, and the result's size and exit code.
+ * decision and by whom, when, and the result's size and exit code; for an act a
+ * person approved, the id of its request (so a page can say how that one ended).
  *
  *   journal.jsonl   in the keeper's store
  *
@@ -13,7 +14,7 @@
 import { appendFileSync, readFileSync, mkdirSync, lstatSync } from 'node:fs';
 import { join } from 'node:path';
 
-export const FIELDS = Object.freeze(['op', 'agent', 'target', 'verb', 'detail', 'why', 'decision', 'because', 'by', 'word', 'ok', 'error', 'size', 'exit', 'ms', 'rule', 'level']);
+export const FIELDS = Object.freeze(['op', 'agent', 'target', 'verb', 'detail', 'why', 'decision', 'because', 'by', 'word', 'ok', 'error', 'size', 'exit', 'ms', 'rule', 'level', 'request']);
 export const DETAIL_MAX = 2000;
 export const HIDDEN = '[secret]';
 

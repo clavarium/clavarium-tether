@@ -335,6 +335,25 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
         try { await imap.command('CREATE "Sent" (USE (\\Sent))', 'the Sent folder could not be made'); } catch { await imap.command('CREATE "Sent"', 'the Sent folder could not be made'); }
         return 'Sent';
     }
+    /* THE TRASH FOLDER (mail.delete, 05-11): like Sent, first the folder the server marks \Trash (SPECIAL-USE,
+       RFC 6154: Gmail's "[Gmail]/Trash" or its translation, Dovecot, Outlook, Fastmail...); else a folder named
+       so in a common language, at the top or under INBOX; else "Trash" is made. Names are matched decoded
+       (IMAP's modified UTF-7: "&AMk-l&AOk-ments supprim&AOk-s" is "Éléments supprimés"). */
+    const TRASH_NAMES = /^(inbox[/.])?(trash|deleted|deleted items|deleted messages|bin|corbeille|[ée]l[ée]ments supprim[ée]s|messages supprim[ée]s|papierkorb|gel[öo]scht|gel[öo]schte (objekte|elemente)|papelera|elementos eliminados|cestino|posta eliminata|elementi eliminati|prullenbak|verwijderde items|lixeira|lixo|itens exclu[íi]dos|kosz|ko[šs]|papperskorgen|borttagna objekt|papirkurv|slettet|roskakori|poistetut|корзина|удаленные|удалённые|已删除|垃圾箱|ゴミ箱|削除済みアイテム)$/i;
+    const mutf7 = (name) => name.replace(/&([^-]*)-/g, (_, b) => {
+        if (!b) return '&';
+        const bytes = Buffer.from(b.replace(/,/g, '/'), 'base64'); let out = '';
+        for (let i = 0; i + 1 < bytes.length; i += 2) out += String.fromCharCode(bytes.readUInt16BE(i));
+        return out;
+    });
+    async function trashOf(imap) {
+        const lines = await imap.command('LIST "" "*"', 'the folders could not be listed');
+        const boxes = lines.filter((l) => /^\* LIST/i.test(l)).map((l) => ({ flags: /^\* LIST \(([^)]*)\)/i.exec(l)?.[1] ?? '', name: (/"((?:[^"\\]|\\.)*)"\s*$/.exec(l)?.[1] ?? /\s(\S+)$/.exec(l)?.[1] ?? '').replace(/\\(.)/g, '$1') }));
+        const found = boxes.find((b) => /\\Trash\b/i.test(b.flags)) ?? boxes.find((b) => TRASH_NAMES.test(mutf7(b.name)));
+        if (found) return { name: found.name, shown: mutf7(found.name) };
+        try { await imap.command('CREATE "Trash" (USE (\\Trash))', 'the Trash folder could not be made'); } catch { await imap.command('CREATE "Trash"', 'the Trash folder could not be made'); }
+        return { name: 'Trash', shown: 'Trash', made: true };
+    }
     /* Send the built message, or keep it as a draft. */
     async function deliver(target, ctx, a, m) {
         const user = userOf(target);
@@ -568,16 +587,31 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
                 return { text: `Marked #${uid} ${String(a.flag).toLowerCase().trim()}.`, size: 0 };
             });
         },
-        /* Delete a message. An act. Over IMAP, mark \\Deleted then expunge that one uid;
-           over Graph, DELETE moves it to Deleted Items (a soft delete). */
+        /* Delete a message. An act. Over IMAP it goes to the Trash folder (the one the server marks \Trash):
+           UID MOVE when the server has MOVE, else UID COPY there, then \Deleted and UID EXPUNGE of that one uid.
+           A message already in Trash is deleted for good, and the result says so. Gmail: moved to its Trash
+           (an expunge from INBOX would only archive it). Over Graph, DELETE moves it to Deleted Items. */
         async 'mail.delete'(target, a, ctx) {
             if (isGraph(target)) return gmail.remove(target, a, ctx);
             const uid = numUid(a.uid);
             return withImap(target, ctx, async (imap) => {
-                await imap.command(`SELECT ${quoted(boxOf(target, a.mailbox))}`, 'that mailbox could not be opened');
-                await imap.command(`UID STORE ${uid} +FLAGS (\\Deleted)`, 'that message could not be deleted');
-                await imap.command(`UID EXPUNGE ${uid}`, 'that message could not be removed');
-                return { text: `Deleted #${uid}.`, size: 0 };
+                const box = boxOf(target, a.mailbox);
+                const trash = await trashOf(imap);
+                await imap.command(`SELECT ${quoted(box)}`, 'that mailbox could not be opened');
+                if (trash.name.toLowerCase() === box.toLowerCase()) {
+                    await imap.command(`UID STORE ${uid} +FLAGS (\\Deleted)`, 'that message could not be deleted');
+                    await imap.command(`UID EXPUNGE ${uid}`, 'that message could not be removed');
+                    return { text: `Deleted #${uid} for good: it was already in ${trash.shown}, so it cannot be restored.`, size: 0 };
+                }
+                const caps = (await imap.command('CAPABILITY', 'the server capabilities could not be read')).find((l) => /^\* CAPABILITY/i.test(l)) ?? '';
+                if (/\sMOVE(\s|$)/i.test(caps)) {
+                    await imap.command(`UID MOVE ${uid} ${quoted(trash.name)}`, 'that message could not be moved to the Trash');
+                } else {
+                    await imap.command(`UID COPY ${uid} ${quoted(trash.name)}`, 'that message could not be copied to the Trash');
+                    await imap.command(`UID STORE ${uid} +FLAGS (\\Deleted)`, 'that message was copied to the Trash but could not be removed from its folder');
+                    await imap.command(`UID EXPUNGE ${uid}`, 'that message was copied to the Trash but could not be removed from its folder');
+                }
+                return { text: `Deleted #${uid}: moved to ${trash.shown}${trash.made ? ' (made, there was none)' : ''}, where it can be restored.`, size: 0 };
             });
         },
         /* Send a message. A provider signs in to SMTP with XOAUTH2; a classic box with

@@ -177,12 +177,101 @@ export function newCard({ uid, name, email, phone }) {
     lines.push('END:VCARD');
     return `${lines.map(fold).join('\r\n')}\r\n`;
 }
-/* A contact's text with only the given fields changed. */
-export function editCard(text, { name, email, phone, photo, photoType }) {
+/* THE TYPE OF AN EMAIL OR A PHONE an agent may name (05-11): work, home, mobile (a phone's "cell"). */
+export function typeOf(type, name) {
+    const t = String(type ?? '').trim().toLowerCase();
+    if (!t) return '';
+    if (t === 'work' || t === 'home') return t;
+    if (name === 'TEL' && (t === 'mobile' || t === 'cell')) return 'cell';
+    no(name === 'TEL' ? 'a phone type is work, home or mobile' : 'an email type is work or home');
+    return '';
+}
+/* What a vCard line's parameters say of its type, lowercased: TYPE=work,pref / TYPE=WORK;TYPE=PREF /
+   PREF=1 (vCard 4) / a bare ;WORK (vCard 2.1). */
+const typesIn = (params) => String(params).split(';').filter(Boolean).flatMap((seg) => {
+    const eq = seg.indexOf('=');
+    if (eq < 0) return [seg.toLowerCase()];
+    const k = seg.slice(0, eq).toUpperCase(); const v = seg.slice(eq + 1).replace(/"/g, '');
+    if (k === 'TYPE') return v.split(',').map((x) => x.trim().toLowerCase()).filter(Boolean);
+    if (k === 'PREF') return ['pref'];
+    return [];
+});
+/* The same parameters without "preferred". */
+const withoutPref = (params) => String(params).split(';').filter(Boolean).map((seg) => {
+    const eq = seg.indexOf('=');
+    if (eq < 0) return /^pref$/i.test(seg) ? '' : seg;
+    const k = seg.slice(0, eq).toUpperCase();
+    if (k === 'PREF') return '';
+    if (k !== 'TYPE') return seg;
+    const kept = seg.slice(eq + 1).split(',').filter((x) => !/^"?pref"?$/i.test(x.trim()));
+    return kept.length ? `${seg.slice(0, eq)}=${kept.join(',')}` : '';
+}).filter(Boolean).map((x) => `;${x}`).join('');
+const sameValue = (name, x, y) => (name === 'TEL'
+    ? String(x).replace(/^tel:/i, '').replace(/[^\d+]/g, '') === String(y).replace(/^tel:/i, '').replace(/[^\d+]/g, '')
+    : String(x).trim().toLowerCase() === String(y).trim().toLowerCase());
+/* ONE EMAIL OR PHONE CHANGED, THE OTHERS KEPT (05-11: an update replaced them all). With no type, the value
+   becomes the first, preferred one (moved up when the card had it already); with a type, it replaces the
+   one of that type (its other parameters and its group kept), or is added with that type; an empty value
+   with a type removes that one. Every other line of the card is left as it was. `said` gets what was done. */
+function editOne(text, name, value, type, said) {
+    const all = linesOf(text);
+    const s = all.findIndex((l) => l.toUpperCase() === 'BEGIN:VCARD');
+    const e = all.findIndex((l, i) => i > s && l.toUpperCase() === 'END:VCARD');
+    if (s < 0 || e < 0) no('not a VCARD');
+    const v4 = all.slice(s, e).some((l) => /^VERSION:4/i.test(l));
+    const label = name === 'TEL' ? 'phone' : 'email';
+    const re = new RegExp(`^((?:[A-Za-z0-9-]+\\.)?${name})((?:;[^:]*)?):(.*)$`, 'i');
+    const mine = []; let depth = 0;
+    for (let i = s + 1; i < e; i++) {
+        const l = all[i];
+        if (/^BEGIN:/i.test(l)) { depth++; continue; }
+        if (/^END:/i.test(l)) { depth--; continue; }
+        const m = depth === 0 ? re.exec(l) : null;
+        if (m) mine.push({ i, head: m[1], params: m[2], value: m[3], types: typesIn(m[2]) });
+    }
+    const want = typeOf(type, name);
+    const val = String(value ?? '').trim();
+    const shown = (t) => (t === 'cell' ? 'mobile' : t);
+    const lines = all.slice();
+    let insert = null; let at = e;
+    if (want) {
+        const ofType = mine.filter((p) => p.types.includes(want) || (want === 'cell' && p.types.includes('mobile')));
+        if (!val) {
+            if (!ofType.length) no(`this contact has no ${shown(want)} ${label} to remove`);
+            for (const p of ofType) lines[p.i] = null;
+            said.push(`removed the ${shown(want)} ${label} (${ofType.map((p) => p.value).join(', ')})`);
+        } else if (ofType.length) {
+            const hit = ofType[0];
+            const v = name === 'TEL' && /^tel:/i.test(hit.value) && !/^tel:/i.test(val) ? `tel:${val}` : val;
+            lines[hit.i] = `${hit.head}${hit.params}:${v}`;
+            said.push(`replaced the ${shown(want)} ${label} ${hit.value} with ${val}`);
+        } else {
+            insert = `${name};TYPE=${v4 ? want : want.toUpperCase()}${name === 'EMAIL' && !v4 ? ',INTERNET' : ''}:${val}`;
+            at = mine.length ? mine.at(-1).i + 1 : e;
+            said.push(`added ${val} as the ${shown(want)} ${label}`);
+        }
+    } else {
+        if (!val) no(`to remove a ${label}, give its type (work, home${name === 'TEL' ? ', mobile' : ''})`);
+        const dupe = mine.find((p) => sameValue(name, p.value, val));
+        for (const p of mine) if (p !== dupe) lines[p.i] = `${p.head}${withoutPref(p.params)}:${p.value}`;
+        if (dupe) {
+            lines[dupe.i] = null;
+            insert = `${dupe.head}${withoutPref(dupe.params)}${v4 ? ';PREF=1' : ';TYPE=PREF'}:${dupe.value}`;
+        } else insert = name === 'TEL' ? (v4 ? `TEL;PREF=1;TYPE=cell:${val}` : `TEL;TYPE=CELL;TYPE=PREF:${val}`) : (v4 ? `EMAIL;PREF=1:${val}` : `EMAIL;TYPE=INTERNET;TYPE=PREF:${val}`);
+        at = mine.length ? mine[0].i : e;
+        said.push(`${val} is now the first ${label}${mine.length - (dupe ? 1 : 0) > 0 ? `, the other${mine.length - (dupe ? 1 : 0) > 1 ? 's' : ''} kept` : ''}`);
+    }
+    const out = [];
+    lines.forEach((l, i) => { if (i === at && insert) out.push(insert); if (l !== null) out.push(l); });
+    return `${out.map(fold).join('\r\n')}\r\n`;
+}
+/* A contact's text with only the given fields changed: a name replaced; an email or a phone added or
+   replaced one by one (editOne), never all of them; the rest of the card kept. */
+export function editCard(text, { name, email, phone, type, photo, photoType }, said = []) {
     let t = text;
-    if (name !== undefined) { t = setProps(t, 'FN', [`FN:${escapeText(name)}`], 'VCARD'); t = setProps(t, 'N', [nOf(name)], 'VCARD'); }
-    if (email !== undefined) t = setProps(t, 'EMAIL', String(email).trim() ? [`EMAIL;TYPE=INTERNET:${String(email).trim()}`] : [], 'VCARD');
-    if (phone !== undefined) t = setProps(t, 'TEL', String(phone).trim() ? [`TEL;TYPE=CELL:${String(phone).trim()}`] : [], 'VCARD');
+    if (name !== undefined) { t = setProps(t, 'FN', [`FN:${escapeText(name)}`], 'VCARD'); t = setProps(t, 'N', [nOf(name)], 'VCARD'); said.push(`name ${name}`); }
+    if (email !== undefined) t = editOne(t, 'EMAIL', email, type, said);
+    if (phone !== undefined) t = editOne(t, 'TEL', phone, type, said);
     if (photo !== undefined) t = setProps(t, 'PHOTO', [`PHOTO;ENCODING=b;TYPE=${(photoType || 'JPEG').toUpperCase()}:${String(photo).replace(/\s+/g, '')}`], 'VCARD');
     return t;
 }

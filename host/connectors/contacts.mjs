@@ -16,7 +16,7 @@
  */
 import { no, Refused } from '../../server/verbs.mjs';
 import { refreshAccess, thunderbird, PROVIDERS } from '../oauth.mjs';
-import { discover, cardOf, newCard, editCard, newUid } from '../dav.mjs';
+import { discover, cardOf, newCard, editCard, newUid, typeOf } from '../dav.mjs';
 
 const LIST_MAX = 50;
 const SCAN_MAX = 200;           /* contacts looked at when searching by name */
@@ -212,21 +212,54 @@ export function contacts({ fetch: fetchImpl = globalThis.fetch } = {}) {
             const made = await res.json().catch(() => ({}));
             return { text: `Created ${a.name || a.email}. Its id is ${made.id ?? '(unknown)'}.`, size: 0 };
         },
-        /* Change a contact's name, email or phone (Microsoft), only the fields given. */
+        /* Change a contact's name, email or phone, only what was asked (05-11: an update replaced every email
+           and every phone). CardDAV: editCard (one value added first, or the one of a type replaced; the rest
+           of the card kept). Microsoft: the email goes first, the others kept (Microsoft keeps 3 at most, and
+           no type for an email); a phone is the mobile one, or with a type the work or home one -- the one it
+           replaces is named in the result. */
         async 'contacts.update'(target, a, ctx) {
             const id = String(a.id ?? '').trim(); if (!id) no('update needs the contact id');
             if (a.name === undefined && a.email === undefined && a.phone === undefined) no('update needs at least one of: name, email, phone');
+            const said = [];
             if (providerOf(target) !== 'microsoft') {
                 const { url, etag, text } = await cardGet(target, ctx, id);
-                await cardPut(target, ctx, url, editCard(text, { name: a.name, email: a.email, phone: a.phone }), { etag });
-                return { text: 'Updated the contact.', size: 0 };
+                await cardPut(target, ctx, url, editCard(text, { name: a.name, email: a.email, phone: a.phone, type: a.type }, said), { etag });
+                return { text: `Updated the contact: ${said.join('; ')}.`, size: 0 };
             }
-            const body = msBody(a);
-            if (!Object.keys(body).length) no('update needs at least one of: name, email, phone');
-            const res = await req(target, ctx, 'PATCH', `https://graph.microsoft.com/v1.0/me/contacts/${encodeURIComponent(id)}`, { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+            const body = msBody({ name: a.name });
+            const url = `https://graph.microsoft.com/v1.0/me/contacts/${encodeURIComponent(id)}`;
+            if (a.name !== undefined) said.push(`name ${a.name}`);
+            if (a.email !== undefined || a.phone !== undefined) {
+                const was = await req(target, ctx, 'GET', `${url}?$select=displayName,emailAddresses,mobilePhone,businessPhones,homePhones`);
+                if (was.status === 404) no('no such contact');
+                if (!was.ok) no(`${target.title}: that contact could not be read (${was.status})`);
+                const c = await was.json().catch(() => ({}));
+                if (a.email !== undefined) {
+                    const e = String(a.email).trim();
+                    if (!e) no('to remove an email on Microsoft, change the contact in Outlook');
+                    const others = (c.emailAddresses ?? []).filter((x) => x?.address && x.address.toLowerCase() !== e.toLowerCase());
+                    const kept = others.slice(0, 2); const lost = others.slice(2).map((x) => x.address);
+                    body.emailAddresses = [{ address: e, name: String(a.name || c.displayName || e) }, ...kept];
+                    said.push(`${e} is now the first email${kept.length ? `, ${kept.length > 1 ? 'the others' : 'the other'} kept` : ''}${lost.length ? ` (Microsoft keeps 3: ${lost.join(', ')} removed)` : ''}`);
+                }
+                if (a.phone !== undefined) {
+                    const want = typeOf(a.type, 'TEL') || 'cell';
+                    const p = String(a.phone).trim();
+                    if (want === 'cell') {
+                        body.mobilePhone = p;
+                        said.push(p ? `mobile ${p}${c.mobilePhone && c.mobilePhone !== p ? ` (was ${c.mobilePhone})` : ''}` : `mobile removed${c.mobilePhone ? ` (was ${c.mobilePhone})` : ''}`);
+                    } else {
+                        const key = want === 'work' ? 'businessPhones' : 'homePhones';
+                        const list = (c[key] ?? []).filter(Boolean);
+                        body[key] = p ? [p, ...list.slice(1)] : list.slice(1);
+                        said.push(p ? `${want} phone ${p}${list[0] && list[0] !== p ? ` (was ${list[0]})` : ''}` : `${want} phone removed${list[0] ? ` (was ${list[0]})` : ''}`);
+                    }
+                }
+            }
+            const res = await req(target, ctx, 'PATCH', url, { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
             if (res.status === 404) no('no such contact');
             if (!res.ok) no(`${target.title}: the contact was not changed (${res.status})`);
-            return { text: 'Updated the contact.', size: 0 };
+            return { text: `Updated the contact: ${said.join('; ')}.`, size: 0 };
         },
         /* Delete a contact (Microsoft). */
         async 'contacts.delete'(target, a, ctx) {
@@ -263,9 +296,25 @@ export function contacts({ fetch: fetchImpl = globalThis.fetch } = {}) {
         },
     };
 
+    /* What a waiting act is about, for the card a person approves from: the contact changed, deleted or
+       given a photo -- its name and its email -- not just an id (05-11). A read. */
+    async function describe(verb, target, a, ctx) {
+        const id = String(a.id ?? '').trim();
+        if (!id || !['contacts.update', 'contacts.delete', 'contacts.attach'].includes(verb)) return null;
+        if (providerOf(target) !== 'microsoft') {
+            const c = cardOf((await cardGet(target, ctx, id)).text);
+            return { name: c.name, email: c.emails[0] ?? '', emails: c.emails, phones: c.tels };
+        }
+        const res = await req(target, ctx, 'GET', `https://graph.microsoft.com/v1.0/me/contacts/${encodeURIComponent(id)}?$select=displayName,givenName,surname,emailAddresses,mobilePhone,businessPhones,homePhones`);
+        if (!res.ok) return null;
+        const c = fromMs(await res.json());
+        return { name: c.name, email: c.emails[0] ?? '', emails: c.emails, phones: c.tels };
+    }
+
     return {
         name: 'contacts',
         verbs: Object.keys(verbs),
+        describe,
         run(verb, target, a, ctx) {
             if (!verbs[verb]) no(`${verb} is not done by this connector`);
             return verbs[verb](target, a, ctx);

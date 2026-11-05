@@ -399,3 +399,17 @@ test('update --notes: a Teams meeting Microsoft dropped anyway is checked and pu
     assert.deepEqual(patches[1], { isOnlineMeeting: true, onlineMeetingProvider: 'teamsForBusiness' }, 'put back');
     assert.match(r.text, /put back: the join link is new/);
 });
+
+test('calendar.update (Microsoft) reads start/end as local time, like create (not UTC)', async () => {
+    const calls = [];
+    const fetch = async (url, opts = {}) => {
+        calls.push({ url, method: opts.method || 'GET', body: opts.body });
+        if (url.includes('login.microsoftonline.com')) return json({ access_token: 'T', expires_in: 3600 });
+        return json({ id: 'm1' });
+    };
+    const r = await calendar({ fetch }).run('calendar.update', M, { id: 'm1', start: '2026-11-10T16:00:00', end: '2026-11-10T17:00:00' }, ctx());
+    const body = JSON.parse(calls.find((c) => c.method === 'PATCH').body);
+    assert.deepEqual(body.start, { dateTime: '2026-11-10T16:00:00', timeZone: 'Europe/Paris' });
+    assert.deepEqual(body.end, { dateTime: '2026-11-10T17:00:00', timeZone: 'Europe/Paris' });
+    assert.match(r.text, /2026-11-10 16:00 — 2026-11-10 17:00 \(Europe\/Paris\)/, 'the result says the time it set, and in which zone');
+});

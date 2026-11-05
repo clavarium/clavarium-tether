@@ -31,6 +31,8 @@ const TZ = 'Europe/Paris';      /* the person's timezone: events are shown and c
 const shortWhen = (dt) => { const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(String(dt || '')); return m ? `${m[1]}-${m[2]}-${m[3]} ${m[4]}:${m[5]}` : (dt || '?'); };
 const READ_MAX = 256 * 1024;
 const dateField = (s) => (/^\d{4}-\d{2}-\d{2}$/.test(s) ? { date: s } : { dateTime: s });
+/* A Graph time: the local ISO time the tool takes, in the person's timezone (create AND update: never UTC). */
+const msTime = (s) => ({ dateTime: String(s), timeZone: TZ });
 
 const API = {
     google: {
@@ -52,7 +54,7 @@ const API = {
         brief: (e) => `${e.id}\n  ${shortWhen(e.start?.dateTime)} — ${e.subject ?? '(no title)'}${e.location?.displayName ? `  @ ${e.location.displayName}` : ''}${e.categories?.length ? `  [${e.categories.join(', ')}]` : ''}`,
         body: ({ title, start, end, where, notes, attendees, categories }) => ({
             subject: title,
-            start: { dateTime: start, timeZone: TZ }, end: { dateTime: end, timeZone: TZ },
+            start: msTime(start), end: msTime(end),
             ...(where ? { location: { displayName: where } } : {}),
             ...(notes ? { body: { contentType: 'text', content: String(notes) } } : {}),
             ...(attendees?.length ? { attendees: attendees.map((a) => ({ emailAddress: { address: a }, type: 'required' })) } : {}),
@@ -563,8 +565,8 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
             if (provider !== 'microsoft') return davVerbs.update(target, a, ctx);
             const patch = {};
             if (a.title !== undefined) patch.subject = String(a.title);
-            if (a.start !== undefined) patch.start = { dateTime: String(a.start), timeZone: 'UTC' };
-            if (a.end !== undefined) patch.end = { dateTime: String(a.end), timeZone: 'UTC' };
+            if (a.start !== undefined) patch.start = msTime(a.start);
+            if (a.end !== undefined) patch.end = msTime(a.end);
             if (a.where !== undefined) patch.location = { displayName: String(a.where) };
             if (a.notes !== undefined) patch.body = { contentType: 'text', content: String(a.notes) };
             if (a.with !== undefined) patch.attendees = String(a.with).split(',').map((x) => x.trim()).filter(Boolean).map((e) => ({ emailAddress: { address: e }, type: 'required' }));
@@ -591,6 +593,7 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
                     }
                 }
             }
+            const when = a.start !== undefined || a.end !== undefined ? ` Now ${[a.start, a.end].map((t) => (t === undefined ? '' : shortWhen(String(t)))).join(' — ').replace(/^ — | — $/, '')} (${TZ}).` : '';
             const res = await call(target, ctx, 'PATCH', API.microsoft.event(String(a.id)), patch);
             if (res.status === 404) no('no such event');
             if (!res.ok) no(`${target.title}: the event was not changed (${res.status} ${await bodyError(res)})`.trim());
@@ -601,11 +604,11 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
                 if (!still) {
                     const again = await call(target, ctx, 'PATCH', API.microsoft.event(String(a.id)), { isOnlineMeeting: true, onlineMeetingProvider: patch.onlineMeetingProvider || 'teamsForBusiness' });
                     if (!again.ok) no(`${target.title}: the event was changed, but its Teams meeting was lost and could not be put back (${again.status}); add it again with --online teams`);
-                    return { text: 'Updated the event. Its Teams meeting had been dropped by Microsoft and was put back: the join link is new.', size: 0 };
+                    return { text: `Updated the event. Its Teams meeting had been dropped by Microsoft and was put back: the join link is new.${when}`, size: 0 };
                 }
-                return { text: 'Updated the event; its Teams meeting is kept.', size: 0 };
+                return { text: `Updated the event; its Teams meeting is kept.${when}`, size: 0 };
             }
-            return { text: 'Updated the event.', size: 0 };
+            return { text: `Updated the event.${when}`, size: 0 };
         },
         /* The mailbox's own categories (name and colour), so the agent knows which
            ones exist before it tags an event. A read. Microsoft only; a category is

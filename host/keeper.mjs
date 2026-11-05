@@ -172,7 +172,7 @@ export function keeper(dir, { sides = () => [], ask, secrets = async () => { thr
             journal.append({ ...base, decision: 'refused', because: 'level', level: g.level });
             no(`${t.title} is at level ${g.level}: ${MEANS[g.level]}`);
         }
-        let outcome = { decision: 'auto' };
+        let outcome = { decision: 'auto' }; let asked = null;
         if (d.go === 'ask') {
             const rule = ruleFrom(verb, a);
             /* What a person approves, as facts for a card; and what it is about (the mail
@@ -185,6 +185,7 @@ export function keeper(dir, { sides = () => [], ask, secrets = async () => { thr
                 } catch { /* the card says less, the request still goes */ }
             }
             const { request, decision } = queue.open({ ...base, card, level: g.level, ...(rule ? { rule } : {}) });
+            asked = request.id;
             try { held?.(request); } catch { /* the folder's */ }
             if (ask) {
                 Promise.resolve().then(() => ask(request)).then((v) => {
@@ -222,7 +223,7 @@ export function keeper(dir, { sides = () => [], ask, secrets = async () => { thr
         try { res = await conn.run(verb, t, a, ctx); } catch (e) {
             ok = false; error = e instanceof Refused ? e.message : `failed: ${e?.message ?? e}`;
         }
-        journal.append({ ...base, decision: outcome.decision, because: d.go === 'yes' ? d.because : undefined, by: outcome.by, ok, error, size: res?.size, exit: res?.exit, ms: now() - started });
+        journal.append({ ...base, decision: outcome.decision, because: d.go === 'yes' ? d.because : undefined, by: outcome.by, ok, error, size: res?.size, exit: res?.exit, ms: now() - started, request: asked });
         if (!ok) no(hide(error, known));
         return { text: hide(res.text, known), data: { ...(res.exit !== undefined ? { exit: res.exit } : {}), size: res.size ?? 0 } };
     }

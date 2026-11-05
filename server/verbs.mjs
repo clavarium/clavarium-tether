@@ -267,7 +267,7 @@ export function check(verb, a = {}) {
         case 'contacts.search': str('text', 200); break;
         case 'contacts.read': str('id', 1024); break;
         case 'contacts.create': str('name', 200); str('email', 200); str('phone', 60); break;
-        case 'contacts.update': str('id', 1024); str('name', 200); str('email', 200); str('phone', 60); break;
+        case 'contacts.update': str('id', 1024); str('name', 200); str('email', 200); str('phone', 60); str('type', 20); break;
         case 'contacts.delete': str('id', 1024); break;
         default: for (const k of v.needs) str(k, COMMAND_MAX, true);
     }

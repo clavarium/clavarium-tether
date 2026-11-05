@@ -355,13 +355,57 @@ test('mail.move opens read-write and UID MOVEs; mail.flag UID STOREs the system 
     await assert.rejects(c.run('mail.flag', TARGET, { uid: '5', flag: 'bogus' }, ctx()), /read, unread, flagged/);
 });
 
-test('mail.delete marks the message \\Deleted and expunges just that uid (IMAP)', async () => {
-    const s = imapServer(STORE);
+/* A fake IMAP server for mail.delete: its folders (LIST) and its capabilities are given. */
+function trashServer(list, caps = 'IMAP4rev1 UIDPLUS') {
+    const commands = [];
+    const connect = () => {
+        const socket = new EventEmitter(); socket.destroy = () => {};
+        const send = (t) => setImmediate(() => socket.emit('data', Buffer.from(t)));
+        socket.write = (text) => {
+            const line = String(text).replace(/\r\n$/, ''); const sp = line.indexOf(' '); const tag = line.slice(0, sp); const cmd = line.slice(sp + 1);
+            commands.push(cmd);
+            if (cmd.startsWith('LIST')) return send(`${list}${tag} OK\r\n`);
+            if (cmd === 'CAPABILITY') return send(`* CAPABILITY ${caps}\r\n${tag} OK\r\n`);
+            return send(`${tag} OK\r\n`);
+        };
+        setImmediate(() => socket.emit('data', Buffer.from('* OK ready\r\n')));
+        return socket;
+    };
+    return { connect, commands };
+}
+
+test('mail.delete on Gmail moves the message to the folder marked \\Trash (UID MOVE), never an expunge from INBOX', async () => {
+    const s = trashServer('* LIST (\\HasNoChildren) "/" "INBOX"\r\n* LIST (\\All \\HasNoChildren) "/" "[Gmail]/All Mail"\r\n* LIST (\\HasNoChildren \\Trash) "/" "[Gmail]/Trash"\r\n', 'IMAP4rev1 UIDPLUS MOVE IDLE');
     const r = await mail({ fetch: okToken, connect: s.connect }).run('mail.delete', TARGET, { uid: '6' }, ctx());
-    assert.match(r.text, /Deleted #6/);
-    assert.ok(s.commands.some((x) => /^SELECT/.test(x)), 'opened read-write');
-    assert.ok(s.commands.some((x) => /^UID STORE 6 \+FLAGS \(\\Deleted\)/.test(x)), 'flagged it deleted');
-    assert.ok(s.commands.some((x) => /^UID EXPUNGE 6/.test(x)), 'expunged that one uid');
+    assert.ok(s.commands.some((x) => /^SELECT "INBOX"/.test(x)), 'opened read-write');
+    assert.ok(s.commands.some((x) => x === 'UID MOVE 6 "[Gmail]/Trash"'), 'moved to the Trash by its flag');
+    assert.ok(!s.commands.some((x) => /EXPUNGE|STORE/.test(x)), 'no expunge (on Gmail that would only archive it)');
+    assert.match(r.text, /Deleted #6: moved to \[Gmail\]\/Trash, where it can be restored/);
+});
+
+test('mail.delete without MOVE: UID COPY to the Trash found by name (French, under INBOX), then \\Deleted + UID EXPUNGE of that uid only', async () => {
+    const s = trashServer('* LIST (\\HasNoChildren) "." "INBOX"\r\n* LIST (\\HasNoChildren) "." "INBOX.&AMk-l&AOk-ments supprim&AOk-s"\r\n');
+    const r = await mail({ fetch: okToken, connect: s.connect }).run('mail.delete', TARGET, { uid: '6' }, ctx());
+    const at = (re) => s.commands.findIndex((x) => re.test(x));
+    assert.ok(at(/^UID COPY 6 "INBOX\.&AMk-l&AOk-ments supprim&AOk-s"$/) >= 0, 'copied to the Trash, by its real (encoded) name');
+    assert.ok(at(/^UID STORE 6 \+FLAGS \(\\Deleted\)$/) > at(/^UID COPY/), 'flagged deleted after the copy');
+    assert.ok(at(/^UID EXPUNGE 6$/) > at(/^UID STORE/), 'expunged that one uid');
+    assert.ok(!s.commands.includes('EXPUNGE'), 'never a whole-folder EXPUNGE');
+    assert.match(r.text, /moved to INBOX\.Éléments supprimés/);
+});
+
+test('mail.delete: a Trash is made when there is none; a message already in Trash is deleted for good, and said so', async () => {
+    const none = trashServer('* LIST (\\HasNoChildren) "/" "INBOX"\r\n', 'IMAP4rev1 MOVE');
+    const r = await mail({ fetch: okToken, connect: none.connect }).run('mail.delete', TARGET, { uid: '5' }, ctx());
+    assert.ok(none.commands.some((x) => /^CREATE "Trash"/.test(x)), 'made');
+    assert.ok(none.commands.includes('UID MOVE 5 "Trash"'));
+    assert.match(r.text, /moved to Trash \(made, there was none\)/);
+    const s = trashServer('* LIST (\\HasNoChildren) "/" "INBOX"\r\n* LIST (\\HasNoChildren \\Trash) "/" "Trash"\r\n', 'IMAP4rev1 MOVE');
+    const gone = await mail({ fetch: okToken, connect: s.connect }).run('mail.delete', TARGET, { uid: '7', mailbox: 'Trash' }, ctx());
+    assert.ok(s.commands.some((x) => /^SELECT "Trash"/.test(x)));
+    assert.ok(s.commands.includes('UID STORE 7 +FLAGS (\\Deleted)') && s.commands.includes('UID EXPUNGE 7'), 'deleted there');
+    assert.ok(!s.commands.some((x) => /UID MOVE|UID COPY/.test(x)), 'not moved to itself');
+    assert.match(gone.text, /for good: it was already in Trash, so it cannot be restored/);
 });
 
 test('mail refuses a target with no provider and no host, and an unknown verb', async () => {

@@ -62,7 +62,7 @@ export const HELP = `${NAME}: act on the targets you were given (machines, folde
   ${NAME} contacts TARGET search "name"                 contacts matching a name
   ${NAME} contacts TARGET read ID
   ${NAME} contacts TARGET create --name "..." [--email "..."] [--phone "..."]
-  ${NAME} contacts TARGET update ID [--name "..."] [--email "..."] [--phone "..."]
+  ${NAME} contacts TARGET update ID [--name "..."] [--email "..."] [--phone "..."] [--type work|home|mobile]
   ${NAME} contacts TARGET delete ID
   ${NAME} contacts TARGET attach CONTACT_ID FILE           set a contact's photo
   ${NAME} serve [--store DIR] [--port N] [--side FOLDER=NAME] [--local FOLDER[=TITLE]]
@@ -212,7 +212,7 @@ export function read(argv) {
             if (what === 'list') return ['contacts.list', { target }];
             if (what === 'search') return need(p.length, 'contacts TARGET search "name"') ?? ['contacts.search', { target, text: p.join(' ') }];
             if (what === 'create') return need(flags.name !== undefined || flags.email !== undefined, 'contacts TARGET create --name "..." [--email "..."] [--phone "..."]') ?? ['contacts.create', { target, ...(flags.name !== undefined ? { name: flags.name } : {}), ...(flags.email !== undefined ? { email: flags.email } : {}), ...(flags.phone !== undefined ? { phone: flags.phone } : {}), ...why }];
-            if (what === 'update') return need(p[0], 'contacts TARGET update ID [--name "..."] [--email "..."] [--phone "..."]') ?? ['contacts.update', { target, id: p[0], ...(flags.name !== undefined ? { name: flags.name } : {}), ...(flags.email !== undefined ? { email: flags.email } : {}), ...(flags.phone !== undefined ? { phone: flags.phone } : {}), ...why }];
+            if (what === 'update') return need(p[0], 'contacts TARGET update ID [--name "..."] [--email "..."] [--phone "..."] [--type work|home|mobile]') ?? ['contacts.update', { target, id: p[0], ...(flags.name !== undefined ? { name: flags.name } : {}), ...(flags.email !== undefined ? { email: flags.email } : {}), ...(flags.phone !== undefined ? { phone: flags.phone } : {}), ...(flags.type !== undefined ? { type: flags.type } : {}), ...why }];
             if (what === 'delete') return need(p[0], 'contacts TARGET delete ID') ?? ['contacts.delete', { target, id: p[0], ...why }];
             if (what === 'attach') {
                 if (p.length < 2) return { refused: 'contacts TARGET attach CONTACT_ID FILE (a photo)' };

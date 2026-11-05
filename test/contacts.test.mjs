@@ -138,3 +138,42 @@ test('contacts.attach (Microsoft) PUTs the photo bytes to the contact', async ()
     assert.ok(Buffer.isBuffer(put.body) || put.body, 'sends the decoded bytes');
 });
 
+
+test('contacts.update (Microsoft): an email goes first, the others kept; a phone is the mobile, or the work/home one with a type; the result names what it replaced (05-11)', async () => {
+    const calls = [];
+    const was = { displayName: 'Carol Diaz', emailAddresses: [{ address: 'carol@example.com', name: 'Carol' }, { address: 'carol.work@example.com', name: 'Carol' }], mobilePhone: '+33 6 1', businessPhones: ['+33 1 1', '+33 1 2'], homePhones: [] };
+    const fetch = async (url, opts = {}) => {
+        calls.push({ url, method: opts.method || 'GET', body: (() => { try { return opts.body ? JSON.parse(opts.body) : undefined; } catch { return opts.body; } })() });
+        if (url.includes('login.microsoftonline.com')) return json({ access_token: 'T', expires_in: 3600 });
+        if ((opts.method || 'GET') === 'GET') return json(was);
+        return new Response(null, { status: 204 });
+    };
+    const c = contacts({ fetch });
+    const r = await c.run('contacts.update', M, { id: 'm1', email: 'carol.new@example.com' }, ctx());
+    let patch = calls.filter((x) => x.method === 'PATCH').at(-1).body;
+    assert.deepEqual(patch.emailAddresses.map((e) => e.address), ['carol.new@example.com', 'carol@example.com', 'carol.work@example.com']);
+    assert.equal(patch.mobilePhone, undefined, 'the phones untouched');
+    assert.match(r.text, /carol\.new@example\.com is now the first email, the others kept/);
+    const w = await c.run('contacts.update', M, { id: 'm1', phone: '+33 1 9', type: 'work' }, ctx());
+    patch = calls.filter((x) => x.method === 'PATCH').at(-1).body;
+    assert.deepEqual(patch.businessPhones, ['+33 1 9', '+33 1 2'], 'the first work number replaced, the second kept');
+    assert.equal(patch.mobilePhone, undefined);
+    assert.match(w.text, /work phone \+33 1 9 \(was \+33 1 1\)/);
+    const m = await c.run('contacts.update', M, { id: 'm1', phone: '+33 6 9' }, ctx());
+    assert.equal(calls.filter((x) => x.method === 'PATCH').at(-1).body.mobilePhone, '+33 6 9');
+    assert.match(m.text, /mobile \+33 6 9 \(was \+33 6 1\)/, 'says the mobile it replaced');
+    was.emailAddresses.push({ address: 'carol.third@example.com' });
+    const full = await c.run('contacts.update', M, { id: 'm1', email: 'carol.fourth@example.com' }, ctx());
+    assert.equal(calls.filter((x) => x.method === 'PATCH').at(-1).body.emailAddresses.length, 3);
+    assert.match(full.text, /Microsoft keeps 3: carol\.third@example\.com removed/, 'a dropped address is said, not silent');
+});
+
+test('describe (Microsoft): the contact to delete is named on the card', async () => {
+    const fetch = async (url) => {
+        if (url.includes('login.microsoftonline.com')) return json({ access_token: 'T', expires_in: 3600 });
+        return json({ displayName: 'Carol Diaz', emailAddresses: [{ address: 'carol@example.com' }], mobilePhone: '+33 6 1' });
+    };
+    const about = await contacts({ fetch }).describe('contacts.delete', M, { id: 'm1' }, ctx());
+    assert.equal(about.name, 'Carol Diaz');
+    assert.equal(about.email, 'carol@example.com');
+});

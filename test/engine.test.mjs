@@ -343,9 +343,12 @@ test('through the folder: the agent waits while a person decides, then gets the 
         while (!k.approvals().length) await new Promise((r) => setTimeout(r, 10));
         await new Promise((r) => setTimeout(r, 50));
         assert.ok(heldUntil, 'the agent was told it waits for a person');
-        k.decide(k.approvals()[0].id, 'yes', ME);
+        const rid = k.approvals()[0].id;
+        k.decide(rid, 'yes', ME);
         const r = await p;
         assert.equal(r.ok, true); assert.equal(r.held, true);
+        const line = k.journal({ limit: 5 }).find((l) => l.verb === 'terminal.run' && l.ok !== undefined);
+        assert.equal(line.request, rid, 'the act\'s journal line names the request a person approved: a page can say how that one ended');
         const cli = await run(['files', 'web', 'list'], { env: { [ENV_DIR]: side }, wait: 2000 });
         assert.equal(cli.code, 0, cli.err);
         assert.equal(cli.out, 'did files.list\n');
