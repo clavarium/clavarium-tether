@@ -112,12 +112,12 @@ test('create: a new .ics, never over an existing one, invitees with this account
 
 test('update: only the fields given, on the version read (If-Match), sequence raised', async () => {
     const s = davServer();
-    await run(s, 'calendar.update', { id: '/cal/me/work/b.ics', title: 'Devis signé', start: '2030-11-05T11:00' });
+    await run(s, 'calendar.update', { id: '/cal/me/work/b.ics', title: 'Devis signé', start: '2030-11-05T10:30' });
     const put = s.calls.find((c) => c.method === 'PUT');
     assert.equal(put.headers['If-Match'], '"1"');
     const now = eventOf(s.files.get('/cal/me/work/b.ics').text);
     assert.equal(now.summary, 'Devis signé');
-    assert.equal(now.start, '2030-11-05 11:00');
+    assert.equal(now.start, '2030-11-05 10:30');
     assert.deepEqual(now.categories, ['Client', 'Admin'], 'untouched');
     assert.match(s.files.get('/cal/me/work/b.ics').text, /SEQUENCE:1/);
 });
@@ -389,4 +389,20 @@ test('loop 38: an invitee delete asks the server not to answer the organiser; a 
     const { check } = await import('../server/verbs.mjs');
     assert.throws(() => check('calendar.attach', { target: 't', id: 'e', attach: 'A'.repeat(8 * 1024 * 1024) }), /the file is too large .* never cut its base64/);
     assert.equal(check('calendar.attach', { target: 't', id: 'e', attach: 'A'.repeat(2 * 1024 * 1024) }).attach.length, 2 * 1024 * 1024, 'a 1.5 MB file passes (it was capped near 730 KB)');
+});
+
+test('loop 40: no answer to OPTIONS is never "not told": the act refuses, and asks again next time; a new start past the end is refused', async () => {
+    const s = davServer(); let down = true;
+    const flaky = { ...s, fetch: async (url, o = {}) => { if ((o.method || 'GET') === 'OPTIONS') { if (down) throw new Error('network'); return new Response(null, { status: 200, headers: { dav: '1, calendar-auto-schedule' } }); } return s.fetch(url, o); } };
+    const c = calendar({ fetch: flaky.fetch });
+    await assert.rejects(c.run('calendar.create', T, { title: 'x', start: '2030-11-04T10:00', end: '2030-11-04T11:00', with: 'a@example.org' }, ctx()), /could not be checked .* nothing was done/);
+    down = false;
+    assert.match((await c.run('calendar.create', T, { title: 'x', start: '2030-11-04T10:00', end: '2030-11-04T11:00', with: 'a@example.org' }, ctx())).text, /sent by the calendar server/);
+    const made = await run(davServer(), 'calendar.create', { title: 'Congés', start: '2030-11-10', end: '2030-11-10' });
+    assert.ok(made);
+    const s2 = davServer();
+    const m2 = await run(s2, 'calendar.create', { title: 'Congés', start: '2030-11-10', end: '2030-11-10' });
+    const id = /Its id is (\S+)\./.exec(m2.text)[1];
+    await assert.rejects(run(s2, 'calendar.update', { id, start: '2030-11-12' }), /not before the event's end .* give a new end too/);
+    assert.match((await run(s2, 'calendar.update', { id, start: '2030-11-09' })).text, /Now 2030-11-09 to 2030-11-10 included, all day/);
 });

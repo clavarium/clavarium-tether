@@ -207,11 +207,15 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
     const scheduling = new Map();
     async function schedules(target, ctx) {
         if (scheduling.has(target.id)) return scheduling.get(target.id);
-        let yes = false;
-        try { const res = await davRequest(target, ctx)('OPTIONS', await folderOf(target, ctx)); yes = /calendar-auto-schedule/i.test(res.headers?.get?.('dav') ?? ''); } catch { /* unknown: said as not */ }
+        /* An answer, whatever its status, is kept; no answer (the network) is never taken as "no" nor kept (loop 40):
+           the act asks first (ready() below), so it refuses rather than say the others are not told. */
+        const res = await davRequest(target, ctx)('OPTIONS', await folderOf(target, ctx));
+        const yes = /calendar-auto-schedule/i.test(res.headers?.get?.('dav') ?? '');
         scheduling.set(target.id, yes);
         return yes;
     }
+    /* Before a CalDAV act that may concern others: whether the server schedules must be known (loop 40). */
+    const ready = async (target, ctx) => { try { await schedules(target, ctx); } catch (e) { no(`${target.title}: whether this server sends invitations could not be checked (${e?.message ?? e}) -- nothing was done`); } };
     const NOT_TOLD = 'this calendar server sends no invitations (it does not schedule): they are NOT told -- tell them yourself, e.g. by mail';
     /* A REPEATING EVENT on CalDAV (loop 22): its id is the whole series (every occurrence shares it; Microsoft lists
        each occurrence with its own id). A change, a delete, an answer apply to every occurrence: said, never silent. */
@@ -317,6 +321,12 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
             if (a.start !== undefined) set('DTSTART', [timeLine('DTSTART', a.start)]);
             /* An end alone on an all-day event follows the same rule, against its current start (loop 15). */
             const curStart = eventOf(text).start;
+            /* A new start alone must not pass the end kept (loop 40): the event would end before it starts. */
+            if (a.start !== undefined && a.end === undefined) {
+                const endNow = eventOf(text).end; const startTo = String(a.start).trim();
+                const k = (v) => String(v).trim().replace(' ', 'T').slice(0, 16);
+                if (endNow && isDay(endNow) === isDay(startTo) && !(k(endNow) > k(startTo))) no(`the new start (${startTo}) is not before the event's end (${isDay(endNow) ? `the day after its last day, ${endNow}` : endNow}) -- nothing was done: give a new end too`);
+            }
             if (a.end !== undefined) set('DTEND', [timeLine('DTEND', a.start !== undefined ? dayEnd(a.start, a.end) : isDay(curStart) && isDay(a.end) ? dayEnd(curStart, a.end) : a.end)]);
             if (a.where !== undefined) set('LOCATION', String(a.where).trim() ? [`LOCATION:${escapeText(a.where)}`] : []);
             if (a.notes !== undefined) set('DESCRIPTION', String(a.notes).trim() ? [`DESCRIPTION:${escapeText(a.notes)}`] : []);
@@ -592,7 +602,7 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
             /* An online (Teams) meeting: on by default once there are participants, off
                with --online none. Microsoft only (Teams); Graph makes the meeting + link. */
             const online = a.online !== undefined ? String(a.online).toLowerCase() : (attendees.length && provider === 'microsoft' ? 'teams' : 'none');
-            if (provider !== 'microsoft') return davVerbs.create(target, a, ctx, { attendees, categories, online });
+            if (provider !== 'microsoft') { await ready(target, ctx); return davVerbs.create(target, a, ctx, { attendees, categories, online }); }
             if (online !== 'none' && online !== 'teams') no('--online is teams or none');
             const payload = api.body({ title: a.title, start: a.start, end: dayEnd(a.start, a.end), where: a.where, notes: a.notes, attendees, categories: categories ?? undefined });
             if (provider === 'microsoft' && online === 'teams') { payload.isOnlineMeeting = true; payload.onlineMeetingProvider = 'teamsForBusiness'; }
@@ -609,7 +619,7 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
             const provider = providerOf(target);
             if (!a.id) no('attach needs the event id (from the list)');
             if (!a.attach) no('attach needs the file (its base64 bytes)');
-            if (provider !== 'microsoft') return wholeSeries(target, ctx, a.id, () => davVerbs.attach(target, a, ctx));
+            if (provider !== 'microsoft') { await ready(target, ctx); return wholeSeries(target, ctx, a.id, () => davVerbs.attach(target, a, ctx)); }
             const ev = encodeURIComponent(String(a.id));
             /* Who would receive the file: an event attachment reaches every participant
                on the next invitation update or resend. Split internal from external by
@@ -668,7 +678,7 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
         async 'calendar.delete'(target, a, ctx) {
             const provider = providerOf(target);
             if (!a.id) no('delete needs the event id (from the list)');
-            if (provider !== 'microsoft') return wholeSeries(target, ctx, a.id, () => davVerbs.remove(target, a, ctx), { removes: true });
+            if (provider !== 'microsoft') { await ready(target, ctx); return wholeSeries(target, ctx, a.id, () => davVerbs.remove(target, a, ctx), { removes: true }); }
             const who = await peopleOf(target, ctx, a.id);
             const res = await call(target, ctx, 'DELETE', API.microsoft.event(String(a.id)));
             if (res.status === 404) no('no such event');
@@ -686,7 +696,7 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
             const map = { accept: 'accept', yes: 'accept', decline: 'decline', no: 'decline', refuse: 'decline', tentative: 'tentativelyAccept', maybe: 'tentativelyAccept' };
             const action = map[String(a.answer ?? '').toLowerCase().trim()];
             if (!action) no('answer is accept, decline or tentative');
-            if (provider !== 'microsoft') return wholeSeries(target, ctx, a.id, () => davVerbs.respond(target, a, ctx, PARTSTAT[String(a.answer).toLowerCase().trim()]));
+            if (provider !== 'microsoft') { await ready(target, ctx); return wholeSeries(target, ctx, a.id, () => davVerbs.respond(target, a, ctx, PARTSTAT[String(a.answer).toLowerCase().trim()])); }
             const body = { sendResponse: true, ...(a.comment ? { comment: String(a.comment) } : {}) };
             const who = await peopleOf(target, ctx, a.id).catch(() => null);   /* only to name the organiser */
             const res = await call(target, ctx, 'POST', `https://graph.microsoft.com/v1.0/me/events/${encodeURIComponent(String(a.id))}/${action}`, body);
@@ -699,7 +709,7 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
         async 'calendar.update'(target, a, ctx) {
             const provider = providerOf(target);
             if (!a.id) no('update needs the event id (from the list)');
-            if (provider !== 'microsoft') return wholeSeries(target, ctx, a.id, () => davVerbs.update(target, a, ctx));
+            if (provider !== 'microsoft') { await ready(target, ctx); return wholeSeries(target, ctx, a.id, () => davVerbs.update(target, a, ctx)); }
             const patch = {};
             if (a.title !== undefined) patch.subject = String(a.title);
             if (a.start !== undefined) { patch.start = msTime(a.start); patch.isAllDay = isDay(a.start); }
@@ -906,7 +916,8 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
         if (verb === 'calendar.create') {
             const who = String(a.with ?? '').split(/[,;]/).map((x) => x.trim()).filter(Boolean);
             if (!who.length) return null;
-            const sent = providerOf(target) === 'microsoft' || await schedules(target, ctx);
+            const sent = providerOf(target) === 'microsoft' || await schedules(target, ctx).catch(() => null);
+            if (sent === null) return null;
             return { effects: [sent ? `invitations go to ${who.join(', ')}` : `the invitees (${who.join(', ')}) are NOT told (this server does not schedule)`] };
         }
         if (!a.id || !['calendar.respond', 'calendar.update', 'calendar.delete', 'calendar.attach', 'calendar.detach'].includes(verb)) return null;
@@ -977,7 +988,7 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
         },
         tick,
         watched: () => watched.map((x) => ({ ...x })),
-        close() { tokens.clear(); folders.clear(); },
-        shutdown() { tokens.clear(); folders.clear(); },
+        close() { tokens.clear(); folders.clear(); scheduling.clear(); },
+        shutdown() { tokens.clear(); folders.clear(); scheduling.clear(); },
     };
 }
