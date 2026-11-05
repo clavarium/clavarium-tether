@@ -307,3 +307,20 @@ test('loop 22: the list marks a repeating event as the whole series', async () =
     const r = await run(s, 'calendar.list', { from: '2030-11-01', to: '2030-12-31' });
     assert.match(r.text, /\/cal\/me\/work\/r\.ics  \(repeats: this id is the WHOLE series\)/);
 });
+
+test('loop 23: a series with a date changed on its own says that date keeps its own values', async () => {
+    const s = davServer();
+    const text = ev('r', 'Point hebdo', '20301104T080000Z', 'RRULE:FREQ=WEEKLY;COUNT=4\r\nORGANIZER:mailto:boss@example.com\r\nATTENDEE;PARTSTAT=NEEDS-ACTION:mailto:me@example.com\r\n')
+        .replace('END:VCALENDAR', 'BEGIN:VEVENT\r\nUID:r\r\nRECURRENCE-ID:20301111T080000Z\r\nSUMMARY:Point hebdo (déplacé)\r\nDTSTART:20301112T080000Z\r\nDTEND:20301112T090000Z\r\nATTENDEE;PARTSTAT=NEEDS-ACTION:mailto:me@example.com\r\nEND:VEVENT\r\nEND:VCALENDAR');
+    s.files.set('/cal/me/work/r.ics', { text, etag: '"1"' });
+    const r = await run(s, 'calendar.respond', { id: '/cal/me/work/r.ics', answer: 'decline' });
+    assert.match(r.text, /repeating event: this applied to the series, not one date\. 1 date changed on its own \(2030-11-11\) keeps its own values\./);
+});
+
+test('loop 23: an .ics whose first part is one date of a series is refused, nothing done', async () => {
+    const s = davServer();
+    const text = 'BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:r\r\nRECURRENCE-ID:20301111T080000Z\r\nSUMMARY:x\r\nDTSTART:20301112T080000Z\r\nEND:VEVENT\r\nBEGIN:VEVENT\r\nUID:r\r\nSUMMARY:x\r\nDTSTART:20301104T080000Z\r\nRRULE:FREQ=WEEKLY\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n';
+    s.files.set('/cal/me/work/r.ics', { text, etag: '"1"' });
+    await assert.rejects(run(s, 'calendar.update', { id: '/cal/me/work/r.ics', title: 'y' }), /first part is one date of a series.*nothing was done/);
+    assert.equal(s.files.get('/cal/me/work/r.ics').text, text);
+});

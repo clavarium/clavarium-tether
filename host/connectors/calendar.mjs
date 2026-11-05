@@ -216,11 +216,21 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
     /* A REPEATING EVENT on CalDAV (loop 22): its id is the whole series (every occurrence shares it; Microsoft lists
        each occurrence with its own id). A change, a delete, an answer apply to every occurrence: said, never silent. */
     const SERIES = ' It is a repeating event: this applied to the WHOLE series (every occurrence), not one date.';
-    async function wholeSeries(target, ctx, id, act) {
-        let series = false;
-        try { series = /^RRULE/im.test((await davGet(target, ctx, id)).text.replace(/\r?\n[ \t]/g, '')); } catch { /* the act reads it itself, and says */ }
+    /* A date of the series changed on its own is a VEVENT of its own (RECURRENCE-ID): a change of the series does not
+       reach it -- said, with its dates (loop 23). Delete removes the whole resource, overrides included. */
+    async function wholeSeries(target, ctx, id, act, { removes = false } = {}) {
+        let series = false; let own = [];
+        try {
+            const text = (await davGet(target, ctx, id)).text.replace(/\r?\n[ \t]/g, '');
+            const blocks = text.split(/BEGIN:VEVENT/i).slice(1).map((b) => b.split(/END:VEVENT/i)[0]);
+            series = blocks.some((b) => /^RRULE/im.test(b));
+            if (series && /^RECURRENCE-ID/im.test(blocks[0] ?? '') && !removes) no(`${target.title}: this event's first part is one date of a series, not the series -- nothing was done; change it in a calendar program`);
+            own = blocks.filter((b) => /^RECURRENCE-ID/im.test(b)).map((b) => /^RECURRENCE-ID[^:]*:(\d{4})(\d{2})(\d{2})/im.exec(b)).filter(Boolean).map((m) => `${m[1]}-${m[2]}-${m[3]}`);
+        } catch (e) { if (e instanceof Refused) throw e; /* the act reads it itself, and says */ }
         const r = await act();
-        return series ? { ...r, text: `${r.text}${SERIES}` } : r;
+        if (!series) return r;
+        const kept = !removes && own.length ? ` ${own.length} date${own.length === 1 ? '' : 's'} changed on ${own.length === 1 ? 'its' : 'their'} own (${own.join(', ')}) keep${own.length === 1 ? 's' : ''} ${own.length === 1 ? 'its' : 'their'} own values.` : '';
+        return { ...r, text: `${r.text}${kept ? ` It is a repeating event: this applied to the series, not one date.${kept}` : SERIES}` };
     }
     const urlOf = async (target, ctx, id) => { const s = String(id ?? '').trim(); if (!s) no('that needs the event id (from the list)'); return /^https?:\/\//.test(s) ? s : new URL(s, await folderOf(target, ctx)).href; };
     const XML = { 'Content-Type': 'application/xml; charset=utf-8' };
@@ -643,7 +653,7 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
         async 'calendar.delete'(target, a, ctx) {
             const provider = providerOf(target);
             if (!a.id) no('delete needs the event id (from the list)');
-            if (provider !== 'microsoft') return wholeSeries(target, ctx, a.id, () => davVerbs.remove(target, a, ctx));
+            if (provider !== 'microsoft') return wholeSeries(target, ctx, a.id, () => davVerbs.remove(target, a, ctx), { removes: true });
             const who = await peopleOf(target, ctx, a.id);
             const res = await call(target, ctx, 'DELETE', API.microsoft.event(String(a.id)));
             if (res.status === 404) no('no such event');
