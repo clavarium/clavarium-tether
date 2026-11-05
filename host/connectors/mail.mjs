@@ -889,8 +889,9 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
             /* Its files by name, as Microsoft's card shows them: a person sees what a forward takes along (loop 28). */
             const names = [...new Set([...l.matchAll(/"(?:file)?name\*?" "([^"]+)"/gi)].map((m) => decodeWords(m[1])))];
             /* A file with no name the card can read (none, or sent as a literal) is still counted: never "no files" by default (loop 29). */
-            const parts = (l.match(/\("attachment"/gi) ?? []).length;
-            const files = [...names.map((name) => ({ name })), ...(parts > names.length ? [{ name: `${parts - names.length} more file${parts - names.length === 1 ? '' : 's'} (name not readable here)` }] : [])];
+            /* A forward takes every named part and every attachment: the unnamed attachments and the names sent as literals are counted (loop 30). */
+            const unread = (l.match(/\("attachment" NIL\)/gi) ?? []).length + (l.match(/"(?:file)?name\*?" \{\d+\}/gi) ?? []).length;
+            const files = [...names.map((name) => ({ name })), ...(unread ? [{ name: `${unread} more file${unread === 1 ? '' : 's'} (name not readable here)` }] : [])];
             return { from: decodeWords(headerOf(block, 'From')), subject: decodeWords(headerOf(block, 'Subject')), date: headerOf(block, 'Date'), ...(files.length ? { files } : {}) };
         });
     }

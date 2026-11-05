@@ -440,7 +440,7 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
                 let text = ev.text;
                 for (const block of blocksOf(ev.text).filter(wears)) {
                     const next = [...new Set(catsOf(block).flatMap((c) => (c.toLowerCase() === want ? (to === null ? [] : [String(to).trim()]) : [c])))];
-                    text = text.replace(block, setProps(block, 'CATEGORIES', next.length ? [`CATEGORIES:${next.map(escapeText).join(',')}`] : []).replace(/\r\n$/, ''));
+                    text = text.replace(block, () => setProps(block, 'CATEGORIES', next.length ? [`CATEGORIES:${next.map(escapeText).join(',')}`] : []).replace(/\r\n$/, ''));
                 }
                 /* One event at a time: a failure in the middle says how far it went (#23); asking again does the rest. */
                 try { await davPut(target, ctx, new URL(ev.href, await folderOf(target, ctx)).href, text, { etag: ev.etag }); }

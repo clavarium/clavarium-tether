@@ -361,6 +361,9 @@ test('loop 28-29: a category rename reaches every VEVENT, dates changed on their
     assert.match(r.text, /Renamed "Client" to "Clients" on 3 events/);
     const after = s.files.get('/cal/me/work/r.ics').text;
     assert.equal((after.match(/^CATEGORIES:Clients$/gm) ?? []).length, 2, 'the series and its date changed on its own');
+    s.files.set('/cal/me/work/d.ics', { text: ev('d', 'Prix', '20301104T080000Z', 'DESCRIPTION:10$$ et $\' de plus\r\nCATEGORIES:Interne\r\n'), etag: '"1"' });
+    await run(s, 'calendar.category-rename', { name: 'Interne', to: 'Interne 2' });
+    assert.match(s.files.get('/cal/me/work/d.ics').text, /DESCRIPTION:10\$\$ et \$' de plus/, 'the rest of the event kept as it was');
     /* only a date changed on its own wears it: found and changed too */
     const only = ev('o', 'Point', '20301104T080000Z', 'RRULE:FREQ=WEEKLY;COUNT=4\r\n').replace('END:VCALENDAR', 'BEGIN:VEVENT\r\nUID:o\r\nRECURRENCE-ID:20301111T080000Z\r\nSUMMARY:x\r\nDTSTART:20301112T080000Z\r\nCATEGORIES:Congé\r\nEND:VEVENT\r\nEND:VCALENDAR');
     s.files.set('/cal/me/work/o.ics', { text: only, etag: '"1"' });
