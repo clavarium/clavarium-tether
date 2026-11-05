@@ -299,7 +299,7 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
             const others = after.attendees.map((x) => x.email).filter((x) => x.toLowerCase() !== userOf(target).toLowerCase());
             const gone = before.attendees.map((x) => x.email).filter((x) => !after.attendees.some((y) => y.email.toLowerCase() === x.toLowerCase()));
             const sched = (others.length || gone.length) && mine ? await schedules(target, ctx) : false;
-            const told = !mine || !(others.length || gone.length) ? '' : sched ? ` The calendar server sends the change to ${others.join(', ') || 'nobody left'}${gone.length ? `, and a cancellation to ${gone.join(', ')} (removed)` : ''}.` : ` Invitees (${[...others, ...gone].join(', ')}): ${NOT_TOLD}.`;
+            const told = !mine ? (others.length ? ` You are not the organiser (${before.organizer}): the change stays on this calendar, the others do not see it.` : '') : !(others.length || gone.length) ? '' : sched ? ` The calendar server sends the change to ${others.join(', ') || 'nobody left'}${gone.length ? `, and a cancellation to ${gone.join(', ')} (removed)` : ''}.` : ` Invitees (${[...others, ...gone].join(', ')}): ${NOT_TOLD}.`;
             /* The time set, said as Microsoft's result says it (loop 4). */
             const when = a.start !== undefined || a.end !== undefined ? ` Now ${after.start}${after.end ? ` — ${after.end}` : ''} (${DAV_TZ}).` : '';
             return { text: `Updated the event.${when}${told}`, size: 0, watch: a.with !== undefined && others.length && sched ? { id: new URL(url).pathname, title: after.summary, start: after.start } : null };
@@ -316,7 +316,7 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
             if (!others.length) return { text: 'Deleted the event.', size: 0 };
             const mine = !ev.organizer || ev.organizer.toLowerCase() === me;
             const sched = await schedules(target, ctx);
-            if (!mine) return { text: `Deleted the event from this calendar. You were invited (organiser ${ev.organizer}): ${sched ? 'the server may tell the organiser you left it' : 'the organiser is NOT told'} -- calendar-respond decline is the way to say no.`, size: 0 };
+            if (!mine) return { text: `Deleted the event from this calendar. You were invited (organiser ${ev.organizer}): the organiser is not told that you will not come${sched ? ' (this server may send them a note)' : ''} -- calendar-respond decline is the way to say no.`, size: 0 };
             return { text: `Deleted the event.${sched ? ` The calendar server sends a cancellation to ${others.join(', ')}.` : ` Invitees (${others.join(', ')}): ${NOT_TOLD.replace('invitations', 'cancellations')}.`}`, size: 0 };
         },
         /* An answer is this account's PARTSTAT on the event; the server tells the
@@ -559,7 +559,10 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
                the organiser's domain, and refuse an external audience unless `share`. */
             const internals = []; const externals = [];
             const info = await call(target, ctx, 'GET', `https://graph.microsoft.com/v1.0/me/events/${ev}?$select=attendees,organizer`);
-            if (info.ok) {
+            /* Who would receive it must be known before: an unread list is never taken as "nobody" (loop 5). */
+            if (info.status === 404) no('no such event');
+            if (!info.ok) no(`${target.title}: its participants could not be read (${info.status}) -- nothing was attached`);
+            {
                 const j = await info.json().catch(() => ({}));
                 const org = (j.organizer?.emailAddress?.address || target.config?.user || '').toLowerCase();
                 const dom = org.split('@')[1] || '';
@@ -658,7 +661,9 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
             let keepTeams = patch.isOnlineMeeting === true;
             if (patch.body !== undefined && a.online === undefined) {
                 const info = await call(target, ctx, 'GET', `${API.microsoft.event(String(a.id))}?$select=isOnlineMeeting,onlineMeetingProvider,onlineMeeting,body`);
-                if (info.ok) {
+                if (info.status === 404) no('no such event');
+                if (!info.ok) no(`${target.title}: the event could not be read to keep its Teams meeting (${info.status}) -- nothing was changed`);
+                {
                     const j = await info.json().catch(() => ({}));
                     if (j.isOnlineMeeting) {
                         keepTeams = true;
@@ -847,7 +852,7 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
             const effects = [];
             const now = a.with !== undefined ? String(a.with).split(',').map((x) => x.trim()).filter(Boolean) : ev.attendees;
             const gone = a.with !== undefined ? ev.attendees.filter((x) => !now.some((y) => y.toLowerCase() === x.toLowerCase())) : [];
-            if (verb === 'calendar.delete' && ev.attendees.length) effects.push(ev.mine ? (sent ? `a cancellation goes to ${ev.attendees.join(', ')}` : `the invitees (${ev.attendees.join(', ')}) are NOT told`) : 'the organiser is NOT told (decline tells them)');
+            if (verb === 'calendar.delete' && ev.attendees.length) effects.push(ev.mine ? (sent ? `a cancellation goes to ${ev.attendees.join(', ')}` : `the invitees (${ev.attendees.join(', ')}) are NOT told`) : 'the organiser is not told that you will not come (decline tells them)');
             if (verb === 'calendar.update' && ev.mine && (now.length || gone.length)) {
                 effects.push(sent ? `the update goes to ${now.join(', ') || 'nobody'}` : `the invitees (${[...now, ...gone].join(', ')}) are NOT told`);
                 if (gone.length && sent) effects.push(`removed: ${gone.join(', ')} (they get a cancellation)`);

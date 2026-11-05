@@ -274,13 +274,19 @@ export function graphMail({ fetch: fetchImpl = globalThis.fetch, token }) {
         if (!d?.id) no(`${target.title}: the mailbox did not prepare the message`);
         const did = encodeURIComponent(d.id);
         let kept = [];
+        /* Every step before the send: a failure removes the half-made draft, or says it is left (#18, loop 5). */
+        const undo = async (e, what) => {
+            const gone = await call(target, ctx, 'DELETE', `/me/messages/${did}`).then(() => true, () => false);
+            no(`${e?.message ?? what} -- nothing was sent${gone ? '' : '; a half-made draft is left in Drafts'}`);
+        };
         if (!keepAll) {
-            const have = (await call(target, ctx, 'GET', `/me/messages/${did}/attachments?$select=id,name`))?.value ?? [];
+            let have;
+            try { have = (await call(target, ctx, 'GET', `/me/messages/${did}/attachments?$select=id,name`))?.value ?? []; } catch (e) { await undo(e, 'the files could not be read'); }
             let keepList;
             try { keepList = keptFiles(have.map((x) => ({ ...x, name: x.name || '' })), keep); }
             catch (e) { await call(target, ctx, 'DELETE', `/me/messages/${did}`).catch(() => {}); throw e; }
             const ids = new Set(keepList.map((x) => x.id));
-            for (const x of have) if (!ids.has(x.id)) await call(target, ctx, 'DELETE', `/me/messages/${did}/attachments/${encodeURIComponent(x.id)}`);
+            try { for (const x of have) if (!ids.has(x.id)) await call(target, ctx, 'DELETE', `/me/messages/${did}/attachments/${encodeURIComponent(x.id)}`); } catch (e) { await undo(e, 'a file could not be taken off'); }
             kept = keepList.map((x) => x.name);
         }
         const mine = bodyOf(target, a);
@@ -293,14 +299,12 @@ export function graphMail({ fetch: fetchImpl = globalThis.fetch, token }) {
         try {
             await call(target, ctx, 'PATCH', `/me/messages/${did}`, { body: { contentType: 'html', content }, ...people(to, [...new Set(cc)], listOf(a.bcc)), ...deferred(at) });
             for (const f of files) await call(target, ctx, 'POST', `/me/messages/${did}/attachments`, fileOf(f));
-        } catch (e) {
-            const gone = await call(target, ctx, 'DELETE', `/me/messages/${did}`).then(() => true, () => false);
-            no(`${e?.message ?? 'the message could not be prepared'} -- nothing was sent${gone ? '' : '; a half-made draft is left in Drafts'}`);
-        }
+        } catch (e) { await undo(e, 'the message could not be prepared'); }
         const names = [...kept, ...files.map((f) => f.name)];
         const joined = names.length ? ` with ${names.join(', ')}` : '';
         if (drafted(a)) return { text: `Draft saved in Drafts, to ${to.join(', ')}${joined} — not sent.`, size: 0 };
-        await call(target, ctx, 'POST', `/me/messages/${did}/send`);
+        /* The send refused: the prepared message stays in Drafts, and that is said (a send that timed out may have left: not removed). */
+        try { await call(target, ctx, 'POST', `/me/messages/${did}/send`); } catch (e) { no(`${e?.message ?? 'the message was not sent'}; the prepared message is in Drafts`); }
         const watch = { id: d.internetMessageId || null, to: [...to, ...cc, ...listOf(a.bcc)], subject: d.subject ?? '', from: at?.getTime() };
         if (at) return { text: scheduled(at, to, joined), size: 0, watch };
         return { text: `Sent to ${to.join(', ')}${copies(cc)}${joined} (accepted by Microsoft).`, size: 0, watch };

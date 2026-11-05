@@ -272,7 +272,10 @@ export function editCard(text, { name, email, phone, type, photo, photoType }, s
     if (name !== undefined) { t = setProps(t, 'FN', [`FN:${escapeText(name)}`], 'VCARD'); t = setProps(t, 'N', [nOf(name)], 'VCARD'); said.push(`name ${name}`); }
     if (email !== undefined) t = editOne(t, 'EMAIL', email, type, said);
     if (phone !== undefined) t = editOne(t, 'TEL', phone, type, said);
-    if (photo !== undefined) t = setProps(t, 'PHOTO', [`PHOTO;ENCODING=b;TYPE=${(photoType || 'JPEG').toUpperCase()}:${String(photo).replace(/\s+/g, '')}`], 'VCARD');
+    /* vCard 4 carries a photo as a data: URI; 3.0 as base64 with ENCODING=b (loop 5). */
+    const v4 = /^VERSION:4/im.test(t);
+    const kind = (photoType || 'JPEG').toUpperCase();
+    if (photo !== undefined) t = setProps(t, 'PHOTO', [v4 ? `PHOTO:data:image/${kind.toLowerCase()};base64,${String(photo).replace(/\s+/g, '')}` : `PHOTO;ENCODING=b;TYPE=${kind}:${String(photo).replace(/\s+/g, '')}`], 'VCARD');
     return t;
 }
 export const newUid = () => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-tether`;

@@ -370,6 +370,8 @@ function trashServer(list, caps = 'IMAP4rev1 UIDPLUS') {
             commands.push(cmd);
             if (cmd.startsWith('LIST')) return send(`${list}${tag} OK\r\n`);
             if (cmd === 'CAPABILITY') return send(`* CAPABILITY ${caps}\r\n${tag} OK\r\n`);
+            const um = /^UID SEARCH UID (\d+)$/.exec(cmd);
+            if (um) return send(`* SEARCH ${um[1]}\r\n${tag} OK\r\n`);
             return send(`${tag} OK\r\n`);
         };
         setImmediate(() => socket.emit('data', Buffer.from('* OK ready\r\n')));

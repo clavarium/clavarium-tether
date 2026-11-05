@@ -88,10 +88,12 @@ const multipart = (kind, parts) => { const b = boundary(); return `Content-Type:
    one or more joined files (`attachments`, or `attach`+`attachName`), a
    multipart/mixed message: the words, then each file with its own type. A reply
    carries `inReplyTo` and `references` so it lands in its thread. */
-export function buildMessage({ from, to, cc = [], subject, body, text: given, html, attach, attachName, attachments, inReplyTo, references, messageId, date = new Date() }) {
+export function buildMessage({ from, to, cc = [], bcc = [], keepBcc = false, subject, body, text: given, html, attach, attachName, attachments, inReplyTo, references, messageId, date = new Date() }) {
     const header = (name, value) => `${name}: ${String(value).replace(/[\r\n]+/g, ' ').trim()}`;
     const top = [header('From', from), header('To', to.join(', '))];
     if (cc.length) top.push(header('Cc', cc.join(', ')));
+    /* A draft keeps its hidden recipients (as mail programs do), so sending it later loses none; a sent message never carries them. */
+    if (keepBcc && bcc.length) top.push(header('Bcc', bcc.join(', ')));
     top.push(header('Subject', encodeWords(String(subject ?? '').replace(/[\r\n]+/g, ' ').trim())), header('Date', date.toUTCString()));
     const id = (v) => String(v ?? '').replace(/[\r\n]+/g, ' ').trim();
     top.push(header('Message-ID', id(messageId) || `<${Date.now().toString(36)}.${Math.random().toString(36).slice(2)}@${String(from).split('@')[1] || 'tether'}>`));

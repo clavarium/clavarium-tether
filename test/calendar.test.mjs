@@ -489,3 +489,9 @@ test('Microsoft: an answer to an invitation says the organiser is told, as on Ca
     const r = await calendar({ fetch: s.fetch }).run('calendar.respond', M, { id: 'E1', answer: 'accept' }, ctx());
     assert.equal(r.text, 'Accepted the invitation. Microsoft tells the organiser (boss@example.com).');
 });
+
+test('loop 5: Microsoft attach refuses when the participants cannot be read (never "visible to you alone" by default)', async () => {
+    const fetch = async (url) => (url.includes('login.microsoftonline.com') ? json({ access_token: 'T', expires_in: 3600 }) : json({ error: { message: 'busy' } }, 503));
+    await assert.rejects(calendar({ fetch }).run('calendar.attach', M, { id: 'E1', attach: 'SGk=', attachName: 'a.pdf' }, ctx()), /participants could not be read \(503\) -- nothing was attached/);
+    await assert.rejects(calendar({ fetch }).run('calendar.update', M, { id: 'E1', notes: 'new' }, ctx()), /could not be read to keep its Teams meeting/);
+});

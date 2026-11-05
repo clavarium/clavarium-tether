@@ -206,7 +206,7 @@ test('CalDAV: the card says what the act does to the others', async () => {
     const about = await calendar({ fetch: s.fetch }).describe('calendar.respond', T, { id: '/cal/me/work/a.ics', answer: 'accept' }, ctx());
     assert.deepEqual(about.effects, ['the organiser is NOT told (this server does not schedule)']);
     const del = await calendar({ fetch: s.fetch }).describe('calendar.delete', T, { id: '/cal/me/work/a.ics' }, ctx());
-    assert.deepEqual(del.effects, ['the organiser is NOT told (decline tells them)']);
+    assert.deepEqual(del.effects, ['the organiser is not told that you will not come (decline tells them)']);
 });
 
 test('CalDAV: a category renamed on several events that fails in the middle says how far it went (#23)', async () => {
@@ -241,4 +241,10 @@ test('CalDAV: a change of time says the time set, as on Microsoft (loop 4)', asy
     const s = davServer();
     const r = await run(s, 'calendar.update', { id: '/cal/me/work/b.ics', start: '2030-11-05T15:00', end: '2030-11-05T16:00' });
     assert.match(r.text, /^Updated the event\. Now 2030-11-05 15:00 — 2030-11-05 16:00 \(Europe\/Paris\)\./);
+});
+
+test('loop 5: an invitee changing an event on CalDAV is told the others do not see it', async () => {
+    const s = davServer();
+    const r = await run(s, 'calendar.update', { id: '/cal/me/work/a.ics', title: 'Chantier (moi)' });
+    assert.match(r.text, /You are not the organiser \(boss@example\.com\): the change stays on this calendar, the others do not see it\./);
 });

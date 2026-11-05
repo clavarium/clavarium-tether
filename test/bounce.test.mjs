@@ -41,6 +41,8 @@ function imapBox({ hooks = {} } = {}) {
             if (sel) { current = sel[2]; return send(`${tag} OK\r\n`); }
             const hm = /^UID SEARCH HEADER Message-ID "(.*)"$/.exec(cmd);
             if (hm) { const uids = [...folders[current].msgs].filter(([, m]) => m.includes(`Message-ID: ${hm[1]}`)).map(([u]) => u); return send(`* SEARCH${uids.map((u) => ` ${u}`).join('')}\r\n${tag} OK\r\n`); }
+            const um = /^UID SEARCH UID (\d+)$/.exec(cmd);
+            if (um) return send(`* SEARCH${folders[current].msgs.has(Number(um[1])) ? ` ${um[1]}` : ''}\r\n${tag} OK\r\n`);
             if (cmd.startsWith('UID SEARCH')) return send(`* SEARCH${[...folders[current].msgs.keys()].map((u) => ` ${u}`).join('')}\r\n${tag} OK\r\n`);
             const fm = /^UID FETCH (\d+) \(BODY\.PEEK\[\]/.exec(cmd);
             if (fm) { const m = folders[current].msgs.get(Number(fm[1])) ?? ''; return send(`* 1 FETCH (UID ${fm[1]} BODY[] {${Buffer.byteLength(m)}}\r\n${m})\r\n${tag} OK\r\n`); }
@@ -243,4 +245,24 @@ test('a scheduled mail says, on both kinds of box, that it is watched once it le
     const g = mail({ fetch }); g.wake(hostOf(MS, { t: Date.now() }).hand);
     const r2 = await g.run('mail.send', MS, { to: 'bob@example.com', subject: 's', body: 'b', at: new Date(Date.now() + 3600_000).toISOString() }, { ...ctx(), secret: async () => 'R' });
     assert.match(r2.text, /Outbox .*Once it leaves, Tether watches for a return for 48 h/);
+});
+
+test('loop 5: an IMAP draft keeps its Bcc (never in a sent message); an unknown uid is refused, never "done"', async () => {
+    const s = imapBox(); const m = smtp();
+    const conn = mail({ connect: s.connect, smtpConnect: m.connect, smtpSecure: m.secure });
+    await conn.run('mail.send', BOX, { to: 'bob@example.com', bcc: 'hidden@example.com', subject: 'd', body: 'x', draft: true }, ctx());
+    assert.match([...s.folders.Drafts.msgs.values()][0], /^Bcc: hidden@example\.com$/m);
+    await conn.run('mail.send', BOX, { to: 'bob@example.com', bcc: 'hidden@example.com', subject: 'e', body: 'x' }, ctx());
+    assert.doesNotMatch(m.messages[0], /hidden@example\.com/, 'a sent message carries no Bcc');
+    const t = imapBox();
+    t.put('INBOX', 'Subject: a\r\n\r\nx');
+    const c2 = mail({ connect: t.connect });
+    for (const [verb, a] of [['mail.delete', { uid: '999' }], ['mail.move', { uid: '999', mailbox: 'Sent' }], ['mail.flag', { uid: '999', flag: 'read' }]]) {
+        await assert.rejects(c2.run(verb, BOX, a, ctx()), /no message #999 in INBOX/, verb);
+    }
+});
+
+test('loop 5: an attachment with no bytes is refused, never dropped in silence', async () => {
+    const { check } = await import('../server/verbs.mjs');
+    assert.throws(() => check('mail.send', { target: 'm', to: 'a@example.com', subject: 's', body: 'b', attachments: [{ name: 'a.pdf', bytes: 'QUJD' }, { name: 'b.pdf', bytes: '' }] }), /b\.pdf: no bytes -- nothing was done/);
 });

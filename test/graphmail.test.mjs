@@ -277,3 +277,11 @@ test('forward naming a file the original lacks is refused, and the half-made dra
     assert.ok(f.calls.some((c) => c.method === 'DELETE' && c.path === '/me/messages/F1'));
     assert.ok(!f.calls.some((c) => c.path.endsWith('/send')));
 });
+
+test('loop 5: a forward whose files cannot be sorted, or a send refused, never leaves a draft unsaid', async () => {
+    const f = fakeGraph({ 'POST /me/messages/AAA/createForward': { id: 'F2', body: { content: '' } }, 'DELETE /me/messages/F2': { _status: 204 } });
+    await assert.rejects(graphMail({ fetch: f.fetch, token: mint }).forward(target, { uid: 'AAA', to: 'c@example.com' }, ctx), /nothing was sent$/);
+    assert.ok(f.calls.some((c) => c.method === 'DELETE' && c.path === '/me/messages/F2'));
+    const g = fakeGraph({ 'POST /me/messages/AAA/createReply': { id: 'R3', toRecipients: [{ emailAddress: { address: 'x@example.com' } }], body: { content: '' } }, 'PATCH /me/messages/R3': {} });
+    await assert.rejects(graphMail({ fetch: g.fetch, token: mint }).reply(target, { uid: 'AAA', body: 'ok' }, ctx), /the prepared message is in Drafts$/);
+});

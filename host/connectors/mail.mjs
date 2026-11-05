@@ -400,6 +400,11 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
         try { await imap.command('CREATE "Trash" (USE (\\Trash))', 'the Trash folder could not be made'); } catch { await imap.command('CREATE "Trash"', 'the Trash folder could not be made'); }
         return { name: 'Trash', shown: 'Trash', made: true };
     }
+    /* The uid is there, in the folder opened: IMAP ignores an unknown uid without an error, so a move, a
+       mark or a delete would say "done" for nothing (loop 5). */
+    async function mustHave(imap, uid, box) {
+        if (!searchUids(await imap.command(`UID SEARCH UID ${uid}`, 'that folder could not be searched')).includes(uid)) no(`no message #${uid} in ${box} -- list it again (its uid is the one of the folder it was listed in)`);
+    }
     /* Is a message (by its Message-ID) in a folder? Read only. */
     async function hasMessage(imap, box, messageId) {
         await imap.command(`EXAMINE ${quoted(box)}`, 'that folder could not be opened');
@@ -431,7 +436,7 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
             return { text: `Scheduled for ${wallClock(at)}, to ${m.to.join(', ')}${files} — it waits in ${box} until then (delete it there to cancel). The keeper must be running at that time; if not, it leaves as soon as it is back (and you are told).${LATER_TEXT}`, size: 0 };
         }
         if (draft) {
-            const raw = buildMessage({ ...m, from: user });
+            const raw = buildMessage({ ...m, from: user, keepBcc: true });
             const box = await withImap(target, ctx, async (imap) => {
                 const drafts = await draftsOf(imap);
                 await imap.append(drafts, '\\Draft \\Seen', raw, 'the draft could not be saved');
@@ -454,7 +459,8 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
         /* Built once: the same message (its Message-ID too) goes out and is kept in Sent. */
         /* A message already made (a scheduled one, fetched back from Drafts: m.raw) goes as it is. */
         const messageId = m.raw ? headerOf(splitHead(String(m.raw))[0], 'Message-ID') : newId(user);
-        const raw = m.raw ? String(m.raw) : buildMessage({ ...m, from: user, messageId });
+        /* A Bcc line a draft may keep never leaves with the message. */
+        const raw = m.raw ? String(m.raw).replace(/^Bcc:.*(?:\r?\n[ \t].*)*\r?\n/gim, '') : buildMessage({ ...m, from: user, messageId });
         try {
             await smtpSend({ host: server, port, auth, from: user, to: m.to, cc: m.cc, bcc: m.bcc, raw,
                 ...(smtpConnect ? { connect: smtpConnect } : {}), ...(smtpSecure ? { secure: smtpSecure } : {}), ...(smtpWait ?? {}) });
@@ -623,7 +629,8 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
     }
 
     /* A mail Microsoft sent: watched like the others (its ref, its recipients, its time). */
-    const graphSent = (target, ctx, r) => { const { watch: w, ...rest } = r; if (w && watch(target, ctx.agent, w)) rest.text += w.from ? LATER_TEXT : WATCH_TEXT; return rest; };
+    /* Exchange holds a scheduled one in its Outbox: a return is watched, but one that never leaves is Exchange's to report. */
+    const graphSent = (target, ctx, r) => { const { watch: w, ...rest } = r; if (w && watch(target, ctx.agent, w)) rest.text += w.from ? ' Once it leaves, Tether watches for a return for 48 h: a mail that comes back is told to you.' : WATCH_TEXT; return rest; };
 
     let ticking = false;
     async function tick() {
@@ -748,6 +755,7 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
             return withImap(target, ctx, async (imap) => {
                 /* The uid is the one of the folder it was listed in (from): another folder's same number is another message. */
                 await imap.command(`SELECT ${quoted(boxOf(target, a.from))}`, 'that mailbox could not be opened');
+                await mustHave(imap, uid, boxOf(target, a.from));
                 /* A server without MOVE (RFC 6851; older Dovecot, Exchange 2010...): COPY, then that one uid expunged, as delete does. */
                 const caps = (await imap.command('CAPABILITY', 'the server capabilities could not be read')).find((l) => /^\* CAPABILITY/i.test(l)) ?? '';
                 if (/\sMOVE(\s|$)/i.test(caps)) await imap.command(`UID MOVE ${uid} ${quoted(String(a.mailbox))}`, 'that message could not be moved (the destination folder may not exist)');
@@ -766,6 +774,7 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
             const { op, flag } = flagOf(a.flag);
             return withImap(target, ctx, async (imap) => {
                 await imap.command(`SELECT ${quoted(boxOf(target, a.mailbox))}`, 'that mailbox could not be opened');
+                await mustHave(imap, uid, boxOf(target, a.mailbox));
                 await imap.command(`UID STORE ${uid} ${op}FLAGS (${flag})`, 'that message could not be marked');
                 return { text: `Marked #${uid} ${String(a.flag).toLowerCase().trim()}.`, size: 0 };
             });
@@ -781,6 +790,7 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
                 const box = boxOf(target, a.mailbox);
                 const trash = await trashOf(imap);
                 await imap.command(`SELECT ${quoted(box)}`, 'that mailbox could not be opened');
+                await mustHave(imap, uid, box);
                 if (trash.name.toLowerCase() === box.toLowerCase()) {
                     await imap.command(`UID STORE ${uid} +FLAGS (\\Deleted)`, 'that message could not be deleted');
                     await imap.command(`UID EXPUNGE ${uid}`, 'that message could not be removed');

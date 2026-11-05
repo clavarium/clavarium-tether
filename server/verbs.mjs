@@ -245,7 +245,10 @@ export function check(verb, a = {}) {
                 let total = 0;
                 /* More than kept: refused whole, never some dropped in silence (#51). */
                 if (a.attachments.length > 50) no(`${a.attachments.length} attachments; 50 at most -- nothing was done: send them in several mails`);
-                const files = a.attachments.map((f) => ({ name: oneLine(f?.name, 200) || 'attachment', bytes: String(f?.bytes ?? '') })).filter((f) => f.bytes);
+                const files = a.attachments.map((f) => ({ name: oneLine(f?.name, 200) || 'attachment', bytes: String(f?.bytes ?? '') }));
+                /* Files go all, or nothing is sent: an empty one is refused, never dropped in silence (loop 5). */
+                const empty = files.filter((f) => !f.bytes.trim()).map((f) => f.name);
+                if (empty.length) no(`${empty.join(', ')}: no bytes -- nothing was done: give each file's base64`);
                 for (const f of files) total += f.bytes.length;
                 if (total > ATTACH_MAX) no(`the attachments are too large to send together (over ${Math.round(ATTACH_MAX / 1024 / 1024)} MB of files)`);
                 if (files.length) out.attachments = files;

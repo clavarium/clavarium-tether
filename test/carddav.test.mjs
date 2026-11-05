@@ -128,3 +128,14 @@ test('describe: a contact to change or delete is shown by its name and email on 
     assert.deepEqual(await c.describe('contacts.delete', C, { id: '/dav/books/me/default/p1.vcf' }, ctx()), { name: 'Paul Martin', email: 'paul@example.org', emails: ['paul@example.org'], phones: ['+33600000000'] });
     assert.equal(await c.describe('contacts.create', C, { name: 'x' }, ctx()), null, 'nothing to look up for a new one');
 });
+
+test('loop 5: a photo on a vCard 4 is a data: URI; one the server drops is said, not "set"', async () => {
+    const { editCard } = await import('../host/dav.mjs');
+    assert.match(editCard('BEGIN:VCARD\r\nVERSION:4.0\r\nFN:A\r\nEND:VCARD\r\n', { photo: 'QUJD', photoType: 'PNG' }), /^PHOTO:data:image\/png;base64,QUJD$/m);
+    assert.match(editCard('BEGIN:VCARD\r\nVERSION:3.0\r\nFN:A\r\nEND:VCARD\r\n', { photo: 'QUJD', photoType: 'JPEG' }), /^PHOTO;ENCODING=b;TYPE=JPEG:QUJD$/m);
+    const { contacts } = await import('../host/connectors/contacts.mjs');
+    const card = 'BEGIN:VCARD\r\nVERSION:3.0\r\nUID:x\r\nFN:A\r\nEND:VCARD\r\n';
+    const fetch = async (url, o = {}) => ((o.method ?? 'GET') === 'GET' ? new Response(card, { status: 200, headers: { etag: '"1"' } }) : new Response(null, { status: 204 }));
+    const T2 = { id: 'b', title: 'Book', config: { carddav: 'https://dav.example.com/book/', user: 'me@example.com' }, secrets: { password: 'p' } };
+    await assert.rejects(contacts({ fetch }).run('contacts.attach', T2, { id: 'https://dav.example.com/book/x.vcf', attach: 'QUJD' }, { secret: async () => 'PW' }), /did not keep the photo/);
+});
