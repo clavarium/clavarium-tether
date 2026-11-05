@@ -41,7 +41,9 @@ export function cardOf(verb, a = {}, target = {}) {
             if (act === 'attach') return drop({ ...base, id: a.id, files: filesOf(a), share: a.share === true || undefined });
             return drop({ ...base, id: a.id, which: a.which, name: a.name, to: a.to, color: a.color, who: list(a.who) });
         }
-        case 'contacts': return drop({ kind: 'contacts', action: act, id: a.id, name: a.name, email: a.email, phone: a.phone, type: a.type, photo: a.attach ? true : undefined });
+        /* An email or a phone emptied with its type is a removal: named on the card (loop 34). */
+        case 'contacts': return drop({ kind: 'contacts', action: act, id: a.id, name: a.name, email: a.email, phone: a.phone, type: a.type, photo: a.attach ? true : undefined,
+            cleared: ['email', 'phone'].filter((k) => a[k] !== undefined && !String(a[k]).trim()).map((k) => `${k}${a.type ? ` (${a.type})` : ''}`) });
         case 'terminal': return drop({ kind: 'terminal', action: act, command: a.command, text: a.text });
         case 'files': return drop({ kind: 'files', action: act, path: a.path, from: a.from, to: a.to, bytes: a.text !== undefined ? Buffer.byteLength(String(a.text)) : undefined });
         case 'browser': return drop({ kind: 'browser', action: act, url: a.url, selector: a.selector, text: a.text, key: a.key });

@@ -380,3 +380,17 @@ test('loop 31: a file whose name and filename both come as literals counts once'
     const w = imapBox({ hooks: { structure: '(("text" "plain" NIL NIL NIL "7bit" 5 1)("application" "pdf" ("name" {9}\r\nété.pdf) NIL NIL "base64" 400 NIL ("attachment" ("filename" {9}\r\nété.pdf))) "mixed")' } });
     assert.deepEqual((await mail({ connect: w.connect }).describe('mail.forward', BOX, { uid: '1', to: 'x@example.com' }, ctx())).files, [{ name: '1 more file (name not readable here)' }]);
 });
+
+test('loop 34: the reply card shows who it goes to (Reply-To first, all: To and Cc), on IMAP and Microsoft', async () => {
+    const s = imapBox();
+    const raw = 'From: Bob <bob@example.com>\r\nReply-To: desk@example.com\r\nTo: me@example.com, carol@example.com\r\nCc: dan@example.com\r\nSubject: s\r\n\r\n';
+    const conn = mail({ connect: (o) => { const sock = s.connect(o); const w = sock.write; sock.write = (d) => { const line = String(d); if (/BODYSTRUCTURE/.test(line)) { const tag = line.split(' ')[0]; setImmediate(() => sock.emit('data', Buffer.from(`* 1 FETCH (UID 1 BODYSTRUCTURE ("text" "plain" NIL NIL NIL "7bit" 5 1) BODY[HEADER.FIELDS (FROM REPLY-TO TO CC SUBJECT DATE)] {${Buffer.byteLength(raw)}}\r\n${raw})\r\n${tag} OK\r\n`))); return; } return w(d); }; return sock; } });
+    const about = await conn.describe('mail.reply', BOX, { uid: '1', body: 'ok', all: true }, ctx());
+    assert.deepEqual(about.replyTo, { to: ['desk@example.com'], cc: ['carol@example.com', 'dan@example.com'] });
+    const { graphMail } = await import('../host/connectors/graphmail.mjs');
+    const fetch = async () => new Response(JSON.stringify({ from: { emailAddress: { address: 'bob@example.com' } }, replyTo: [{ emailAddress: { address: 'desk@example.com' } }], toRecipients: [{ emailAddress: { address: 'me@example.com' } }], subject: 's' }), { status: 200 });
+    const g = await graphMail({ fetch, token: async () => 'T' }).about({ title: 'O', config: { user: 'me@example.com' } }, { uid: 'M', body: 'ok' }, {}, 'mail.reply');
+    assert.deepEqual(g.replyTo, { to: ['desk@example.com'], cc: [] });
+    const { cardOf } = await import('../server/cards.mjs');
+    assert.deepEqual(cardOf('contacts.update', { id: 'c', phone: '', type: 'work' }).cleared, ['phone (work)']);
+});

@@ -879,11 +879,11 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
        answered, forwarded, moved or deleted -- who sent it, its subject, when. A read. */
     async function describe(verb, target, a, ctx) {
         if (!a.uid || !['mail.reply', 'mail.forward', 'mail.move', 'mail.flag', 'mail.delete'].includes(verb)) return null;
-        if (isGraph(target)) return gmail.about(target, a, ctx);
+        if (isGraph(target)) return gmail.about(target, a, ctx, verb);
         const uid = numUid(a.uid);
         return withImap(target, ctx, async (imap) => {
             await imap.command(`EXAMINE ${quoted(boxOf(target, verb === 'mail.move' ? a.from : a.mailbox))}`, 'that mailbox could not be opened');
-            const lines = await imap.command(`UID FETCH ${uid} (BODYSTRUCTURE BODY.PEEK[HEADER.FIELDS (FROM SUBJECT DATE)])`, 'that message could not be read');
+            const lines = await imap.command(`UID FETCH ${uid} (BODYSTRUCTURE BODY.PEEK[HEADER.FIELDS (FROM REPLY-TO TO CC SUBJECT DATE)])`, 'that message could not be read');
             const l = lines.find((x) => /^\* \d+ FETCH/i.test(x)) ?? '';
             const block = l.slice(l.indexOf('\n') + 1);
             /* Its files by name, as Microsoft's card shows them: a person sees what a forward takes along (loop 28). */
@@ -892,7 +892,16 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
             /* A forward takes every named part and every attachment: the unnamed attachments and the names sent as literals are counted (loop 30). */
             const unread = (l.match(/\("attachment" NIL\)/gi) ?? []).length + Math.max((l.match(/"filename\*?" \{\d+\}/gi) ?? []).length, (l.match(/"name\*?" \{\d+\}/gi) ?? []).length);   /* one part often carries both */
             const files = [...names.map((name) => ({ name })), ...(unread ? [{ name: `${unread} more file${unread === 1 ? '' : 's'} (name not readable here)` }] : [])];
-            return { from: decodeWords(headerOf(block, 'From')), subject: decodeWords(headerOf(block, 'Subject')), date: headerOf(block, 'Date'), ...(files.length ? { files } : {}) };
+            /* Who a reply goes to, as mail.reply works it out (Reply-To first; with all, To and Cc too, never this box): shown before it is approved (loop 34). */
+            let replyTo;
+            if (verb === 'mail.reply') {
+                const self = userOf(target).toLowerCase();
+                let to = emailsOf(decodeWords(headerOf(block, 'Reply-To')) || decodeWords(headerOf(block, 'From')));
+                if (to.every((x) => x === self)) to = emailsOf(headerOf(block, 'To'));
+                const cc = a.all === true ? [...emailsOf(headerOf(block, 'To')), ...emailsOf(headerOf(block, 'Cc'))].filter((x) => x !== self && !to.includes(x)) : [];
+                replyTo = { to: to.filter((x) => x !== self), cc: [...new Set([...cc, ...listOf(a.cc).map((x) => x.toLowerCase())])] };
+            }
+            return { from: decodeWords(headerOf(block, 'From')), subject: decodeWords(headerOf(block, 'Subject')), date: headerOf(block, 'Date'), ...(files.length ? { files } : {}), ...(replyTo ? { replyTo } : {}) };
         });
     }
 
