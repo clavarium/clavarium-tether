@@ -122,7 +122,8 @@ export function contacts({ fetch: fetchImpl = globalThis.fetch } = {}) {
         await davScan(target, ctx, { match }, out, meta);
         /* Never capped in silence (05-11): the list says how many there are; a search, how many it looked at. */
         if (!match && meta.total > out.length && out.length >= LIST_MAX) out.push(`\n(Showing ${out.length} of ${meta.total} contacts — use contacts-search to find one.)`);
-        if (match && meta.looked < meta.total) out.push(`\n(Looked at the first ${meta.looked} of ${meta.total} contacts.)`);
+        if (match && out.length >= LIST_MAX) out.push(`\n(Showing the first ${LIST_MAX} matches — give more of the name to narrow it.)`);
+        else if (match && meta.looked < meta.total) out.push(`\n(Looked at the first ${meta.looked} of ${meta.total} contacts.)`);
         return out;
     }
     async function davScan(target, ctx, { match } = {}, out, meta) {
@@ -199,9 +200,9 @@ export function contacts({ fetch: fetchImpl = globalThis.fetch } = {}) {
                 items = all
                     .map((c) => ({ id: c.id, card: fromMs(c) }))
                     .filter(({ card }) => `${card.name} ${card.emails.join(' ')}`.toLowerCase().includes(q))
-                    .slice(0, LIST_MAX)
                     .map(({ id, card }) => brief(id, card));
-                if (more) items.push(`\n(Looked at the first ${all.length} contacts.)`);
+                if (items.length > LIST_MAX) { items = items.slice(0, LIST_MAX); items.push(`\n(Showing the first ${LIST_MAX} matches — give more of the name to narrow it.)`); }
+                else if (more) items.push(`\n(Looked at the first ${all.length} contacts.)`);
             }
             const text = items.some((x) => !x.startsWith('\n')) ? items.join('\n') : ['No contact matches.', ...items].join('\n');
             return { text, size: Buffer.byteLength(text) };

@@ -214,3 +214,19 @@ test('a contact deleted is named in the result; a PNG photo is said PNG (by its 
     await contacts({ fetch }).run('contacts.attach', M, { id: 'm1', attach: png }, ctx());
     assert.equal(calls.find((c) => c.url.includes('/photo/')).o.headers['Content-Type'], 'image/png');
 });
+
+test('a search with more matches than shown says so, on both providers (loop 3)', async () => {
+    const people = Array.from({ length: 70 }, (_, i) => ({ id: `m${i}`, displayName: `Martin ${i}` }));
+    const ms = async (url) => (url.includes('login.microsoftonline.com') ? json({ access_token: 'T', expires_in: 3600 }) : json({ value: people }));
+    const r = await contacts({ fetch: ms }).run('contacts.search', M, { text: 'martin' }, ctx());
+    assert.match(r.text, /\(Showing the first 50 matches — give more of the name to narrow it\.\)$/);
+    assert.equal(r.text.split('\n').filter((l) => /^m\d+$/.test(l)).length, 50);
+    const many = people.map((p) => `<D:response><D:href>/carddav/v1/principals/me/lists/default/${p.id}.vcf</D:href></D:response>`).join('');
+    const fetch = async (url, o = {}) => {
+        if (url.includes('oauth2.googleapis.com/token')) return json({ access_token: 'T', expires_in: 3600 });
+        if (o.method === 'PROPFIND') return xml(`<?xml version="1.0"?><D:multistatus xmlns:D="DAV:">${many}</D:multistatus>`);
+        const hrefs = [...String(o.body).matchAll(/<D:href>([^<]+)<\/D:href>/g)].map((m) => m[1]);
+        return xml(`<?xml version="1.0"?><D:multistatus xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:carddav">${hrefs.map((h) => `<D:response><D:href>${h}</D:href><D:propstat><D:prop><C:address-data>BEGIN:VCARD\r\nFN:Martin ${h}\r\nEND:VCARD\r\n</C:address-data></D:prop></D:propstat></D:response>`).join('')}</D:multistatus>`);
+    };
+    assert.match((await contacts({ fetch }).run('contacts.search', G, { text: 'martin' }, ctx())).text, /Showing the first 50 matches/);
+});
