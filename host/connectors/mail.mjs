@@ -215,7 +215,7 @@ export function originalOf(raw) {
         files: attachmentsOf(raw),
     };
 }
-export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect, smtpConnect, smtpSecure } = {}) {
+export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect, smtpConnect, smtpSecure, smtpWait } = {}) {
     const tokens = new Map(); // target.id -> { value, exp }
 
     const providerOf = (target) => { const p = String(target.config?.provider ?? ''); if (!IMAP_HOST[p] || !PROVIDERS[p]) no(`${target.title}: set its provider to google or microsoft`); return p; };
@@ -457,7 +457,7 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
         const raw = m.raw ? String(m.raw) : buildMessage({ ...m, from: user, messageId });
         try {
             await smtpSend({ host: server, port, auth, from: user, to: m.to, cc: m.cc, bcc: m.bcc, raw,
-                ...(smtpConnect ? { connect: smtpConnect } : {}), ...(smtpSecure ? { secure: smtpSecure } : {}) });
+                ...(smtpConnect ? { connect: smtpConnect } : {}), ...(smtpSecure ? { secure: smtpSecure } : {}), ...(smtpWait ?? {}) });
         } catch (e) {
             if (e instanceof Refused) throw e;
             /* Said as the server said it; a final refusal (5xx) is marked, so a scheduled send stops trying. */
@@ -630,14 +630,16 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
             for (const rec of later.filter((r) => r.when <= host.now())) {
                 if (host.stopped(rec.agent)) continue;
                 const target = host.target(rec.target);
-                let outcome; let error; let final = false;
-                try { outcome = await sendDue(rec); } catch (e) { error = e?.message ?? String(e); final = e?.permanent === true; }
+                let outcome; let error; let final = false; let unsure = false;
+                /* A server silent after taking the message may have sent it: never sent again blindly, said. */
+                try { outcome = await sendDue(rec); } catch (e) { error = e?.message ?? String(e); unsure = e?.unsure === true; final = e?.permanent === true || unsure; }
                 if (error && !final && ++rec.tries < 30) { keep(); continue; }   /* a server away: tried again next minute */
                 later = later.filter((r) => r !== rec); keep();
                 const late = outcome === 'sent' && host.now() - rec.when > LATE_MS;
                 host.note({ agent: { id: rec.agent, name: rec.agent }, target: { id: rec.target, title: target?.title }, verb: 'mail.send', detail: `later, to ${rec.to.join(', ')}: ${rec.subject}`,
                     decision: 'yes', because: 'later', ok: outcome === 'sent', ...(outcome === 'sent' ? {} : { error: error ?? (outcome === 'cancelled' ? 'cancelled: the draft was deleted' : outcome) }) });
-                if (error) tell(rec, 'mail.later-failed', `The mail "${rec.subject}" to ${rec.to.join(', ')}, to leave at ${wallClock(new Date(rec.when))}, could NOT be sent: ${error}. It is still in ${rec.box}.`, rec.id);
+                if (unsure) tell(rec, 'mail.later-unsure', `The mail "${rec.subject}" to ${rec.to.join(', ')} MAY have been sent: the server took it but never confirmed. It is not sent again; check Sent (its draft is still in ${rec.box}).`, rec.id);
+                else if (error) tell(rec, 'mail.later-failed', `The mail "${rec.subject}" to ${rec.to.join(', ')}, to leave at ${wallClock(new Date(rec.when))}, could NOT be sent: ${error}. It is still in ${rec.box}.`, rec.id);
                 else if (late) tell(rec, 'mail.later-late', `The mail "${rec.subject}" to ${rec.to.join(', ')}, due at ${wallClock(new Date(rec.when))}, left late, at ${wallClock(new Date(host.now()))} (the keeper was not running at its time).`, rec.id);
             }
             await scanBounces().catch(() => { /* looked again next minute */ });

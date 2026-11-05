@@ -197,3 +197,17 @@ test('a write is never doubled: a dead warm connection is checked first; a cut i
     assert.match(r2.text, /A copy is in Sent/);
     assert.equal(s2.folders.Sent.msgs.size, 1, 'not doubled');
 });
+
+test('a scheduled mail the server took but never confirmed is not sent again, and is told as maybe sent (loop 2)', async () => {
+    const clock = { t: Date.now() };
+    const s = imapBox(); const m = smtp();
+    const silent = (o) => { const sock = m.secure(o); const w = sock.write; sock.write = (t) => (/\r\n\.\r\n$/.test(t) ? undefined : w(t)); return sock; };
+    const conn = mail({ connect: s.connect, smtpConnect: m.connect, smtpSecure: silent, smtpWait: { dataMs: 50 } });
+    const h = hostOf(BOX, clock); conn.wake(h.hand);
+    await conn.run('mail.send', BOX, { to: 'bob@example.com', subject: 'Peut-être', body: 'x', at: new Date(clock.t + 120_000).toISOString() }, ctx());
+    clock.t += 180_000;
+    await conn.tick();
+    assert.equal(conn.later().length, 0, 'not tried again');
+    assert.equal(h.notices[0]?.kind, 'mail.later-unsure');
+    assert.match(h.notices[0].text, /MAY have been sent/);
+});
