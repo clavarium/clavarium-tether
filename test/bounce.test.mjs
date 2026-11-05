@@ -409,3 +409,14 @@ test('loop 36: a delete from the Trash is "for good" on the card before; emptied
     assert.deepEqual(cardOf('calendar.update', { id: 'e', title: '' }, {}).cleared, ['title']);
     assert.deepEqual(cardOf('contacts.update', { id: 'c', name: '' }).cleared, ['name']);
 });
+
+test('loop 38: a scheduled mail sent whose draft cannot be removed is told, so it is not sent again', async () => {
+    const clock = { t: Date.now() };
+    const s = imapBox({ hooks: { cmd: (c) => (c.startsWith('UID STORE') ? 'cut' : undefined) } }); const m = smtp();
+    const conn = mail({ connect: s.connect, smtpConnect: m.connect, smtpSecure: m.secure });
+    const h = hostOf(BOX, clock); conn.wake(h.hand);
+    await conn.run('mail.send', BOX, { to: 'bob@example.com', subject: 'Parti', body: 'x', at: new Date(clock.t + 120_000).toISOString() }, ctx());
+    clock.t += 180_000; await conn.tick();
+    assert.equal(m.messages.length, 1);
+    assert.ok(h.notices.some((n) => n.kind === 'mail.later-draft-kept' && /do not send it again/.test(n.text)));
+});

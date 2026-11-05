@@ -94,7 +94,7 @@ and every secret the keeper handed out is replaced by `[secret]`.
 |---|---|---|
 | `asks.jsonl` | the agent | `{id, at, op, args}`, one per call |
 | `answers.jsonl` | the keeper | `{ask, at, held: true, until, request}` while a person decides, `{ask, at, held: true, taken: true, until}` as soon as the keeper takes it, `{ask, at, held: true, running: true, until}` once the act has begun, then `{ask, at, ok, text, data?}` |
-| `notices.jsonl` | the keeper | `{id, at, agent, target?, kind, text, ref?}`: something that happened later to what the agent did (`mail.bounced`, `mail.delayed`, `mail.later-failed`, `mail.later-unsure`, `mail.later-late`, `calendar.declined`) |
+| `notices.jsonl` | the keeper | `{id, at, agent, target?, kind, text, ref?}`: something that happened later to what the agent did (`mail.bounced`, `mail.delayed`, `mail.later-failed`, `mail.later-unsure`, `mail.later-late`, `mail.later-draft-kept`, `calendar.declined`) |
 | `notices.read` | the agent's command | how many notices it has already been told |
 
 The folder is `--dir`, else `$TETHER_DIR`, else the nearest `.tether` from

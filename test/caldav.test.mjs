@@ -378,3 +378,15 @@ test('loop 32: invitees removed on a server that does not schedule are named on 
     const about = await calendar({ fetch: s.fetch }).describe('calendar.update', T, { id, with: '' }, ctx());
     assert.ok(about.effects.includes('removed: client@example.org'));
 });
+
+test('loop 38: an invitee delete asks the server not to answer the organiser; a create card says who is told; a big file is refused, never "shorten it"', async () => {
+    const s = davServer();
+    s.files.set('/cal/me/work/i.ics', { text: ev('i', 'Invit', '20301104T080000Z', 'ORGANIZER:mailto:boss@example.com\r\nATTENDEE;PARTSTAT=NEEDS-ACTION:mailto:me@example.com\r\n'), etag: '"1"' });
+    await run(s, 'calendar.delete', { id: '/cal/me/work/i.ics' });
+    assert.equal(s.calls.find((c) => c.method === 'DELETE').headers['Schedule-Reply'], 'F');
+    const no = scheduling(davServer(), false);
+    assert.deepEqual((await calendar({ fetch: no.fetch }).describe('calendar.create', T, { title: 'x', start: 's', end: 'e', with: 'a@example.org' }, ctx())).effects, ['the invitees (a@example.org) are NOT told (this server does not schedule)']);
+    const { check } = await import('../server/verbs.mjs');
+    assert.throws(() => check('calendar.attach', { target: 't', id: 'e', attach: 'A'.repeat(8 * 1024 * 1024) }), /the file is too large .* never cut its base64/);
+    assert.equal(check('calendar.attach', { target: 't', id: 'e', attach: 'A'.repeat(2 * 1024 * 1024) }).attach.length, 2 * 1024 * 1024, 'a 1.5 MB file passes (it was capped near 730 KB)');
+});

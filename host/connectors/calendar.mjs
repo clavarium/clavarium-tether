@@ -348,7 +348,10 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
             const url = await urlOf(target, ctx, a.id);
             /* Read first: who it concerns is said; unread, nothing is deleted (loop 10). */
             const ev = eventOf((await davGet(target, ctx, url)).text);
-            const res = await davRequest(target, ctx)('DELETE', url, {});
+            /* An invitee's delete stays on this calendar: Schedule-Reply: F (RFC 6638) keeps a scheduling server from
+               answering the organiser, as the tool and the card promise (loop 38); decline is the way to say no. */
+            const invited = ev.organizer && ev.organizer.toLowerCase() !== userOf(target).toLowerCase();
+            const res = await davRequest(target, ctx)('DELETE', url, invited ? { headers: { 'Schedule-Reply': 'F' } } : {});
             if (res.status === 404) no('no such event');
             if (!res.ok) no(`${target.title}: the event was not deleted (${res.status})`);
             const me = userOf(target).toLowerCase();
@@ -356,7 +359,7 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
             const mine = !ev.organizer || ev.organizer.toLowerCase() === me;
             if (!others.length && mine) return { text: 'Deleted the event.', size: 0 };
             const sched = await schedules(target, ctx);
-            if (!mine) return { text: `Deleted the event from this calendar. You were invited (organiser ${ev.organizer}): the organiser is not told that you will not come${sched ? ' (this server may send them a note)' : ''} -- calendar-respond decline is the way to say no.`, size: 0 };
+            if (!mine) return { text: `Deleted the event from this calendar. You were invited (organiser ${ev.organizer}): the organiser is not told that you will not come -- calendar-respond decline is the way to say no.`, size: 0 };
             return { text: `Deleted the event.${sched ? ` The calendar server sends a cancellation to ${others.join(', ')}.` : ` Invitees (${others.join(', ')}): ${NOT_TOLD.replace('invitations', 'cancellations')}.`}`, size: 0 };
         },
         /* An answer is this account's PARTSTAT on the event; the server tells the
@@ -899,6 +902,13 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
        answered, changed or deleted -- its title, when, where, who organises and who
        comes -- and, for an invitation, what else already stands at that time. A read. */
     async function describe(verb, target, a, ctx) {
+        /* A create: who is told, on the card before (loop 38). */
+        if (verb === 'calendar.create') {
+            const who = String(a.with ?? '').split(/[,;]/).map((x) => x.trim()).filter(Boolean);
+            if (!who.length) return null;
+            const sent = providerOf(target) === 'microsoft' || await schedules(target, ctx);
+            return { effects: [sent ? `invitations go to ${who.join(', ')}` : `the invitees (${who.join(', ')}) are NOT told (this server does not schedule)`] };
+        }
         if (!a.id || !['calendar.respond', 'calendar.update', 'calendar.delete', 'calendar.attach', 'calendar.detach'].includes(verb)) return null;
         const provider = providerOf(target);
         let ev;

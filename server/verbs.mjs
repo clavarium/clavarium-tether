@@ -149,6 +149,14 @@ export function check(verb, a = {}) {
     /* Event categories: a clean list, up to 25, each short. An empty list is kept
        (it clears the categories on an update); undefined leaves them untouched. */
     const cats = () => { if (a.categories === undefined || a.categories === null) return; out.categories = (Array.isArray(a.categories) ? a.categories : [a.categories]).map((c) => oneLine(c, 200)).filter(Boolean).slice(0, 25); };
+    /* A file's base64 is never cut: over its limit it is refused as too large, never "shorten it" (loop 38). */
+    const file = (k, maxBytes) => {
+        if (a[k] === undefined || a[k] === null) return;
+        const b64 = String(a[k]).replace(/\s+/g, '');
+        const bytes = Math.floor(b64.length * 3 / 4);
+        if (bytes > maxBytes) no(`the file is too large (${Math.round(bytes / 1024)} KB; ${Math.round(maxBytes / 1024)} KB at most here) -- nothing was done; never cut its base64 (it would be broken)`);
+        out[k] = b64;
+    };
     const num = (k) => { if (a[k] !== undefined && a[k] !== null && a[k] !== '') { const n = Number(a[k]); if (Number.isFinite(n)) out[k] = Math.trunc(n); } };
     switch (verb) {
         case 'terminal.read': if (a.lines !== undefined) out.lines = Math.max(1, Math.min(2000, Math.trunc(Number(a.lines)) || 0)); break;
@@ -232,7 +240,7 @@ export function check(verb, a = {}) {
             if (verb === 'mail.send') str('subject', 400);
             if (verb === 'mail.reply' && (a.all === true || a.all === 'true')) out.all = true;
             if (verb === 'mail.forward') str('keep', 1000);
-            str('body', TEXT_MAX, true); str('cc', 1000); str('bcc', 1000); str('attach', TEXT_MAX, true); str('attachName', 200);
+            str('body', TEXT_MAX, true); str('cc', 1000); str('bcc', 1000); file('attach', Math.floor(ATTACH_MAX * 3 / 4)); str('attachName', 200);
             /* The one-file shorthand keeps the same promise as the list: a file with no bytes is refused (loop 20). */
             if (out.attach !== undefined && !out.attach.trim()) no(`${out.attachName || 'attach'}: no bytes -- nothing was done: give the file's base64`);
             if (a.format !== undefined && a.format !== null && a.format !== '') {
@@ -272,12 +280,12 @@ export function check(verb, a = {}) {
         case 'calendar.read': str('id', 1024); break;
         case 'calendar.freebusy': str('who', 2000); str('from', 64); str('to', 64); break;
         case 'calendar.create': str('title', 400); str('start', 64); str('end', 64); str('where', 400); str('notes', TEXT_MAX, true); str('with', 1000); str('online', 20); cats(); break;
-        case 'calendar.attach': str('id', 1024); str('attach', TEXT_MAX, true); str('attachName', 200); if (a.share === true || a.share === 'true') out.share = true; break;
+        case 'calendar.attach': str('id', 1024); file('attach', 5 * 1024 * 1024); str('attachName', 200); if (a.share === true || a.share === 'true') out.share = true; break;
         case 'calendar.detach': str('id', 1024); str('which', 400); break;
         case 'calendar.delete': str('id', 1024); break;
         case 'calendar.respond': str('id', 1024); str('answer', 40); str('comment', 400); break;
         case 'calendar.update': str('id', 1024); str('title', 400); str('start', 64); str('end', 64); str('where', 400); str('notes', TEXT_MAX, true); str('with', 1000); str('online', 20); cats(); break;
-        case 'contacts.attach': str('id', 1024); str('attach', TEXT_MAX, true); str('attachName', 200); break;
+        case 'contacts.attach': str('id', 1024); file('attach', 4 * 1024 * 1024); str('attachName', 200); break;
         case 'contacts.search': str('text', 200); break;
         case 'contacts.read': str('id', 1024); break;
         case 'contacts.create': str('name', 200); str('email', 200); str('phone', 60); break;

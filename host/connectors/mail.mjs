@@ -545,13 +545,15 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
             }
             rec.sentAt = host.now(); keep();
         }
-        await withImap(target, ctx, async (imap) => {
+        const removed = await withImap(target, ctx, async (imap) => {
             await imap.command(`SELECT ${quoted(rec.box)}`, 'the drafts folder could not be opened');
             const uid = searchUids(await imap.command(`UID SEARCH HEADER Message-ID ${quoted(rec.id)}`, 'the drafts could not be searched'))[0];
             if (!uid) return;
             await imap.command(`UID STORE ${uid} +FLAGS (\\Deleted)`, 'the sent draft could not be removed');
             await imap.command(`UID EXPUNGE ${uid}`, 'the sent draft could not be removed');
-        }, { write: true }).catch(() => { /* sent; a leftover draft is only clutter */ });
+        }, { write: true }).then(() => true, () => false);
+        /* Sent, but its draft still in Drafts: told, it must not be sent a second time from there (loop 38). */
+        if (!removed) tell(rec, 'mail.later-draft-kept', `The mail "${rec.subject}" to ${rec.to.join(', ')} has left, but its draft could not be taken out of ${rec.box}: delete it there -- do not send it again.`, rec.id);
         return 'sent';
     }
 
