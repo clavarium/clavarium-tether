@@ -18,6 +18,9 @@ import { compose, keptFiles, listOf, sendAt, wallClock } from '../compose.mjs';
 const GRAPH = 'https://graph.microsoft.com/v1.0';
 const TZ = 'Europe/Paris';   /* answer in the person's timezone, not UTC */
 const LIST_MAX = 30;
+const TIMEOUT_MS = 60_000;
+/* The subject of a returned mail, in the common languages (a report is also known by its sender). */
+export const REPORT_SUBJECT = /undeliver|undelivered|delivery status notification|delivery (has )?failed|failure notice|returned mail|mail delivery (failed|subsystem)|non remis|(é|e)chec de (la )?(remise|distribution)|unzustellbar|no se pudo entregar|delivery delayed|remise diff(é|e)r(é|e)e/i;
 const READ_MAX = 512 * 1024;
 const SOURCE_MAX = 4 * 1024 * 1024;
 /* Friendly folder words mapped to Graph's well-known names; anything else is
@@ -36,17 +39,40 @@ const stripHtml = (html) => String(html ?? '')
 export function graphMail({ fetch: fetchImpl = globalThis.fetch, token }) {
     async function call(target, ctx, method, path, body) {
         const access = await token(target, ctx);
-        const r = await fetchImpl(`${GRAPH}${path}`, {
-            method,
-            headers: { authorization: `Bearer ${access}`, prefer: `outlook.timezone="${TZ}"`, ...(body ? { 'content-type': 'application/json' } : {}) },
-            ...(body ? { body: JSON.stringify(body) } : {}),
-        });
+        let r;
+        /* Never waits for ever: a Graph that does not answer is said; an act may have happened then. */
+        try {
+            r = await fetchImpl(`${GRAPH}${path}`, {
+                method,
+                headers: { authorization: `Bearer ${access}`, prefer: `outlook.timezone="${TZ}"`, ...(body ? { 'content-type': 'application/json' } : {}) },
+                ...(body ? { body: JSON.stringify(body) } : {}),
+                signal: AbortSignal.timeout(TIMEOUT_MS),
+            });
+        } catch (e) {
+            no(`${target.title}: Microsoft did not answer${e?.name === 'TimeoutError' ? ' in time' : ''}${method === 'GET' ? '' : ' -- it may have been done: check before asking again'}`);
+        }
         if (r.status === 401 || r.status === 403) no(`${target.title}: not authorized -- reconnect the account (the Microsoft mail scope may be missing)`);
         if (!r.ok) { let m = ''; try { m = (await r.json())?.error?.message ?? ''; } catch { /* no json */ } no(`${target.title}: ${m || `the mail request failed (${r.status})`}`); }
         /* Some acts answer with no body (sendMail is 202, a delete is 204): parse the
            body only if there is one, so a successful send is not a JSON-parse error. */
         const text = await r.text();
         return text ? JSON.parse(text) : null;
+    }
+
+    /* A folder named by a person ("Factures", "Clients/2026"): a well-known name passes, a long id
+       passes, any other name is looked up by its display name, level by level. */
+    async function folderId(target, ctx, name) {
+        const f = folderOf(name);
+        if (Object.values(FOLDER).includes(f) || f === 'outbox' || /^[A-Za-z0-9_=+/-]{60,}$/.test(f)) return f;
+        let parent = null; let id = null;
+        for (const part of f.split('/').map((x) => x.trim()).filter(Boolean)) {
+            const base = parent ? `/me/mailFolders/${encodeURIComponent(parent)}/childFolders` : '/me/mailFolders';
+            const data = await call(target, ctx, 'GET', `${base}?$top=200&$select=id,displayName`);
+            const hit = (data?.value ?? []).find((x) => String(x.displayName ?? '').toLowerCase() === part.toLowerCase());
+            if (!hit) no(`${target.title}: no folder "${f}"${parent ? '' : ` (folders: ${(data?.value ?? []).map((x) => x.displayName).join(', ')})`}`);
+            parent = hit.id; id = hit.id;
+        }
+        return id ?? 'inbox';
     }
 
     const brief = (m) => `#${m.id}\n  ${m.receivedDateTime ?? ''}\n  From: ${addrsOf([m.from])}\n  Subject: ${m.subject ?? ''}`;
@@ -62,7 +88,7 @@ export function graphMail({ fetch: fetchImpl = globalThis.fetch, token }) {
             if (since) span.push(`receivedDateTime ge ${since.toISOString()}`);
             if (before) span.push(`receivedDateTime lt ${before.toISOString()}`);
             const filter = span.length ? `&$filter=${encodeURIComponent(span.join(' and '))}` : '';
-            const data = await call(target, ctx, 'GET', `/me/mailFolders/${encodeURIComponent(folder)}/messages?$top=${LIST_MAX}&$select=id,receivedDateTime,from,subject&$orderby=receivedDateTime%20desc${filter}`);
+            const data = await call(target, ctx, 'GET', `/me/mailFolders/${encodeURIComponent(await folderId(target, ctx, folder))}/messages?$top=${LIST_MAX}&$select=id,receivedDateTime,from,subject&$orderby=receivedDateTime%20desc${filter}`);
             const items = (data?.value ?? []).map(brief);
             /* Never cap in silence: Graph hands back a nextLink when more remain. */
             const more = data?.['@odata.nextLink'] ? `\n\n(Showing the first ${LIST_MAX} most recent — use since/before to move the window.)` : '';
@@ -142,29 +168,51 @@ export function graphMail({ fetch: fetchImpl = globalThis.fetch, token }) {
             const text = `${att.name} (${att.contentType || 'application/octet-stream'}, ${Math.round((att.size || 0) / 1024)} KB)\n\n${bytes}`;
             return { text, size: Buffer.byteLength(text) };
         },
-        /* Graph DELETE moves the message to Deleted Items (a soft delete). */
+        /* Graph DELETE moves the message to Deleted Items (a soft delete); one already there goes
+           for good (to the recoverable items only an administrator reaches). Said either way, as IMAP. */
         async remove(target, a, ctx) {
             const id = String(a.uid ?? '').trim();
             if (!id) no('delete needs the message id');
+            let inTrash = false;
+            try {
+                const [m, bin] = await Promise.all([call(target, ctx, 'GET', `/me/messages/${encodeURIComponent(id)}?$select=parentFolderId`), call(target, ctx, 'GET', '/me/mailFolders/deleteditems?$select=id')]);
+                inTrash = Boolean(m?.parentFolderId && bin?.id && m.parentFolderId === bin.id);
+            } catch (e) { if (/no such|not found/i.test(e?.message ?? '')) throw e; /* else: said as a move to Deleted Items */ }
             await call(target, ctx, 'DELETE', `/me/messages/${encodeURIComponent(id)}`);
-            return { text: `Deleted ${id}.`, size: 0 };
+            return { text: inTrash ? `Deleted ${id} for good: it was already in Deleted Items, so it cannot be restored.` : `Deleted ${id}: moved to Deleted Items, where it can be restored.`, size: 0 };
         },
         async move(target, a, ctx) {
             const id = String(a.uid ?? '').trim();
             if (!id) no('move needs the message id');
             if (!String(a.mailbox ?? '').trim()) no('move needs a destination folder');
-            await call(target, ctx, 'POST', `/me/messages/${encodeURIComponent(id)}/move`, { destinationId: folderOf(a.mailbox) });
+            await call(target, ctx, 'POST', `/me/messages/${encodeURIComponent(id)}/move`, { destinationId: await folderId(target, ctx, a.mailbox) });
             return { text: `Moved ${id} to ${a.mailbox}.`, size: 0 };
         },
         async flag(target, a, ctx) {
             const id = String(a.uid ?? '').trim();
             if (!id) no('flag needs the message id');
-            const f = String(a.flag ?? '').toLowerCase().trim();
+            const f = ({ seen: 'read', unseen: 'unread', starred: 'flagged' })[String(a.flag ?? '').toLowerCase().trim()] ?? String(a.flag ?? '').toLowerCase().trim();
             const body = f === 'read' ? { isRead: true } : f === 'unread' ? { isRead: false }
                 : f === 'flagged' ? { flag: { flagStatus: 'flagged' } } : f === 'unflagged' ? { flag: { flagStatus: 'notFlagged' } }
                     : no('flag is read, unread, flagged or unflagged');
             await call(target, ctx, 'PATCH', `/me/messages/${encodeURIComponent(id)}`, body);
             return { text: `Marked ${id} ${f}.`, size: 0 };
+        },
+        /* Delivery reports in the inbox since a time, as raw MIME (read by the same reader as IMAP's):
+           the ones from a postmaster or with a returned-mail subject. `known(id)`: already read. */
+        async reports(target, ctx, since, known = () => false) {
+            const filter = encodeURIComponent(`receivedDateTime ge ${since.toISOString()}`);
+            const data = await call(target, ctx, 'GET', `/me/mailFolders/inbox/messages?$top=50&$select=id,subject,from&$orderby=receivedDateTime%20desc&$filter=${filter}`);
+            const out = [];
+            for (const m of data?.value ?? []) {
+                if (known(m.id)) continue;
+                const who = String(m?.from?.emailAddress?.address ?? '');
+                if (!/^(mailer-daemon|postmaster|microsoftexchange)/i.test(who) && !REPORT_SUBJECT.test(String(m.subject ?? ''))) { out.push({ id: m.id, raw: null }); continue; }
+                const access = await token(target, ctx);
+                const r = await fetchImpl(`${GRAPH}/me/messages/${encodeURIComponent(m.id)}/$value`, { headers: { authorization: `Bearer ${access}` }, signal: AbortSignal.timeout(TIMEOUT_MS) });
+                out.push({ id: m.id, raw: r.ok ? (await r.text()).slice(0, READ_MAX) : null });
+            }
+            return out;
         },
         /* What a message is, for an approval card: who, subject, when, its files' names. */
         async about(target, a, ctx) {
@@ -188,9 +236,12 @@ export function graphMail({ fetch: fetchImpl = globalThis.fetch, token }) {
                 await call(target, ctx, 'POST', '/me/messages', message);
                 return { text: `Draft saved in Drafts, to ${to.join(', ')}${withNames(files)} — not sent.`, size: 0 };
             }
-            await call(target, ctx, 'POST', '/me/sendMail', { message, saveToSentItems: true });
-            if (at) return { text: scheduled(at, to, withNames(files)), size: 0 };
-            return { text: `Sent to ${to.join(', ')}${copies(listOf(a.cc))}${withNames(files)}.`, size: 0 };
+            /* A mark of our own in the message's headers: a report that comes back carries it (a return is found by it). */
+            const ref = `<${Date.now().toString(36)}.${Math.random().toString(36).slice(2)}@tether>`;
+            await call(target, ctx, 'POST', '/me/sendMail', { message: { ...message, internetMessageHeaders: [{ name: 'X-Tether-Ref', value: ref }] }, saveToSentItems: true });
+            const watch = { id: ref, to: [...to, ...listOf(a.cc), ...listOf(a.bcc)], subject: message.subject, from: at?.getTime() };
+            if (at) return { text: scheduled(at, to, withNames(files)), size: 0, watch };
+            return { text: `Sent to ${to.join(', ')}${copies(listOf(a.cc))}${withNames(files)} (accepted by Microsoft).`, size: 0, watch };
         },
         /* Reply in the thread: Graph drafts the reply (its recipients, its quoted
            original), the answer is put above the quote, new files joined, then it
@@ -237,15 +288,22 @@ export function graphMail({ fetch: fetchImpl = globalThis.fetch, token }) {
         const html = mine.contentType === 'html' ? mine.content.replace(/^[\s\S]*?<body[^>]*>|<\/body>[\s\S]*$/gi, '') : esc(mine.content).replace(/\n/g, '<br>');
         const content = /<body[^>]*>/i.test(theirs) ? theirs.replace(/<body[^>]*>/i, (m) => `${m}${html}<br>`) : `${html}<br>${theirs}`;
         const at = later(a);
-        await call(target, ctx, 'PATCH', `/me/messages/${did}`, { body: { contentType: 'html', content }, ...people(to, [...new Set(cc)], listOf(a.bcc)), ...deferred(at) });
         const files = filesOf(a);
-        for (const f of files) await call(target, ctx, 'POST', `/me/messages/${did}/attachments`, fileOf(f));
+        /* A step that fails before the send leaves no half-made draft behind (#18): it is removed, or said. */
+        try {
+            await call(target, ctx, 'PATCH', `/me/messages/${did}`, { body: { contentType: 'html', content }, ...people(to, [...new Set(cc)], listOf(a.bcc)), ...deferred(at) });
+            for (const f of files) await call(target, ctx, 'POST', `/me/messages/${did}/attachments`, fileOf(f));
+        } catch (e) {
+            const gone = await call(target, ctx, 'DELETE', `/me/messages/${did}`).then(() => true, () => false);
+            no(`${e?.message ?? 'the message could not be prepared'} -- nothing was sent${gone ? '' : '; a half-made draft is left in Drafts'}`);
+        }
         const names = [...kept, ...files.map((f) => f.name)];
         const joined = names.length ? ` with ${names.join(', ')}` : '';
         if (drafted(a)) return { text: `Draft saved in Drafts, to ${to.join(', ')}${joined} — not sent.`, size: 0 };
         await call(target, ctx, 'POST', `/me/messages/${did}/send`);
-        if (at) return { text: scheduled(at, to, joined), size: 0 };
-        return { text: `Sent to ${to.join(', ')}${copies(cc)}${joined}.`, size: 0 };
+        const watch = { id: d.internetMessageId || null, to: [...to, ...cc, ...listOf(a.bcc)], subject: d.subject ?? '', from: at?.getTime() };
+        if (at) return { text: scheduled(at, to, joined), size: 0, watch };
+        return { text: `Sent to ${to.join(', ')}${copies(cc)}${joined} (accepted by Microsoft).`, size: 0, watch };
     }
 }
 

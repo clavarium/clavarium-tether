@@ -158,12 +158,50 @@ test('move and flag hit the right Graph endpoints (acts)', async () => {
 });
 
 test('remove soft-deletes a message via Graph DELETE', async () => {
-    const { fetch, calls } = fakeGraph({ 'DELETE /me/messages/X': { _status: 204 } });
+    const { fetch, calls } = fakeGraph({ 'DELETE /me/messages/X': { _status: 204 }, 'GET /me/messages/X': { parentFolderId: 'INBOXID' }, 'GET /me/mailFolders/deleteditems': { id: 'BINID' } });
     const g = graphMail({ fetch, token: mint });
     const r = await g.remove(target, { uid: 'X' }, ctx);
-    assert.match(r.text, /Deleted X/);
-    assert.equal(calls[0].method, 'DELETE');
-    assert.match(calls[0].path, /\/me\/messages\/X/);
+    assert.match(r.text, /Deleted X: moved to Deleted Items, where it can be restored/, 'said as over IMAP');
+    const del = calls.find((c) => c.method === 'DELETE');
+    assert.match(del.path, /\/me\/messages\/X/);
+    /* already in Deleted Items: gone for good, and said so */
+    const f2 = fakeGraph({ 'DELETE /me/messages/X': { _status: 204 }, 'GET /me/messages/X': { parentFolderId: 'BINID' }, 'GET /me/mailFolders/deleteditems': { id: 'BINID' } });
+    assert.match((await graphMail({ fetch: f2.fetch, token: mint }).remove(target, { uid: 'X' }, ctx)).text, /for good: it was already in Deleted Items/);
+    /* no such message: refused, nothing deleted */
+    const f3 = fakeGraph({ 'DELETE /me/messages/X': { _status: 204 }, 'GET /me/mailFolders/deleteditems': { id: 'BINID' } });
+    await assert.rejects(graphMail({ fetch: f3.fetch, token: mint }).remove(target, { uid: 'X' }, ctx), /not found/);
+    assert.ok(!f3.calls.some((c) => c.method === 'DELETE'));
+});
+
+test('Microsoft: a folder named by a person is found by its display name (move, list); an unknown one is refused with the list', async () => {
+    const f = fakeGraph({ 'GET /me/mailFolders': { value: [{ id: 'F-CLIENTS', displayName: 'Clients' }, { id: 'F-INV', displayName: 'Factures' }] },
+        'GET /me/mailFolders/F-CLIENTS/childFolders': { value: [{ id: 'F-2026', displayName: '2026' }] }, 'POST /me/messages/M/move': {}, 'GET /me/mailFolders/F-INV/messages': { value: [] } });
+    const g = graphMail({ fetch: f.fetch, token: mint });
+    await g.move(target, { uid: 'M', mailbox: 'Clients/2026' }, ctx);
+    assert.equal(f.calls.find((c) => c.path === '/me/messages/M/move').body.destinationId, 'F-2026');
+    await g.move(target, { uid: 'M', mailbox: 'Trash' }, ctx);
+    assert.equal(f.calls.filter((c) => c.path === '/me/messages/M/move')[1].body.destinationId, 'deleteditems', 'a well-known name is passed as is');
+    await g.list(target, { mailbox: 'factures' }, ctx);
+    assert.ok(f.calls.some((c) => c.path.startsWith('/me/mailFolders/F-INV/messages')));
+    await assert.rejects(g.move(target, { uid: 'M', mailbox: 'Nope' }, ctx), /no folder "Nope" \(folders: Clients, Factures\)/);
+});
+
+test('Microsoft: a reply whose draft cannot be finished leaves no half-made draft, and says nothing was sent', async () => {
+    const f = fakeGraph({ 'POST /me/messages/AAA/createReply': { id: 'R9', toRecipients: [{ emailAddress: { address: 'x@example.com' } }], body: { content: '' } }, 'DELETE /me/messages/R9': { _status: 204 } });
+    await assert.rejects(graphMail({ fetch: f.fetch, token: mint }).reply(target, { uid: 'AAA', body: 'ok' }, ctx), /nothing was sent$/);
+    assert.ok(f.calls.some((c) => c.method === 'DELETE' && c.path === '/me/messages/R9'));
+    assert.ok(!f.calls.some((c) => c.path.endsWith('/send')));
+});
+
+test('Microsoft: a sent mail carries a mark of its own (X-Tether-Ref) and is handed back to be watched; seen/starred are read/flagged', async () => {
+    const f = fakeGraph({ 'POST /me/sendMail': { _status: 202 }, 'PATCH /me/messages/M': {} });
+    const g = graphMail({ fetch: f.fetch, token: mint });
+    const r = await g.send(target, { to: 'c@example.com', cc: 'd@example.com', subject: 'Devis', body: 'b' }, ctx);
+    const ref = f.calls[0].body.message.internetMessageHeaders[0];
+    assert.equal(ref.name, 'X-Tether-Ref');
+    assert.deepEqual(r.watch, { id: ref.value, to: ['c@example.com', 'd@example.com'], subject: 'Devis', from: undefined });
+    await g.flag(target, { uid: 'M', flag: 'starred' }, ctx);
+    assert.deepEqual(f.calls.at(-1).body, { flag: { flagStatus: 'flagged' } });
 });
 
 test('a 401 says to reconnect (scope may be missing)', async () => {
@@ -230,7 +268,7 @@ test('forward with keep "none" takes every file off; with a name keeps only it',
     f = fakeGraph(fwdRoutes());
     const r = await graphMail({ fetch: f.fetch, token: mint }).forward(target, { uid: 'AAA', to: 'c@example.com', keep: 'plan' }, ctx);
     assert.deepEqual(f.calls.filter((c) => c.method === 'DELETE').map((c) => c.path), ['/me/messages/F1/attachments/a2']);
-    assert.match(r.text, /with plan\.pdf\./);
+    assert.match(r.text, /with plan\.pdf[ .]/);
 });
 
 test('forward naming a file the original lacks is refused, and the half-made draft removed', async () => {

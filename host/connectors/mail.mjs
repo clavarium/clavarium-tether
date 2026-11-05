@@ -32,7 +32,7 @@ import { send as smtpSend, buildMessage, address } from '../smtp.mjs';
 import { compose, quoteReply, quoteForward, replySubject, forwardSubject, keptFiles, listOf, sendAt, wallClock } from '../compose.mjs';
 import { readFileSync, writeFileSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
-import { graphMail } from './graphmail.mjs';
+import { graphMail, REPORT_SUBJECT } from './graphmail.mjs';
 
 const IMAP_HOST = { google: 'imap.gmail.com', microsoft: 'outlook.office365.com' };
 const SMTP_HOST = { google: 'smtp.gmail.com', microsoft: 'smtp.office365.com' };
@@ -145,6 +145,43 @@ function attachmentsOf(raw) {
     })(raw);
     return list;
 }
+
+/* A Message-ID of our own, known before the message leaves: told to the agent, kept to find a return. */
+const newId = (user) => `<${Date.now().toString(36)}.${Math.random().toString(36).slice(2)}@${String(user).split('@')[1] || 'tether'}>`;
+
+/* ---------- a returned mail (a bounce), read ----------
+   A delivery report (RFC 3464: multipart/report; report-type=delivery-status) says, per recipient,
+   Final-Recipient, Action (failed, delayed, delivered, relayed), Status (5.x.x final, 4.x.x for now)
+   and the far server's words (Diagnostic-Code). An older bounce with no report is known by its
+   sender (MAILER-DAEMON, postmaster, MicrosoftExchange...) or its subject. An auto-reply is none. */
+export const BOUNCE_SUBJECT = REPORT_SUBJECT;
+export const BOUNCE_FROM = /(^|[<\s"])(mailer-daemon|postmaster|microsoftexchange[^@]*)@/i;
+export function readBounce(raw) {
+    const text = String(raw ?? '');
+    const head = splitHead(text)[0];
+    const type = headerOf(head, 'Content-Type').toLowerCase();
+    const from = decodeWords(headerOf(head, 'From'));
+    const subject = decodeWords(headerOf(head, 'Subject'));
+    const report = /multipart\/report/.test(type) && /delivery-status/.test(type);
+    if (!report && !BOUNCE_FROM.test(` ${from}`) && !BOUNCE_SUBJECT.test(subject)) return null;
+    if (!report && /auto-replied/i.test(headerOf(head, 'Auto-Submitted')) && !BOUNCE_FROM.test(` ${from}`)) return null;
+    const recipients = [];
+    const at = text.search(/Content-Type:\s*message\/(global-)?delivery-status/i);
+    if (at >= 0) {
+        const part = splitHead(text.slice(at))[1];
+        const end = part.search(/\r?\n--[^\r\n]+/);
+        const fields = (end >= 0 ? part.slice(0, end) : part).replace(/\r?\n[ \t]+/g, ' ');
+        for (const block of fields.split(/\r?\n\s*\r?\n/)) {
+            const f = (n) => (new RegExp(`^${n}:\\s*(.*)$`, 'im').exec(block)?.[1] ?? '').trim();
+            const who = (f('Final-Recipient') || f('Original-Recipient')).replace(/^[^;]*;\s*/, '').replace(/[<>]/g, '').trim().toLowerCase();
+            if (!who) continue;
+            recipients.push({ to: who, action: f('Action').toLowerCase(), status: f('Status'), diag: f('Diagnostic-Code').replace(/^[^;]*;\s*/, '').replace(/\s+/g, ' ') });
+        }
+    }
+    return { subject, recipients, delayed: /delay/i.test(subject) && !recipients.length, raw: text };
+}
+const isFinal = (r) => r.action === 'failed' || /^5\./.test(r.status);
+const isDelay = (r) => r.action === 'delayed' || /^4\./.test(r.status);
 
 const numUid = (u) => { const n = Number(u); if (!Number.isInteger(n) || n <= 0) no('that needs the message number (uid)'); return n; };
 /* The marks a person may set, named by a plain word -- never a raw IMAP flag from
@@ -260,13 +297,21 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
         try { const r = await fn(s.imap); warm(id, s); return r; }
         catch (e) { if (e instanceof Refused) { warm(id, s); } else { drop(id); } throw e; }
     }
-    async function withImap(target, ctx, fn) {
+    /* `write`: an act that changes the mailbox (APPEND, MOVE, EXPUNGE) is never sent twice -- a warm
+       connection is first checked with NOOP (reopened if dead), then the act goes once: a failure in
+       the middle is said, never retried blindly (a draft or a Sent copy would be doubled). */
+    async function withImap(target, ctx, fn, { write = false } = {}) {
         const id = target.id;
         const prev = queues.get(id) ?? Promise.resolve();
         let release; const mine = new Promise((r) => { release = r; });
         queues.set(id, prev.then(() => mine, () => mine));
         await prev.catch(() => { /* a prior verb's failure is its own */ });
         try {
+            if (write) {
+                const s = sessions.get(id);
+                if (s) { try { await s.imap.command('NOOP', 'the mailbox did not answer'); } catch { drop(id); } }
+                return await runOnce(target, ctx, fn);
+            }
             try { return await runOnce(target, ctx, fn); }
             catch (e) { if (e instanceof Refused) throw e; return await runOnce(target, ctx, fn); /* dead connection: reopen once */ }
         } finally { release(); }
@@ -355,6 +400,11 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
         try { await imap.command('CREATE "Trash" (USE (\\Trash))', 'the Trash folder could not be made'); } catch { await imap.command('CREATE "Trash"', 'the Trash folder could not be made'); }
         return { name: 'Trash', shown: 'Trash', made: true };
     }
+    /* Is a message (by its Message-ID) in a folder? Read only. */
+    async function hasMessage(imap, box, messageId) {
+        await imap.command(`EXAMINE ${quoted(box)}`, 'that folder could not be opened');
+        return searchUids(await imap.command(`UID SEARCH HEADER Message-ID ${quoted(messageId)}`, 'that folder could not be searched')).length > 0;
+    }
     /* Send the built message, or keep it as a draft. */
     async function deliver(target, ctx, a, m) {
         const user = userOf(target);
@@ -369,13 +419,13 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
                Drafts (where a person sees it, and deletes it to cancel), and the
                keeper sends it at its time. */
             if (!host) no('sending later needs the keeper running');
-            const messageId = `<${Date.now().toString(36)}.${Math.random().toString(36).slice(2)}@${user.split('@')[1] || 'tether'}>`;
+            const messageId = newId(user);
             const raw = buildMessage({ ...m, from: user, messageId });
             const box = await withImap(target, ctx, async (imap) => {
                 const drafts = await draftsOf(imap);
                 await imap.append(drafts, '\\Draft \\Seen', raw, 'the message could not be kept for later');
                 return drafts;
-            });
+            }, { write: true });
             later.push({ id: messageId, target: target.id, agent: ctx.agent, when: at.getTime(), box, to: m.to, cc: m.cc, bcc: m.bcc, subject: String(m.subject ?? ''), tries: 0 });
             keep();
             return { text: `Scheduled for ${wallClock(at)}, to ${m.to.join(', ')}${files} — it waits in ${box} until then (delete it there to cancel). The keeper must be running at that time; if not, it leaves as soon as it is back.`, size: 0 };
@@ -386,7 +436,7 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
                 const drafts = await draftsOf(imap);
                 await imap.append(drafts, '\\Draft \\Seen', raw, 'the draft could not be saved');
                 return drafts;
-            });
+            }, { write: true });
             return { text: `Draft saved in ${box}, to ${m.to.join(', ')}${files} — not sent.`, size: 0 };
         }
         let server; let port = 587; let auth;
@@ -403,7 +453,8 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
         if (Number(target.config?.smtpPort) > 0) port = Number(target.config.smtpPort);
         /* Built once: the same message (its Message-ID too) goes out and is kept in Sent. */
         /* A message already made (a scheduled one, fetched back from Drafts: m.raw) goes as it is. */
-        const raw = m.raw ? String(m.raw) : buildMessage({ ...m, from: user });
+        const messageId = m.raw ? headerOf(splitHead(String(m.raw))[0], 'Message-ID') : newId(user);
+        const raw = m.raw ? String(m.raw) : buildMessage({ ...m, from: user, messageId });
         try {
             await smtpSend({ host: server, port, auth, from: user, to: m.to, cc: m.cc, bcc: m.bcc, raw,
                 ...(smtpConnect ? { connect: smtpConnect } : {}), ...(smtpSecure ? { secure: smtpSecure } : {}) });
@@ -418,10 +469,18 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
            A copy that fails does not undo the send: it is said. `saveSent: false` in the box's config turns it off. */
         let kept = '';
         if (!isOAuth(target) && target.config?.saveSent !== false) {
-            try { kept = ` A copy is in ${await withImap(target, ctx, async (imap) => { const box = await sentOf(imap); await imap.append(box, '\\Seen', raw, 'the copy could not be kept in Sent'); return box; })}.`; }
-            catch (e) { kept = ` (Sent, but its copy could not be kept in Sent: ${e?.message ?? 'IMAP refused it'}.)`; }
+            /* A server that files what it relays itself (some do) already has it: no second copy (#19). */
+            try {
+                kept = ` A copy is in ${await withImap(target, ctx, async (imap) => {
+                    const box = await sentOf(imap);
+                    if (messageId && await hasMessage(imap, box, messageId)) return box;
+                    await imap.append(box, '\\Seen', raw, 'the copy could not be kept in Sent');
+                    return box;
+                }, { write: true })}.`;
+            } catch (e) { kept = ` (Sent, but its copy could not be kept in Sent: ${e?.message ?? 'IMAP refused it'}.)`; }
         }
-        return { text: `Sent to ${m.to.join(', ')}${copies}${files}.${kept}`, size: 0 };
+        const watched = watch(target, ctx.agent, { id: messageId, to: [...m.to, ...m.cc, ...m.bcc], subject: m.subject ?? decodeWords(headerOf(splitHead(raw)[0], 'Subject')) });
+        return { text: `Sent to ${m.to.join(', ')}${copies}${files} (accepted by the server; Message-ID ${messageId}).${kept}${watched}`, size: 0 };
     }
 
     /* ---------- messages to send later (IMAP/SMTP) ----------
@@ -429,38 +488,140 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
        for whom, when. Each minute the keeper wakes the connector; a message
        due is fetched from Drafts, sent as it is, then taken out of Drafts. A
        draft no longer there was cancelled by a person: nothing is sent. An
-       agent a person stopped has nothing sent until it is resumed. */
-    let host = null; let later = [];
+       agent a person stopped has nothing sent until it is resumed.
+       NEVER TWICE, NEVER LOST IN SILENCE (05-11): the try is marked before the send and `sentAt`
+       right after, so a keeper that stopped in between looks in Sent before sending again; a final
+       refusal (5xx), or 30 tries, ends it with a notice to the agent and the person (the draft stays
+       in Drafts); a message that leaves more than 10 minutes late says so too. */
+    let host = null; let later = []; let sent = [];
     const laterFile = () => join(host.dir, 'mail-later.json');
-    function keep() {
-        if (!host) return;
-        const tmp = `${laterFile()}.tmp`;
-        writeFileSync(tmp, JSON.stringify(later, null, 1), { mode: 0o600 });
-        renameSync(tmp, laterFile());
-    }
+    const sentFile = () => join(host.dir, 'mail-sent.json');
+    const save = (file, list) => { const tmp = `${file}.tmp`; writeFileSync(tmp, JSON.stringify(list, null, 1), { mode: 0o600 }); renameSync(tmp, file); };
+    function keep() { if (host) save(laterFile(), later); }
+    function keepSent() { if (host) save(sentFile(), sent); }
+    const LATE_MS = 10 * 60_000;
+    const tell = (rec, kind, text, ref) => { try { host.notice?.({ agent: rec.agent, target: { id: rec.target, title: host.target(rec.target)?.title }, kind, text, ref }); } catch { /* journaled by the tick anyway */ } };
     async function sendDue(rec) {
         const target = host.target(rec.target);
         if (!target) return 'its mailbox is gone';
         const ctx = host.ctx(target, rec.agent);
-        const found = await withImap(target, ctx, async (imap) => {
-            await imap.command(`SELECT ${quoted(rec.box)}`, 'the drafts folder could not be opened');
-            const uid = searchUids(await imap.command(`UID SEARCH HEADER Message-ID ${quoted(rec.id)}`, 'the drafts could not be searched'))[0];
-            if (!uid) return null;
-            const lines = await imap.command(`UID FETCH ${uid} (BODY.PEEK[])`, 'the scheduled message could not be read');
-            const fetched = lines.find((l) => /^\* \d+ FETCH/i.test(l)) ?? '';
-            const cut = fetched.indexOf('\n');
-            return cut < 0 ? null : { uid, raw: fetched.slice(cut + 1).replace(/\)\s*$/, '') };
-        });
-        if (!found) return 'cancelled';
-        const raw = found.raw.replace(/^Date: .*$/m, `Date: ${new Date(host.now()).toUTCString()}`);
-        await deliver(target, ctx, {}, { to: rec.to, cc: rec.cc, bcc: rec.bcc, raw, attachments: [] });
+        if (!rec.sentAt) {
+            const found = await withImap(target, ctx, async (imap) => {
+                await imap.command(`SELECT ${quoted(rec.box)}`, 'the drafts folder could not be opened');
+                const uid = searchUids(await imap.command(`UID SEARCH HEADER Message-ID ${quoted(rec.id)}`, 'the drafts could not be searched'))[0];
+                if (!uid) return null;
+                const lines = await imap.command(`UID FETCH ${uid} (BODY.PEEK[])`, 'the scheduled message could not be read');
+                const fetched = lines.find((l) => /^\* \d+ FETCH/i.test(l)) ?? '';
+                const cut = fetched.indexOf('\n');
+                return cut < 0 ? null : { uid, raw: fetched.slice(cut + 1).replace(/\)\s*$/, '') };
+            });
+            if (!found) return 'cancelled';
+            /* A try begun before (a keeper stopped mid-send, a server silent after the message): in Sent already? */
+            const already = rec.trying ? await withImap(target, ctx, async (imap) => hasMessage(imap, await sentOf(imap), rec.id)).catch(() => false) : false;
+            if (!already) {
+                rec.trying = host.now(); keep();
+                const raw = found.raw.replace(/^Date: .*$/m, `Date: ${new Date(host.now()).toUTCString()}`);
+                await deliver(target, ctx, {}, { to: rec.to, cc: rec.cc, bcc: rec.bcc, raw, attachments: [] });
+            }
+            rec.sentAt = host.now(); keep();
+        }
         await withImap(target, ctx, async (imap) => {
             await imap.command(`SELECT ${quoted(rec.box)}`, 'the drafts folder could not be opened');
-            await imap.command(`UID STORE ${found.uid} +FLAGS (\\Deleted)`, 'the sent draft could not be removed');
-            await imap.command(`UID EXPUNGE ${found.uid}`, 'the sent draft could not be removed');
-        }).catch(() => { /* sent; a leftover draft is only clutter */ });
+            const uid = searchUids(await imap.command(`UID SEARCH HEADER Message-ID ${quoted(rec.id)}`, 'the drafts could not be searched'))[0];
+            if (!uid) return;
+            await imap.command(`UID STORE ${uid} +FLAGS (\\Deleted)`, 'the sent draft could not be removed');
+            await imap.command(`UID EXPUNGE ${uid}`, 'the sent draft could not be removed');
+        }, { write: true }).catch(() => { /* sent; a leftover draft is only clutter */ });
         return 'sent';
     }
+
+    /* ---------- a mail that comes back (bounces) ----------
+       "Sent" only means the server accepted it. Each mail sent is watched for 48 h (every 2 minutes
+       the first hour, then every 15): the INBOX is searched for delivery reports since it left, a
+       report is tied to the mail by its Message-ID (or, for one sent by Microsoft through a reply,
+       by its subject and recipient), and each recipient that failed, or is delayed, is told to the
+       agent and the person (a notice). A delay keeps the watch on, every 6 hours, up to 5 days. */
+    const WATCH_MS = 48 * 3600_000;
+    const DELAYED_MS = 5 * 86_400_000 + 3600_000;
+    const WATCH_TEXT = ' Tether watches for a return for 48 h: a mail that comes back is told to you (and to the person).';
+    function watch(target, agent, { id, to, subject, from } = {}) {
+        if (!host || !agent) return '';
+        const at = Math.max(host.now(), Number(from) || 0);
+        sent.push({ id: id || null, target: target.id, agent, to: [...new Set((to ?? []).map((x) => String(x).toLowerCase()))], subject: String(subject ?? ''), sentAt: at, until: at + WATCH_MS, next: at + 2 * 60_000, told: [] });
+        sent = sent.slice(-500); keepSent();
+        return WATCH_TEXT;
+    }
+    const looked = new Map();   // target.id -> Map(message key -> bounce or null): a report read once
+    async function imapBounces(target, ctx, since) {
+        const seen = looked.get(target.id) ?? new Map(); looked.set(target.id, seen);
+        return withImap(target, ctx, async (imap) => {
+            await imap.command('EXAMINE "INBOX"', 'the inbox could not be opened');
+            const uids = searchUids(await imap.command(`UID SEARCH SINCE ${imapDate(since)} OR OR OR FROM "mailer-daemon" FROM "postmaster" FROM "microsoftexchange" HEADER Content-Type "delivery-status"`, 'the inbox could not be searched')).slice(-30);
+            const out = [];
+            for (const uid of uids) {
+                if (!seen.has(uid)) {
+                    const lines = await imap.command(`UID FETCH ${uid} (BODY.PEEK[]<0.${READ_MAX}>)`, 'a report could not be read');
+                    const fetched = lines.find((l) => /^\* \d+ FETCH/i.test(l)) ?? '';
+                    const cut = fetched.indexOf('\n');
+                    seen.set(uid, cut < 0 ? null : readBounce(fetched.slice(cut + 1).replace(/\)\s*$/, '')));
+                }
+                if (seen.get(uid)) out.push(seen.get(uid));
+            }
+            return out;
+        });
+    }
+    async function graphBounces(target, ctx, since) {
+        const seen = looked.get(target.id) ?? new Map(); looked.set(target.id, seen);
+        const out = [];
+        for (const { id, raw } of await gmail.reports(target, ctx, since, (key) => seen.has(key))) seen.set(id, raw === null ? null : readBounce(raw));
+        for (const b of seen.values()) if (b) out.push(b);
+        return out;
+    }
+    function match(rec, b) {
+        if (rec.id && b.raw.includes(rec.id)) return true;
+        const subj = rec.subject.trim();
+        return subj.length >= 3 && (b.subject.includes(subj) || b.raw.includes(`Subject: ${subj}`)) && b.recipients.some((r) => rec.to.includes(r.to));
+    }
+    async function scanBounces() {
+        const now = host.now();
+        const before = sent.length;
+        sent = sent.filter((r) => r.until > now && host.target(r.target));
+        const due = sent.filter((r) => r.next <= now);
+        let changed = before !== sent.length;
+        for (const id of new Set(due.map((r) => r.target))) {
+            const target = host.target(id);
+            const recs = due.filter((r) => r.target === id);
+            const since = new Date(Math.min(...recs.map((r) => r.sentAt)) - 86_400_000);
+            let found;
+            try { found = isGraph(target) ? await graphBounces(target, host.ctx(target, recs[0].agent), since) : await imapBounces(target, host.ctx(target, recs[0].agent), since); }
+            catch { for (const r of recs) r.next = now + 15 * 60_000; changed = true; continue; }
+            for (const rec of recs) {
+                for (const b of found.filter((x) => match(rec, x))) {
+                    const subject = rec.subject || b.subject;
+                    const list = b.recipients.length ? b.recipients.filter((r) => isFinal(r) || isDelay(r)) : rec.to.map((to) => ({ to, action: b.delayed ? 'delayed' : 'failed', status: '', diag: '' }));
+                    for (const r of list) {
+                        const final = isFinal(r) || !isDelay(r);
+                        const key = `${final ? 'failed' : 'delayed'}:${r.to}`;
+                        if (rec.told.includes(key)) continue;
+                        rec.told.push(key);
+                        const why = [r.status, r.diag].filter(Boolean).join(' ') || 'the server sent it back';
+                        if (final) tell(rec, 'mail.bounced', `The mail "${subject}" to ${r.to} was NOT delivered: ${why}.`, rec.id);
+                        else {
+                            rec.until = Math.max(rec.until, rec.sentAt + DELAYED_MS); rec.delayed = true;
+                            tell(rec, 'mail.delayed', `The mail "${subject}" to ${r.to} is delayed (${why}): its server keeps trying; Tether keeps watching until it is delivered or returned.`, rec.id);
+                        }
+                    }
+                }
+                rec.next = now + (rec.delayed ? 6 * 3600_000 : now - rec.sentAt < 3600_000 ? 2 * 60_000 : 15 * 60_000);
+            }
+            changed = true;
+        }
+        if (changed) keepSent();
+    }
+
+    /* A mail Microsoft sent: watched like the others (its ref, its recipients, its time). */
+    const graphSent = (target, ctx, r) => { const { watch: w, ...rest } = r; if (w) rest.text += watch(target, ctx.agent, w); return rest; };
+
     let ticking = false;
     async function tick() {
         if (!host || ticking) return;
@@ -469,13 +630,17 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
             for (const rec of later.filter((r) => r.when <= host.now())) {
                 if (host.stopped(rec.agent)) continue;
                 const target = host.target(rec.target);
-                let outcome; let error;
-                try { outcome = await sendDue(rec); } catch (e) { error = e?.message ?? String(e); }
-                if (error && ++rec.tries < 30) { keep(); continue; }   /* a server away: tried again next minute */
+                let outcome; let error; let final = false;
+                try { outcome = await sendDue(rec); } catch (e) { error = e?.message ?? String(e); final = e?.permanent === true; }
+                if (error && !final && ++rec.tries < 30) { keep(); continue; }   /* a server away: tried again next minute */
                 later = later.filter((r) => r !== rec); keep();
+                const late = outcome === 'sent' && host.now() - rec.when > LATE_MS;
                 host.note({ agent: { id: rec.agent, name: rec.agent }, target: { id: rec.target, title: target?.title }, verb: 'mail.send', detail: `later, to ${rec.to.join(', ')}: ${rec.subject}`,
                     decision: 'yes', because: 'later', ok: outcome === 'sent', ...(outcome === 'sent' ? {} : { error: error ?? (outcome === 'cancelled' ? 'cancelled: the draft was deleted' : outcome) }) });
+                if (error) tell(rec, 'mail.later-failed', `The mail "${rec.subject}" to ${rec.to.join(', ')}, to leave at ${wallClock(new Date(rec.when))}, could NOT be sent: ${error}. It is still in ${rec.box}.`, rec.id);
+                else if (late) tell(rec, 'mail.later-late', `The mail "${rec.subject}" to ${rec.to.join(', ')}, due at ${wallClock(new Date(rec.when))}, left late, at ${wallClock(new Date(host.now()))} (the keeper was not running at its time).`, rec.id);
             }
+            await scanBounces().catch(() => { /* looked again next minute */ });
         } finally { ticking = false; }
     }
 
@@ -579,7 +744,7 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
                 await imap.command(`SELECT ${quoted(boxOf(target))}`, 'that mailbox could not be opened');
                 await imap.command(`UID MOVE ${uid} ${quoted(String(a.mailbox))}`, 'that message could not be moved (the destination folder may not exist)');
                 return { text: `Moved #${uid} to ${a.mailbox}.`, size: 0 };
-            });
+            }, { write: true });
         },
         /* Mark a message read/unread or flagged/unflagged. */
         async 'mail.flag'(target, a, ctx) {
@@ -617,14 +782,14 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
                     await imap.command(`UID EXPUNGE ${uid}`, 'that message was copied to the Trash but could not be removed from its folder');
                 }
                 return { text: `Deleted #${uid}: moved to ${trash.shown}${trash.made ? ' (made, there was none)' : ''}, where it can be restored.`, size: 0 };
-            });
+            }, { write: true });
         },
         /* Send a message. A provider signs in to SMTP with XOAUTH2; a classic box with
            LOGIN on its SMTP server. The message is built from the fields -- nothing an
            agent wrote becomes a header or a command. With draft, it is kept in the
            Drafts folder instead, for a person to look at and send. */
         async 'mail.send'(target, a, ctx) {
-            if (isGraph(target)) return gmail.send(target, a, ctx);
+            if (isGraph(target)) return graphSent(target, ctx, await gmail.send(target, a, ctx));
             const to = listOf(a.to);
             if (!to.length) no('send needs a recipient (to)');
             return deliver(target, ctx, a, { to, cc: listOf(a.cc), bcc: listOf(a.bcc), subject: a.subject, ...words(target, a), attachments: added(a) });
@@ -633,7 +798,7 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
            all, also to everyone it went to but this mailbox. The original is quoted
            under the answer. Files of the original are not sent back; new ones may be. */
         async 'mail.reply'(target, a, ctx) {
-            if (isGraph(target)) return gmail.reply(target, a, ctx);
+            if (isGraph(target)) return graphSent(target, ctx, await gmail.reply(target, a, ctx));
             const user = userOf(target).toLowerCase();
             const o = await original(target, ctx, a, READ_MAX);
             const self = (x) => x === user;
@@ -653,7 +818,7 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
            files -- all of them by default, none with keep "none", or some by name.
            Too large to carry whole: refused, never forwarded with files missing. */
         async 'mail.forward'(target, a, ctx) {
-            if (isGraph(target)) return gmail.forward(target, a, ctx);
+            if (isGraph(target)) return graphSent(target, ctx, await gmail.forward(target, a, ctx));
             const to = listOf(a.to);
             if (!to.length) no('forward needs a recipient (to)');
             const none = /^(none|false|no)$/i.test(String(a.keep ?? '').trim());
@@ -687,7 +852,9 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
         wake(h) {
             host = { now: () => Date.now(), stopped: () => false, note: () => {}, ...h };
             try { later = JSON.parse(readFileSync(laterFile(), 'utf8')); if (!Array.isArray(later)) later = []; } catch { later = []; }
+            try { sent = JSON.parse(readFileSync(sentFile(), 'utf8')); if (!Array.isArray(sent)) sent = []; } catch { sent = []; }
         },
+        watched: () => sent.map((r) => ({ ...r })),
         tick,
         later: () => later.map((r) => ({ ...r })),
         run(verb, target, a, ctx) {
