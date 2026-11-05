@@ -409,9 +409,11 @@ test('loop 40: no answer to OPTIONS is never "not told": the act refuses, and as
 
 test('loop 41: a server error on OPTIONS is no answer (refused, asked again), never "does not schedule"', async () => {
     const s = davServer(); let bad = true;
-    const f = async (url, o = {}) => ((o.method || 'GET') === 'OPTIONS' ? (bad ? new Response('', { status: 503 }) : new Response(null, { status: 200, headers: { dav: '1, calendar-auto-schedule' } })) : s.fetch(url, o));
+    const f = async (url, o = {}) => ((o.method || 'GET') === 'OPTIONS' ? (bad ? new Response('', { status: bad === true ? 503 : bad }) : new Response(null, { status: 200, headers: { dav: '1, calendar-auto-schedule' } })) : s.fetch(url, o));
     const c = calendar({ fetch: f });
     await assert.rejects(c.run('calendar.create', T, { title: 'x', start: '2030-11-04T10:00', end: '2030-11-04T11:00', with: 'a@example.org' }, ctx()), /answered 503\) -- nothing was done/);
+    bad = 429;
+    await assert.rejects(c.run('calendar.create', T, { title: 'x', start: '2030-11-04T10:00', end: '2030-11-04T11:00', with: 'a@example.org' }, ctx()), /answered 429\) -- nothing was done/);
     bad = false;
     assert.match((await c.run('calendar.create', T, { title: 'x', start: '2030-11-04T10:00', end: '2030-11-04T11:00', with: 'a@example.org' }, ctx())).text, /sent by the calendar server/);
 });

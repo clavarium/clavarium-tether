@@ -211,7 +211,7 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
            the act asks first (ready() below), so it refuses rather than say the others are not told. */
         const res = await davRequest(target, ctx)('OPTIONS', await folderOf(target, ctx));
         /* A server error is no answer (loop 41); a 4xx means it does not offer OPTIONS, so it announces no scheduling. */
-        if (res.status >= 500) throw new Error(`the server answered ${res.status}`);
+        if (res.status >= 500 || res.status === 408 || res.status === 429) throw new Error(`the server answered ${res.status}`);   /* "try later" too (loop 42) */
         const yes = /calendar-auto-schedule/i.test(res.headers?.get?.('dav') ?? '');
         scheduling.set(target.id, yes);
         return yes;
