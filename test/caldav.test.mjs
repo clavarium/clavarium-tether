@@ -352,11 +352,18 @@ test('loop 28: deleting an invitation where you are the only attendee says the o
     assert.match((await run(s, 'calendar.delete', { id: '/cal/me/work/i.ics' })).text, /You were invited \(organiser boss@example\.com\)/);
 });
 
-test('loop 28: a category rename says dates of a series changed on their own keep it', async () => {
+test('loop 28-29: a category rename reaches every VEVENT, dates changed on their own included', async () => {
     const s = davServer();
     const text = ev('r', 'Point', '20301104T080000Z', 'RRULE:FREQ=WEEKLY;COUNT=4\r\nCATEGORIES:Client\r\n')
         .replace('END:VCALENDAR', 'BEGIN:VEVENT\r\nUID:r\r\nRECURRENCE-ID:20301111T080000Z\r\nSUMMARY:x\r\nDTSTART:20301112T080000Z\r\nCATEGORIES:Client\r\nEND:VEVENT\r\nEND:VCALENDAR');
     s.files.set('/cal/me/work/r.ics', { text, etag: '"1"' });
     const r = await run(s, 'calendar.category-rename', { name: 'Client', to: 'Clients' });
-    assert.match(r.text, /1 date of a series changed on its own keeps it\./);
+    assert.match(r.text, /Renamed "Client" to "Clients" on 3 events/);
+    const after = s.files.get('/cal/me/work/r.ics').text;
+    assert.equal((after.match(/^CATEGORIES:Clients$/gm) ?? []).length, 2, 'the series and its date changed on its own');
+    /* only a date changed on its own wears it: found and changed too */
+    const only = ev('o', 'Point', '20301104T080000Z', 'RRULE:FREQ=WEEKLY;COUNT=4\r\n').replace('END:VCALENDAR', 'BEGIN:VEVENT\r\nUID:o\r\nRECURRENCE-ID:20301111T080000Z\r\nSUMMARY:x\r\nDTSTART:20301112T080000Z\r\nCATEGORIES:Congé\r\nEND:VEVENT\r\nEND:VCALENDAR');
+    s.files.set('/cal/me/work/o.ics', { text: only, etag: '"1"' });
+    assert.match((await run(s, 'calendar.category-delete', { name: 'congé' })).text, /Removed the category "congé" from 1 event/);
+    assert.doesNotMatch(s.files.get('/cal/me/work/o.ics').text, /Congé/);
 });

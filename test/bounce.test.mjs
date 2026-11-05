@@ -370,4 +370,6 @@ test('loop 28: an IMAP mark whose line is lost says it may have been done; the f
     const t = imapBox({ hooks: { structure: '(("text" "plain" NIL NIL NIL "7bit" 5 1)("application" "pdf" ("name" "devis.pdf") NIL NIL "base64" 400 NIL ("attachment" ("filename" "devis.pdf"))) "mixed")' } });
     const about = await mail({ connect: t.connect }).describe('mail.forward', BOX, { uid: '1', to: 'x@example.com' }, ctx());
     assert.deepEqual(about.files, [{ name: 'devis.pdf' }]);
+    const u = imapBox({ hooks: { structure: '(("text" "plain" NIL NIL NIL "7bit" 5 1)("application" "octet-stream" NIL NIL NIL "base64" 400 NIL ("attachment" NIL)) "mixed")' } });
+    assert.deepEqual((await mail({ connect: u.connect }).describe('mail.forward', BOX, { uid: '1', to: 'x@example.com' }, ctx())).files, [{ name: '1 more file (name not readable here)' }]);
 });

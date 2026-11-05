@@ -25,7 +25,7 @@ import { no, Refused } from '../../server/verbs.mjs';
 import { readFileSync, writeFileSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
 import { refreshAccess, thunderbird, PROVIDERS } from '../oauth.mjs';
-import { discover, responses, props, prop, setProps, eventOf, newEvent, newUid, escapeText, timeLine, stamp, localToUtc, TZ as DAV_TZ } from '../dav.mjs';
+import { discover, responses, props, prop, setProps, eventOf, newEvent, newUid, escapeText, unescapeText, timeLine, stamp, localToUtc, TZ as DAV_TZ } from '../dav.mjs';
 
 const LIST_MAX = 200;           /* events a list returns at most, then it says so (a year holds many) */
 const TZ = 'Europe/Paris';      /* the person's timezone: events are shown and created in it, not UTC */
@@ -430,21 +430,25 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
             if (!want) no('say which category (its name)');
             if (a.color !== undefined) no(`${target.title}: this calendar keeps no colour for categories`);
             if (to !== null && !String(to ?? '').trim()) no('rename needs a new name (--to)');
+            /* Every VEVENT of a resource is read and changed: a series AND its dates changed on their own (loop 29). */
+            const blocksOf = (text) => [...String(text).matchAll(/BEGIN:VEVENT\r?\n[\s\S]*?END:VEVENT/gi)].map((m) => m[0]);
+            const catsOf = (block) => props(block, 'CATEGORIES').flatMap((p) => p.value.split(/(?<!\\),/).map((c) => unescapeText(c).trim())).filter(Boolean);
+            const wears = (block) => catsOf(block).some((c) => c.toLowerCase() === want);
             let n = 0;
-            const wearing = (await davEvents(target, ctx, { ...yearAround(), expand: false })).filter((ev) => eventOf(ev.text).categories.some((c) => c.toLowerCase() === want));
+            const wearing = (await davEvents(target, ctx, { ...yearAround(), expand: false })).filter((ev) => blocksOf(ev.text).some(wears));
             for (const ev of wearing) {
-                const cats = eventOf(ev.text).categories;
-                const next = [...new Set(cats.flatMap((c) => (c.toLowerCase() === want ? (to === null ? [] : [String(to).trim()]) : [c])))];
+                let text = ev.text;
+                for (const block of blocksOf(ev.text).filter(wears)) {
+                    const next = [...new Set(catsOf(block).flatMap((c) => (c.toLowerCase() === want ? (to === null ? [] : [String(to).trim()]) : [c])))];
+                    text = text.replace(block, setProps(block, 'CATEGORIES', next.length ? [`CATEGORIES:${next.map(escapeText).join(',')}`] : []).replace(/\r\n$/, ''));
+                }
                 /* One event at a time: a failure in the middle says how far it went (#23); asking again does the rest. */
-                try { await davPut(target, ctx, new URL(ev.href, await folderOf(target, ctx)).href, setProps(ev.text, 'CATEGORIES', next.length ? [`CATEGORIES:${next.map(escapeText).join(',')}`] : []), { etag: ev.etag }); }
+                try { await davPut(target, ctx, new URL(ev.href, await folderOf(target, ctx)).href, text, { etag: ev.etag }); }
                 catch (e) { if (!n) throw e; no(`${e?.message ?? 'an event was not changed'} -- done on ${n} of ${wearing.length} events; asking again does the rest`); }
                 n++;
             }
             if (!n) no(`${target.title}: no event wears the category "${a.name}"`);
-            /* Dates of a series changed on their own carry their own labels: not changed here, said (loop 28). */
-            const own = wearing.reduce((k, ev) => k + ev.text.replace(/\r?\n[ \t]/g, '').split(/BEGIN:VEVENT/i).slice(2).filter((b) => /^RECURRENCE-ID/im.test(b) && new RegExp(`^CATEGORIES[^:]*:.*\\b${want.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'im').test(b)).length, 0);
-            const ownSaid = own ? ` ${own} date${own === 1 ? '' : 's'} of a series changed on ${own === 1 ? 'its' : 'their'} own keep${own === 1 ? 's' : ''} it.` : '';
-            return { text: `${to === null ? `Removed the category "${a.name}" from` : `Renamed "${a.name}" to "${String(to).trim()}" on`} ${n} event${n === 1 ? '' : 's'}, from a year ago to two years ahead (events outside that window keep it).${ownSaid}`, size: 0 };
+            return { text: `${to === null ? `Removed the category "${a.name}" from` : `Renamed "${a.name}" to "${String(to).trim()}" on`} ${n} event${n === 1 ? '' : 's'}, from a year ago to two years ahead (events outside that window keep it).`, size: 0 };
         },
         /* Others' availability: the scheduling outbox (RFC 6638), where the server
            has one; it answers busy blocks only. */
