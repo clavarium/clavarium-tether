@@ -327,6 +327,9 @@ test('send later (IMAP): waits in Drafts, leaves at its time with its Bcc, then 
     assert.equal(m.messages.length, 1, 'sent at its time');
     assert.deepEqual(rcpts(m), ['bob@example.com', 'hidden@example.com'], 'the Bcc kept outside the message still receives it');
     assert.doesNotMatch(m.messages[0], /hidden@example\.com/);
+    /* What leaves is the message kept in Drafts, whole: its subject and its words (05-11: a rebuilt one left empty). */
+    assert.match(m.messages[0], /^Subject: Later$/m, 'its subject');
+    assert.match(partOf(m.messages[0], 'text/plain'), /Hi/, 'its words');
     assert.equal(s.kept.size, 0, 'taken out of Drafts');
     assert.equal(conn.later().length, 0);
     assert.equal(h.notes[0].ok, true);

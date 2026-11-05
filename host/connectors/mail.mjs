@@ -382,7 +382,8 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
         }
         if (Number(target.config?.smtpPort) > 0) port = Number(target.config.smtpPort);
         /* Built once: the same message (its Message-ID too) goes out and is kept in Sent. */
-        const raw = buildMessage({ ...m, from: user });
+        /* A message already made (a scheduled one, fetched back from Drafts: m.raw) goes as it is. */
+        const raw = m.raw ? String(m.raw) : buildMessage({ ...m, from: user });
         try {
             await smtpSend({ host: server, port, auth, from: user, to: m.to, cc: m.cc, bcc: m.bcc, raw,
                 ...(smtpConnect ? { connect: smtpConnect } : {}), ...(smtpSecure ? { secure: smtpSecure } : {}) });
