@@ -322,3 +322,17 @@ test('loop 18: a keeper store that cannot be written never turns a done act into
     assert.match(e.message, /waits in Drafts, but could not be scheduled .* it will NOT leave by itself/);
     assert.equal(conn.later().length, 0);
 });
+
+test('loop 20: a scheduled mail whose APPEND line is lost says it is NOT scheduled; an empty single file is refused', async () => {
+    const s = imapBox({ hooks: { append: () => 'cut' } });
+    const conn = mail({ connect: s.connect }); conn.wake(hostOf(BOX, { t: Date.now() }).hand);
+    await assert.rejects(conn.run('mail.send', BOX, { to: 'bob@example.com', subject: 'l', body: 'x', at: new Date(Date.now() + 3600_000).toISOString() }, ctx()), /it is NOT scheduled and will not leave by itself/);
+    assert.equal(conn.later().length, 0);
+    const { check } = await import('../server/verbs.mjs');
+    assert.throws(() => check('mail.send', { target: 'm', to: 'a@example.com', subject: 's', body: 'b', attach: '', attachName: 'plan.pdf' }), /plan\.pdf: no bytes -- nothing was done/);
+});
+
+test('loop 20: that answer is headed Uncertain', async () => {
+    const { failed } = await import('../server/mcp.mjs');
+    assert.match(failed('Box: the line was lost while keeping it in Drafts -- it may have been kept there, but it is NOT scheduled and will not leave by itself'), /^Uncertain/);
+});

@@ -432,7 +432,11 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
                 const drafts = await draftsOf(imap);
                 await imap.append(drafts, '\\Draft \\Seen', raw, 'the message could not be kept for later');
                 return drafts;
-            }, { write: true });
+            }, { write: true }).catch((e) => {
+                /* Maybe kept in Drafts, but never scheduled: said so, never left to look scheduled (loop 20). */
+                if (/may have been done/.test(e?.message ?? '')) no(`${target.title}: the line was lost while keeping it in Drafts -- it may have been kept there, but it is NOT scheduled and will not leave by itself: look in Drafts and delete it before asking again`);
+                throw e;
+            });
             const rec = { id: messageId, target: target.id, agent: ctx.agent, when: at.getTime(), box, to: m.to, cc: m.cc, bcc: m.bcc, subject: String(m.subject ?? ''), tries: 0 };
             later.push(rec);
             /* The schedule kept on disk, or none at all: the draft is there already, said so (loop 18). */

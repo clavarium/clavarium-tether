@@ -233,6 +233,8 @@ export function check(verb, a = {}) {
             if (verb === 'mail.reply' && (a.all === true || a.all === 'true')) out.all = true;
             if (verb === 'mail.forward') str('keep', 1000);
             str('body', TEXT_MAX, true); str('cc', 1000); str('bcc', 1000); str('attach', TEXT_MAX, true); str('attachName', 200);
+            /* The one-file shorthand keeps the same promise as the list: a file with no bytes is refused (loop 20). */
+            if (out.attach !== undefined && !out.attach.trim()) no(`${out.attachName || 'attach'}: no bytes -- nothing was done: give the file's base64`);
             if (a.format !== undefined && a.format !== null && a.format !== '') {
                 const f = oneLine(a.format, 20).toLowerCase();
                 if (f !== 'markdown' && f !== 'text') no('format is markdown (the default) or text');
