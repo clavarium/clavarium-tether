@@ -375,3 +375,8 @@ test('loop 28: an IMAP mark whose line is lost says it may have been done; the f
     const v = imapBox({ hooks: { structure: '(("text" "plain" NIL NIL NIL "7bit" 5 1)("image" "png" ("name" "logo.png") NIL NIL "base64" 400 NIL ("inline" ("filename" "logo.png")))("application" "octet-stream" NIL NIL NIL "base64" 400 NIL ("attachment" NIL)) "mixed")' } });
     assert.deepEqual((await mail({ connect: v.connect }).describe('mail.forward', BOX, { uid: '1', to: 'x@example.com' }, ctx())).files, [{ name: 'logo.png' }, { name: '1 more file (name not readable here)' }]);
 });
+
+test('loop 31: a file whose name and filename both come as literals counts once', async () => {
+    const w = imapBox({ hooks: { structure: '(("text" "plain" NIL NIL NIL "7bit" 5 1)("application" "pdf" ("name" {9}\r\nété.pdf) NIL NIL "base64" 400 NIL ("attachment" ("filename" {9}\r\nété.pdf))) "mixed")' } });
+    assert.deepEqual((await mail({ connect: w.connect }).describe('mail.forward', BOX, { uid: '1', to: 'x@example.com' }, ctx())).files, [{ name: '1 more file (name not readable here)' }]);
+});

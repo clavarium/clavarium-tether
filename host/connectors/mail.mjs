@@ -890,7 +890,7 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
             const names = [...new Set([...l.matchAll(/"(?:file)?name\*?" "([^"]+)"/gi)].map((m) => decodeWords(m[1])))];
             /* A file with no name the card can read (none, or sent as a literal) is still counted: never "no files" by default (loop 29). */
             /* A forward takes every named part and every attachment: the unnamed attachments and the names sent as literals are counted (loop 30). */
-            const unread = (l.match(/\("attachment" NIL\)/gi) ?? []).length + (l.match(/"(?:file)?name\*?" \{\d+\}/gi) ?? []).length;
+            const unread = (l.match(/\("attachment" NIL\)/gi) ?? []).length + Math.max((l.match(/"filename\*?" \{\d+\}/gi) ?? []).length, (l.match(/"name\*?" \{\d+\}/gi) ?? []).length);   /* one part often carries both */
             const files = [...names.map((name) => ({ name })), ...(unread ? [{ name: `${unread} more file${unread === 1 ? '' : 's'} (name not readable here)` }] : [])];
             return { from: decodeWords(headerOf(block, 'From')), subject: decodeWords(headerOf(block, 'Subject')), date: headerOf(block, 'Date'), ...(files.length ? { files } : {}) };
         });
