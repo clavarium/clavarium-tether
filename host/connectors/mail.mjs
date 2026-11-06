@@ -25,7 +25,7 @@
  * verbs reimplemented here so the token stays host-side and the levels gate them.
  */
 import { connect as tlsConnect } from 'node:tls';
-import { no, Refused, asDate } from '../../server/verbs.mjs';
+import { no, Refused, asDate, mailRef, readMailRef } from '../../server/verbs.mjs';
 import { refreshAccess, thunderbird, xoauth2, PROVIDERS } from '../oauth.mjs';
 import { Exchange, quoted, imapDate } from '../imap.mjs';
 import { send as smtpSend, buildMessage, address } from '../smtp.mjs';
@@ -41,7 +41,9 @@ const LIST_MAX = 30;            /* messages a list returns at most */
 const READ_MAX = 512 * 1024;    /* bytes of one message read at once */
 const SOURCE_MAX = 4 * 1024 * 1024; /* bytes of a raw source or attachment download */
 const FORWARD_MAX = 24 * 1024 * 1024; /* bytes of an original forwarded with its files */
-const SESSION_MAX = 32 * 1024 * 1024; /* bytes a whole IMAP session may receive */
+const SESSION_MAX = 32 * 1024 * 1024; /* bytes one verb may receive over a session */
+/* A mail opened by its reference for a person (a page's viewer): read whole up to this, as the viewer shows it. */
+export const OPEN_MAX = 25 * 1024 * 1024;
 const SINCE_DAYS = 30;          /* a bare list looks back this far */
 
 /* A header's unfolded value from a BODY.PEEK[HEADER.FIELDS (...)] block. */
@@ -295,6 +297,7 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
         const id = target.id;
         let s = sessions.get(id);
         if (s) clearTimeout(s.timer); else { const o = await open(target, ctx); s = { imap: o.imap, socket: o.socket }; sessions.set(id, s); }
+        s.imap.fresh?.();
         try { const r = await fn(s.imap); warm(id, s); return r; }
         catch (e) { if (e instanceof Refused) { warm(id, s); } else { drop(id); } throw e; }
     }
@@ -325,9 +328,10 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
     /* The briefs of many messages in ONE fetch, not one round-trip each: fetching
        them one by one made a list of 30 take minutes. The blocks come back in the
        server's order, so they are mapped by uid and returned in the caller's. */
-    async function brief(imap, uids) {
+    /* Each with its reference (mail:TARGET/MESSAGE-ID), for the agent to cite as it is. */
+    async function brief(imap, uids, target, box) {
         if (!uids.length) return [];
-        const lines = await imap.command(`UID FETCH ${uids.join(',')} (UID INTERNALDATE BODY.PEEK[HEADER.FIELDS (FROM SUBJECT DATE)])`, 'the messages could not be read');
+        const lines = await imap.command(`UID FETCH ${uids.join(',')} (UID INTERNALDATE BODY.PEEK[HEADER.FIELDS (FROM SUBJECT DATE MESSAGE-ID)])`, 'the messages could not be read');
         const byUid = new Map();
         for (const l of lines) {
             if (!/^\* \d+ FETCH/i.test(l)) continue;
@@ -336,7 +340,8 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
             const cut = l.indexOf('\n');
             const block = cut >= 0 ? l.slice(cut + 1) : '';
             const when = /INTERNALDATE "([^"]+)"/i.exec(l)?.[1] ?? headerOf(block, 'Date');
-            byUid.set(uid, `#${uid}  ${when}\n  From: ${headerOf(block, 'From')}\n  Subject: ${headerOf(block, 'Subject')}`);
+            const ref = target ? mailRef(target.id, headerOf(block, 'Message-ID'), { folder: box, uid }) : '';
+            byUid.set(uid, `#${uid}  ${when}\n  From: ${headerOf(block, 'From')}\n  Subject: ${headerOf(block, 'Subject')}${ref ? `\n  ref: ${ref}` : ''}`);
         }
         return uids.map((u) => byUid.get(u)).filter(Boolean);
     }
@@ -501,7 +506,8 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
             } catch (e) { kept = ` (Sent, but its copy could not be kept in Sent: ${e?.message ?? 'IMAP refused it'}.)`; }
         }
         const watched = watch(target, ctx.agent, { id: messageId, to: [...m.to, ...m.cc, ...m.bcc], subject: m.subject ?? decodeWords(headerOf(splitHead(raw)[0], 'Subject')) });
-        return { text: `Sent to ${m.to.join(', ')}${copies}${files} (accepted by the server; Message-ID ${messageId}).${kept}${watched}`, size: 0 };
+        const ref = messageId ? mailRef(target.id, messageId) : '';
+        return { text: `Sent to ${m.to.join(', ')}${copies}${files} (accepted by the server; Message-ID ${messageId}${ref ? `; ref: ${ref}` : ''}).${kept}${watched}`, size: 0 };
     }
 
     /* ---------- messages to send later (IMAP/SMTP) ----------
@@ -707,7 +713,7 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
                 const found = await imap.command(`UID SEARCH ${span.join(' ')}`, 'the mailbox could not be searched');
                 const all = searchUids(found);
                 const uids = all.slice(-LIST_MAX).reverse();
-                const items = await brief(imap, uids);
+                const items = await brief(imap, uids, target, boxOf(target, a.mailbox));
                 const empty = since || before ? 'No message in that range.' : 'No message in the last 30 days.';
                 /* Never cap in silence: if the window held more, say so and how to move it. */
                 const more = all.length > LIST_MAX ? `\n\n(Showing the ${LIST_MAX} most recent of ${all.length} in this window — use since/before to move it.)` : '';
@@ -727,7 +733,9 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
                 const cut = fetched.indexOf('\n');
                 if (cut < 0) no('no such message');
                 const raw = fetched.slice(cut + 1).replace(/\)\s*$/, '');
-                const text = renderMessage(raw);
+                /* Its reference first: what the agent cites, and what opens it again wherever it is moved. */
+                const ref = mailRef(target.id, headerOf(splitHead(raw)[0], 'Message-ID'), { folder: boxOf(target, a.mailbox), uid });
+                const text = `${ref ? `ref: ${ref}\n` : ''}${renderMessage(raw)}`;
                 /* The fetch is bounded; if it filled, say the message was longer. */
                 const cut2 = Buffer.byteLength(raw) >= READ_MAX ? `\n\n(Large message — showing the first ${Math.round(READ_MAX / 1024)} KB.)` : '';
                 return { text: text + cut2, size: Buffer.byteLength(text + cut2) };
@@ -747,6 +755,64 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
                 const more = Buffer.byteLength(raw) >= SOURCE_MAX ? `\n\n(Large message — first ${Math.round(SOURCE_MAX / 1024)} KB of the source.)` : '';
                 return { text: raw + more, size: Buffer.byteLength(raw) };
             });
+        },
+        /* A MAIL BY ITS REFERENCE (mail:TARGET/MESSAGE-ID), wherever it is now: its raw source, as mail.source
+           gives it. The hint (folder + uid) is tried first and checked against the Message-ID; then the folders
+           are searched by Message-ID (the one that holds every mail first, as Gmail's All Mail; then the
+           inbox; then the rest). A mail found nowhere is said gone. A person's read (ctx.person, a page's
+           viewer) gets its bytes whole up to OPEN_MAX; an agent, its text up to SOURCE_MAX, as mail.source. */
+        async 'mail.open'(target, a, ctx) {
+            const ref = readMailRef(a.ref);
+            if (!ref) no('ref is a mail reference, like mail:TARGET/MESSAGE-ID');
+            if (isGraph(target)) return gmail.open(target, ref, ctx);
+            const max = ctx?.person ? OPEN_MAX : SOURCE_MAX;
+            const found = await withImap(target, ctx, async (imap) => {
+                const fetchRaw = async (uid) => {
+                    const lines = await imap.command(`UID FETCH ${uid} (BODY.PEEK[]<0.${max}>)`, 'that message could not be read', { binary: true });
+                    const fetched = lines.find((l) => /^\* \d+ FETCH/i.test(l)) ?? '';
+                    const cut = fetched.indexOf('\n');
+                    return cut < 0 ? null : fetched.slice(cut + 1).replace(/\)\s*$/, '');
+                };
+                const same = (v) => String(v ?? '').trim().toLowerCase() === ref.messageId.toLowerCase();
+                /* Where it was seen, if it is still there. A folder gone, a uid that is another mail now: searched. */
+                if (ref.folder && /^\d+$/.test(ref.uid ?? '')) {
+                    try {
+                        await imap.command(`EXAMINE ${quoted(ref.folder)}`, 'that folder could not be opened');
+                        const lines = await imap.command(`UID FETCH ${Number(ref.uid)} (BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)])`, 'that message could not be read');
+                        const l = lines.find((x) => /^\* \d+ FETCH/i.test(x)) ?? '';
+                        if (same(headerOf(l.slice(l.indexOf('\n') + 1), 'Message-ID'))) {
+                            const raw = await fetchRaw(Number(ref.uid));
+                            if (raw !== null) return { raw, folder: ref.folder, uid: Number(ref.uid) };
+                        }
+                    } catch (e) { if (/did not answer in time|closed the connection|cannot be reached|sent more than/.test(e?.message ?? '')) throw e; }
+                }
+                const listed = (await imap.command('LIST "" "*"', 'the folders could not be listed')).filter((l) => /^\* LIST/i.test(l))
+                    .map((l) => ({ flags: /^\* LIST \(([^)]*)\)/i.exec(l)?.[1] ?? '', name: (/"((?:[^"\\]|\\.)*)"\s*$/.exec(l)?.[1] ?? /\s(\S+)$/.exec(l)?.[1] ?? '').replace(/\\(.)/g, '$1') }))
+                    .filter((b) => b.name && !/\\(Noselect|NonExistent)\b/i.test(b.flags));
+                const rank = (b) => (/\\All\b/i.test(b.flags) ? 0 : /^inbox$/i.test(b.name) ? 1 : b.name === ref.folder ? 2 : 3);
+                const order = [...listed].sort((x, y) => rank(x) - rank(y)).slice(0, 300);
+                if (!order.some((b) => /^inbox$/i.test(b.name))) order.splice(0, 0, { flags: '', name: 'INBOX' });
+                for (const b of order) {
+                    let uids;
+                    try {
+                        await imap.command(`EXAMINE ${quoted(b.name)}`, 'that folder could not be opened');
+                        uids = searchUids(await imap.command(`UID SEARCH HEADER Message-ID ${quoted(ref.messageId)}`, 'that folder could not be searched'));
+                    } catch (e) { if (/did not answer in time|closed the connection|cannot be reached|sent more than/.test(e?.message ?? '')) throw e; continue; }
+                    if (!uids.length) continue;
+                    const raw = await fetchRaw(uids.at(-1));
+                    if (raw !== null) return { raw, folder: b.name, uid: uids.at(-1) };
+                }
+                return null;
+            });
+            if (!found) throw Object.assign(new Refused(`${target.title}: this mail is no longer in the mailbox (deleted, or its folder is not reachable) -- ${ref.messageId}`), { code: 'gone' });
+            const bytes = Buffer.from(found.raw, 'latin1');
+            const cut = bytes.length >= max;
+            const shown = mutf7(found.folder);
+            const again = mailRef(target.id, ref.messageId, { folder: found.folder, uid: found.uid });
+            if (ctx?.person) return { text: `Found in ${shown}.`, size: bytes.length, raw: bytes, folder: shown, ref: again, cut };
+            const more = cut ? `\n\n(Large message — first ${Math.round(max / 1024)} KB of the source.)` : '';
+            const text = `${bytes.toString('utf8')}${more}\n\n(Found in ${shown}; ref: ${again}.)`;
+            return { text, size: bytes.length };
         },
         /* One attachment's bytes (base64), by its file name (or its 1-based number). */
         async 'mail.attachment'(target, a, ctx) {
@@ -777,7 +843,7 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
                 await imap.command(`EXAMINE ${quoted(boxOf(target, a.mailbox))}`, 'that mailbox could not be opened');
                 const found = await imap.command(`UID SEARCH TEXT ${quoted(a.text)}`, 'the mailbox could not be searched');
                 const uids = searchUids(found).slice(-LIST_MAX).reverse();
-                const items = await brief(imap, uids);
+                const items = await brief(imap, uids, target, boxOf(target, a.mailbox));
                 const text = items.length ? items.join('\n') : 'Nothing found.';
                 return { text, size: Buffer.byteLength(text) };
             });
@@ -896,7 +962,7 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
         const uid = numUid(a.uid);
         return withImap(target, ctx, async (imap) => {
             await imap.command(`EXAMINE ${quoted(boxOf(target, verb === 'mail.move' ? a.from : a.mailbox))}`, 'that mailbox could not be opened');
-            const lines = await imap.command(`UID FETCH ${uid} (BODYSTRUCTURE BODY.PEEK[HEADER.FIELDS (FROM REPLY-TO TO CC SUBJECT DATE)])`, 'that message could not be read');
+            const lines = await imap.command(`UID FETCH ${uid} (BODYSTRUCTURE BODY.PEEK[HEADER.FIELDS (FROM REPLY-TO TO CC SUBJECT DATE MESSAGE-ID)])`, 'that message could not be read');
             const l = lines.find((x) => /^\* \d+ FETCH/i.test(x)) ?? '';
             const block = l.slice(l.indexOf('\n') + 1);
             /* Its files by name, as Microsoft's card shows them: a person sees what a forward takes along (loop 28). */
@@ -921,7 +987,9 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
                 const bin = boxes.find((b) => /\\Trash\b/i.test(b.flags)) ?? boxes.find((b) => TRASH_NAMES.test(mutf7(b.name)));
                 forGood = Boolean(bin && bin.name.toLowerCase() === boxOf(target, a.mailbox).toLowerCase());
             }
-            return { from: decodeWords(headerOf(block, 'From')), subject: decodeWords(headerOf(block, 'Subject')), date: headerOf(block, 'Date'), ...(files.length ? { files } : {}), ...(replyTo ? { replyTo } : {}), ...(forGood ? { forGood: true } : {}) };
+            /* Its reference: the card can open the original wherever it is moved later. */
+            const ref = mailRef(target.id, headerOf(block, 'Message-ID'), { folder: boxOf(target, verb === 'mail.move' ? a.from : a.mailbox), uid });
+            return { from: decodeWords(headerOf(block, 'From')), subject: decodeWords(headerOf(block, 'Subject')), date: headerOf(block, 'Date'), ...(ref ? { ref } : {}), ...(files.length ? { files } : {}), ...(replyTo ? { replyTo } : {}), ...(forGood ? { forGood: true } : {}) };
         });
     }
 

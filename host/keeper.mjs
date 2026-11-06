@@ -17,6 +17,8 @@
  *   k.stop(agent?, by)            every target of an agent cut ("*" or none: everybody)
  *   k.journal({ agent, target, since, limit })
  *   k.act(op, args, who)          a person's change from the page, or an agent's call: Promise<{ ok, text, data }>
+ *   k.read(verb, args, by)        a person's read from the page (mail.open): never asked, journaled as theirs;
+ *                                 Promise<{ ok, text, data: { raw, folder, ref, cut... } | code }>
  *   k.onChange(fn)                something a page shows changed
  *   k.notice({ agent, target, kind, text, ref })   something that happened LATER (a mail returned,
  *                                 a scheduled send that failed): told to the agent and to the person
@@ -32,7 +34,7 @@ import { appendFileSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { openStore } from '../server/store.mjs';
-import { VERBS, Refused, check, detail as detailOf, no, oneLine } from '../server/verbs.mjs';
+import { VERBS, Refused, check, detail as detailOf, no, oneLine, isVerb, reads } from '../server/verbs.mjs';
 import { decide as rightsOf, ruleFrom, LEVELS } from '../server/rights.mjs';
 import { lines, notices as noticesOf, sayNotices } from '../server/mcp.mjs';
 import { openJournal, hide } from './journal.mjs';
@@ -299,6 +301,34 @@ export function keeper(dir, { sides = () => [], ask, notify, secrets = async () 
         }
     }
 
+    /* ---- a person's read, from the application's page ----
+       A page opening a mail cited to a person (mail.open): a READ only, on a target the application holds,
+       for a person it has already checked may read it (Tether does not know the application's people). Never
+       asked of anyone, never an agent's: journaled as that person's read (op "read"). The connector gives the
+       bytes whole (ctx.person), handed back here and nowhere else: nothing is kept. */
+    async function read(verb, args = {}, by) {
+        const who = byRef(by ?? PERSON);
+        try {
+            if (!isVerb(oneLine(verb, 40)) || !reads(verb) || !VERBS[verb].kinds) no(`${oneLine(verb, 40)} is not a read a person may ask here`);
+            const a = check(verb, args && typeof args === 'object' ? args : {});
+            const t = store.target(a.target);
+            if (!t) no(`no target ${a.target}`);
+            if (!VERBS[verb].kinds.includes(t.kind)) no(`${verb} is not for a ${t.kind} target`);
+            const conn = conns[t.connector];
+            if (!conn) no(`${t.title} cannot be reached from here: its connector is off`);
+            const started = now();
+            let res; let error; let code;
+            try { res = await conn.run(verb, t, a, { ...ctxOf(t, who.id), person: who }); } catch (e) { error = e instanceof Refused ? e.message : `failed: ${e?.message ?? e}`; code = e?.code; }
+            try { journal.append({ op: 'read', by: who, target: { id: t.id, title: t.title }, verb, detail: detailOf(verb, a), ok: !error, error, size: res?.size, ms: now() - started }); } catch { /* the read is answered anyway */ }
+            if (error) return { ok: false, text: hide(error, known), ...(code ? { code } : {}) };
+            const { text, size, ...rest } = res ?? {};
+            return { ok: true, text: hide(text ?? '', known), data: { size: size ?? 0, ...rest } };
+        } catch (e) {
+            if (e instanceof Refused) return { ok: false, text: e.message, ...(e.code ? { code: e.code } : {}) };
+            return { ok: false, text: `failed: ${e?.message ?? e}` };
+        }
+    }
+
     async function act(op, args = {}, who, opts) {
         const a = args && typeof args === 'object' ? args : {};
         try {
@@ -348,6 +378,7 @@ export function keeper(dir, { sides = () => [], ask, notify, secrets = async () 
     const api = {
         store,
         act,
+        read,
         pump,
         approvals: (agent) => queue.list(agent),
         /* Approved calls that wait for a person's browser (a device to flash). */

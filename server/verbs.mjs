@@ -80,6 +80,8 @@ export const VERBS = Object.freeze({
     'mail.list': { reads: true, kinds: ['mail'], needs: [] },
     'mail.read': { reads: true, kinds: ['mail'], needs: ['uid'] },
     'mail.source': { reads: true, kinds: ['mail'], needs: ['uid'] },
+    /* A mail found by its reference (mail:TARGET/MESSAGE-ID), in whatever folder it is now: its raw source. */
+    'mail.open': { reads: true, kinds: ['mail'], needs: ['ref'] },
     'mail.attachment': { reads: true, kinds: ['mail'], needs: ['uid', 'which'] },
     'mail.search': { reads: true, kinds: ['mail'], needs: ['text'] },
     'mail.move': { reads: false, kinds: ['mail'], needs: ['uid', 'mailbox'] },
@@ -117,6 +119,37 @@ const NOT_SHOWN = /[\u0000-\u0008\u000B-\u001F\u007F-\u009F​-‏‪-‮⁠-⁤
 export const oneLine = (text, max) => String(text ?? '').replace(/\r/g, '').replace(NOT_SHOWN, '').replace(/\s+/g, ' ').trim().slice(0, max);
 
 export const isVerb = (verb) => Object.hasOwn(VERBS, verb);
+
+/* A MAIL REFERENCE, the same whoever cites it (an agent, a card, a page):
+ *
+ *      mail:TARGET/MESSAGE-ID[?in=FOLDER&uid=N]
+ *
+ * TARGET is the Tether target's id; MESSAGE-ID the message's own Message-ID, without its <>, encoded as in
+ * an address. It does not depend on the provider and survives a move to another folder (an IMAP uid and a
+ * Graph id do not). `in` and `uid` are hints, where it was seen: tried first, checked against the
+ * Message-ID, never trusted alone. */
+export const MAIL_REF_MAX = 2000;
+const bareId = (id) => String(id ?? '').trim().replace(/^<|>$/g, '').trim();
+export function mailRef(target, messageId, { folder, uid } = {}) {
+    const id = bareId(messageId); const t = String(target ?? '').trim();
+    if (!id || !t || /[\s/?#]/.test(t) || /[\s<>]/.test(id)) return '';
+    const hint = new URLSearchParams();
+    if (folder) hint.set('in', String(folder));
+    if (uid !== undefined && uid !== null && uid !== '') hint.set('uid', String(uid));
+    const ref = `mail:${t}/${encodeURIComponent(id)}${hint.size ? `?${hint}` : ''}`;
+    return ref.length > MAIL_REF_MAX ? `mail:${t}/${encodeURIComponent(id)}` : ref;
+}
+/* A reference read back: { target, messageId: '<...>', folder?, uid? }, or null when it is not one. */
+export function readMailRef(text) {
+    const m = /^mail:([^/\s?#]{1,100})\/([^?\s#]{1,1000})(?:\?([^\s#]*))?$/.exec(String(text ?? '').trim());
+    if (!m) return null;
+    let id;
+    try { id = bareId(decodeURIComponent(m[2])); } catch { return null; }
+    if (!id || /[\s<>\r\n\0]/.test(id)) return null;
+    const hint = new URLSearchParams(m[3] ?? '');
+    const folder = hint.get('in') ?? ''; const uid = hint.get('uid') ?? '';
+    return { target: m[1], messageId: `<${id}>`, ...(folder && !/[\r\n\0]/.test(folder) ? { folder } : {}), ...(uid && uid.length <= 1024 ? { uid } : {}) };
+}
 export const reads = (verb) => VERBS[verb]?.reads === true;
 
 /* A date argument (mail since/before, calendar from/to) as a Date, or undefined
@@ -133,6 +166,13 @@ export function check(verb, a = {}) {
     if (!isVerb(verb)) no(`there is no verb ${oneLine(verb, 40)}`);
     const v = VERBS[verb];
     const out = {};
+    /* A mail reference names its target: the target may be left out, never given another one. */
+    if (verb === 'mail.open') {
+        const r = readMailRef(a.ref);
+        if (!r) no('ref is a mail reference, like mail:TARGET/MESSAGE-ID (as mail.list, mail.search or mail.read give it)');
+        if (a.target !== undefined && a.target !== null && a.target !== '' && oneLine(a.target, 100) !== r.target) no(`this reference is of the target ${r.target}, not ${oneLine(a.target, 100)}`);
+        a = { ...a, target: r.target };
+    }
     if (v.kinds) { out.target = oneLine(a.target, 100); if (!out.target) no('say which target'); }
     /* What the agent writes is kept whole or refused, never cut in the middle: told its length and
        the limit, it shortens and asks again (the "why" is what a person reads before deciding). */
@@ -229,6 +269,7 @@ export function check(verb, a = {}) {
         case 'mail.list': str('mailbox', 200); str('since', 64); str('before', 64); break;
         case 'mail.read': str('uid', 1024); str('mailbox', 200); break;
         case 'mail.source': str('uid', 1024); str('mailbox', 200); break;
+        case 'mail.open': str('ref', MAIL_REF_MAX); break;
         case 'mail.attachment': str('uid', 1024); str('which', 400); str('mailbox', 200); break;
         case 'mail.search': str('text', 400); str('mailbox', 200); break;
         case 'mail.move': str('uid', 1024); str('mailbox', 200); str('from', 200); break;
@@ -333,6 +374,7 @@ export function detail(verb, a = {}) {
         case 'screen.key': return a.key;
         case 'mail.list': return a.mailbox ?? '';
         case 'mail.read': return `#${a.uid}`;
+        case 'mail.open': return readMailRef(a.ref)?.messageId ?? '';
         case 'mail.search': return a.text;
         /* Ids from Graph are long and opaque; the approval says the ACTION, and the
            agent's "why" names the thing. So no raw id dumped into the one line. */

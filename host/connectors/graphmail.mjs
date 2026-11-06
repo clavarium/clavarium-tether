@@ -12,7 +12,7 @@
  * tests. Message ids are Graph's own opaque ids (long strings), used as the
  * "uid" for read/move/flag.
  */
-import { no, asDate } from '../../server/verbs.mjs';
+import { no, asDate, mailRef, Refused } from '../../server/verbs.mjs';
 import { compose, keptFiles, listOf, sendAt, wallClock } from '../compose.mjs';
 
 const GRAPH = 'https://graph.microsoft.com/v1.0';
@@ -23,6 +23,8 @@ const TIMEOUT_MS = 60_000;
 export const REPORT_SUBJECT = /undeliver|undelivered|delivery status notification|delivery (has )?failed|failure notice|returned mail|mail delivery (failed|subsystem)|non remis|(é|e)chec de (la )?(remise|distribution)|unzustellbar|no se pudo entregar|delivery delayed|remise diff(é|e)r(é|e)e/i;
 const READ_MAX = 512 * 1024;
 const SOURCE_MAX = 4 * 1024 * 1024;
+/* A mail opened by its reference for a person (a page's viewer): whole up to this. */
+const OPEN_MAX = 25 * 1024 * 1024;
 /* Friendly folder words mapped to Graph's well-known names; anything else is
    passed through (a folder's own id or display name). */
 const FOLDER = { inbox: 'inbox', sent: 'sentitems', 'sent items': 'sentitems', drafts: 'drafts', draft: 'drafts', trash: 'deleteditems', deleted: 'deleteditems', 'deleted items': 'deleteditems', junk: 'junkemail', spam: 'junkemail', archive: 'archive' };
@@ -75,7 +77,9 @@ export function graphMail({ fetch: fetchImpl = globalThis.fetch, token }) {
         return id ?? 'inbox';
     }
 
-    const brief = (m) => `#${m.id}\n  ${m.receivedDateTime ?? ''}\n  From: ${addrsOf([m.from])}\n  Subject: ${m.subject ?? ''}`;
+    /* Each with its reference (mail:TARGET/MESSAGE-ID: Graph's id changes when a mail is moved, its Message-ID does not). */
+    const refOf = (target, m) => (target?.id ? mailRef(target.id, m?.internetMessageId, { uid: m?.id }) : '');
+    const brief = (m, target) => { const ref = refOf(target, m); return `#${m.id}\n  ${m.receivedDateTime ?? ''}\n  From: ${addrsOf([m.from])}\n  Subject: ${m.subject ?? ''}${ref ? `\n  ref: ${ref}` : ''}`; };
 
     return {
         async list(target, a, ctx) {
@@ -88,8 +92,8 @@ export function graphMail({ fetch: fetchImpl = globalThis.fetch, token }) {
             if (since) span.push(`receivedDateTime ge ${since.toISOString()}`);
             if (before) span.push(`receivedDateTime lt ${before.toISOString()}`);
             const filter = span.length ? `&$filter=${encodeURIComponent(span.join(' and '))}` : '';
-            const data = await call(target, ctx, 'GET', `/me/mailFolders/${encodeURIComponent(await folderId(target, ctx, folder))}/messages?$top=${LIST_MAX}&$select=id,receivedDateTime,from,subject&$orderby=receivedDateTime%20desc${filter}`);
-            const items = (data?.value ?? []).map(brief);
+            const data = await call(target, ctx, 'GET', `/me/mailFolders/${encodeURIComponent(await folderId(target, ctx, folder))}/messages?$top=${LIST_MAX}&$select=id,receivedDateTime,from,subject,internetMessageId&$orderby=receivedDateTime%20desc${filter}`);
+            const items = (data?.value ?? []).map((m) => brief(m, target));
             /* Never cap in silence: Graph hands back a nextLink when more remain. */
             const more = data?.['@odata.nextLink'] ? `\n\n(Showing the first ${LIST_MAX} most recent — use since/before to move the window.)` : '';
             const text = items.length ? items.join('\n') + more : (since || before ? 'No message in that range.' : 'No message.');
@@ -98,7 +102,7 @@ export function graphMail({ fetch: fetchImpl = globalThis.fetch, token }) {
         async read(target, a, ctx) {
             const id = String(a.uid ?? '').trim();
             if (!id) no('read needs the message id (from the list)');
-            const m = await call(target, ctx, 'GET', `/me/messages/${encodeURIComponent(id)}?$select=id,receivedDateTime,from,toRecipients,ccRecipients,subject,body,hasAttachments`);
+            const m = await call(target, ctx, 'GET', `/me/messages/${encodeURIComponent(id)}?$select=id,receivedDateTime,from,toRecipients,ccRecipients,subject,body,hasAttachments,internetMessageId`);
             const bodyText = m?.body?.contentType === 'html' ? stripHtml(m.body.content) : (m?.body?.content ?? '');
             let att = '';
             if (m?.hasAttachments) {
@@ -118,15 +122,16 @@ export function graphMail({ fetch: fetchImpl = globalThis.fetch, token }) {
                 }
             } catch { /* not a meeting invitation */ }
             const head = [`From: ${addrsOf([m.from])}`, `To: ${addrsOf(m.toRecipients)}`, m?.ccRecipients?.length ? `Cc: ${addrsOf(m.ccRecipients)}` : '', `Date: ${m.receivedDateTime ?? ''}`, `Subject: ${m.subject ?? ''}`].filter(Boolean).join('\n');
-            const full = `${head}\n\n${bodyText}${invite}${att ? `\n\nAttachments:\n${att}` : ''}`;
+            const ref = refOf(target, m);
+            const full = `${ref ? `ref: ${ref}\n` : ''}${head}\n\n${bodyText}${invite}${att ? `\n\nAttachments:\n${att}` : ''}`;
             const text = full.length > READ_MAX ? `${full.slice(0, READ_MAX)}\n\n(Large message — showing the first ${Math.round(READ_MAX / 1024)} KB.)` : full;
             return { text, size: Buffer.byteLength(text) };
         },
         async search(target, a, ctx) {
             const q = String(a.text ?? '').trim();
             if (!q) no('search needs some text');
-            const data = await call(target, ctx, 'GET', `/me/messages?$search=${encodeURIComponent(`"${q}"`)}&$top=${LIST_MAX}&$select=id,receivedDateTime,from,subject`);
-            const items = (data?.value ?? []).map(brief);
+            const data = await call(target, ctx, 'GET', `/me/messages?$search=${encodeURIComponent(`"${q}"`)}&$top=${LIST_MAX}&$select=id,receivedDateTime,from,subject,internetMessageId`);
+            const items = (data?.value ?? []).map((m) => brief(m, target));
             const text = items.length ? items.join('\n') : 'Nothing found.';
             return { text, size: Buffer.byteLength(text) };
         },
@@ -144,6 +149,39 @@ export function graphMail({ fetch: fetchImpl = globalThis.fetch, token }) {
             const raw = (await r.text()).slice(0, SOURCE_MAX);
             const more = raw.length >= SOURCE_MAX ? `\n\n(Large message — first ${Math.round(SOURCE_MAX / 1024)} KB of the source.)` : '';
             return { text: raw + more, size: Buffer.byteLength(raw) };
+        },
+        /* A MAIL BY ITS REFERENCE: Graph's id (the hint) first, checked against the Message-ID; else the one
+           message whose internetMessageId is it, in any folder. Its MIME source ($value) as bytes; the folder
+           it is in, by name. Not found: gone. */
+        async open(target, ref, ctx) {
+            const max = ctx?.person ? OPEN_MAX : SOURCE_MAX;
+            const same = (m) => String(m?.internetMessageId ?? '').trim().toLowerCase() === ref.messageId.toLowerCase();
+            let m = null;
+            if (ref.uid && /^[A-Za-z0-9_=+/-]{20,}$/.test(ref.uid)) {
+                try { const got = await call(target, ctx, 'GET', `/me/messages/${encodeURIComponent(ref.uid)}?$select=id,internetMessageId,parentFolderId`); if (same(got)) m = got; } catch (e) { if (!/not found|404|400|invalid|malformed/i.test(e?.message ?? '')) throw e; }
+            }
+            if (!m) {
+                const q = ref.messageId.replace(/'/g, "''");
+                const data = await call(target, ctx, 'GET', `/me/messages?$filter=${encodeURIComponent(`internetMessageId eq '${q}'`)}&$select=id,internetMessageId,parentFolderId&$top=5`);
+                m = (data?.value ?? []).find(same) ?? null;
+            }
+            if (!m) throw Object.assign(new Refused(`${target.title}: this mail is no longer in the mailbox (deleted?) -- ${ref.messageId}`), { code: 'gone' });
+            let folder = '';
+            try { folder = (await call(target, ctx, 'GET', `/me/mailFolders/${encodeURIComponent(m.parentFolderId)}?$select=displayName`))?.displayName ?? ''; } catch { /* the mail is still shown */ }
+            const access = await token(target, ctx);
+            let r;
+            try { r = await fetchImpl(`${GRAPH}/me/messages/${encodeURIComponent(m.id)}/$value`, { headers: { authorization: `Bearer ${access}` }, signal: AbortSignal.timeout(TIMEOUT_MS) }); }
+            catch { return no(`${target.title}: could not reach the mailbox`); }
+            if (r.status === 401 || r.status === 403) no(`${target.title}: not authorized -- reconnect the account (the Microsoft mail scope may be missing)`);
+            if (r.status === 404) throw Object.assign(new Refused(`${target.title}: this mail is no longer in the mailbox (deleted?) -- ${ref.messageId}`), { code: 'gone' });
+            if (!r.ok) no(`${target.title}: the source could not be read (${r.status})`);
+            const all = Buffer.from(await r.arrayBuffer());
+            const bytes = all.subarray(0, max);
+            const cut = all.length > max;
+            const again = refOf(target, { internetMessageId: m.internetMessageId, id: m.id });
+            if (ctx?.person) return { text: `Found in ${folder || 'the mailbox'}.`, size: bytes.length, raw: bytes, folder, ref: again, cut };
+            const more = cut ? `\n\n(Large message — first ${Math.round(max / 1024)} KB of the source.)` : '';
+            return { text: `${bytes.toString('utf8')}${more}\n\n(Found in ${folder || 'the mailbox'}${again ? `; ref: ${again}` : ''}.)`, size: bytes.length };
         },
         /* One attachment's bytes (base64), by its name or its 1-based number. Graph
            hands a file attachment's contentBytes already base64-encoded. */
@@ -219,7 +257,7 @@ export function graphMail({ fetch: fetchImpl = globalThis.fetch, token }) {
         /* What a message is, for an approval card: who, subject, when, its files' names. */
         async about(target, a, ctx, verb) {
             const id = encodeURIComponent(String(a.uid ?? '').trim());
-            const m = await call(target, ctx, 'GET', `/me/messages/${id}?$select=from,replyTo,toRecipients,ccRecipients,subject,receivedDateTime,hasAttachments,parentFolderId`);
+            const m = await call(target, ctx, 'GET', `/me/messages/${id}?$select=id,from,replyTo,toRecipients,ccRecipients,subject,receivedDateTime,hasAttachments,parentFolderId,internetMessageId`);
             /* Already in Deleted Items: a delete is for good, said on the card before (loop 36). */
             let forGood;
             if (verb === 'mail.delete') { try { forGood = m?.parentFolderId && m.parentFolderId === (await call(target, ctx, 'GET', '/me/mailFolders/deleteditems?$select=id'))?.id; } catch { /* the result says it */ } }
@@ -236,7 +274,8 @@ export function graphMail({ fetch: fetchImpl = globalThis.fetch, token }) {
                 const cc = a.all === true || a.all === 'true' ? [...addr(m?.toRecipients), ...addr(m?.ccRecipients)].filter((x) => x !== self && !to.includes(x)) : [];
                 replyTo = { to, cc: [...new Set([...cc, ...listOf(a.cc).map((x) => x.toLowerCase())])] };
             }
-            return { from: who ? (who.name && who.name !== who.address ? `${who.name} <${who.address}>` : who.address) : '', subject: m?.subject ?? '', date: m?.receivedDateTime ?? '', ...(files ? { files } : {}), ...(replyTo ? { replyTo } : {}), ...(forGood ? { forGood: true } : {}) };
+            const ref = refOf(target, m);
+            return { from: who ? (who.name && who.name !== who.address ? `${who.name} <${who.address}>` : who.address) : '', subject: m?.subject ?? '', date: m?.receivedDateTime ?? '', ...(ref ? { ref } : {}), ...(files ? { files } : {}), ...(replyTo ? { replyTo } : {}), ...(forGood ? { forGood: true } : {}) };
         },
         /* Send a message (or, with draft, keep it in Drafts). The body is the
            composed HTML (Markdown) or the text as written. */

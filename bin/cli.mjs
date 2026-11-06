@@ -40,6 +40,7 @@ export const HELP = `${NAME}: act on the targets you were given (machines, folde
   ${NAME} mail TARGET list [--mailbox NAME] [--since DATE] [--before DATE]   recent messages (default: last 30 days)
   ${NAME} mail TARGET read UID [--mailbox NAME]        one message in full
   ${NAME} mail TARGET source UID [--mailbox NAME]      the raw source (every header, both bodies)
+  ${NAME} mail TARGET open REF                          a mail by its ref (mail:TARGET/MESSAGE-ID), wherever it is now
   ${NAME} mail TARGET attachment UID NAME|N            download one attachment (base64)
   ${NAME} mail TARGET search "text" [--mailbox NAME]
   ${NAME} mail TARGET move UID MAILBOX [--from FOLDER] move a message to a folder (from the one it was listed in)
@@ -77,7 +78,7 @@ ${NAME} ${VERSION}`;
 
 const FILE_VERBS = ['list', 'read', 'search', 'write', 'move', 'delete'];
 const BROWSER_VERBS = ['tabs', 'open', 'shot', 'html', 'console', 'eval', 'click', 'type', 'key', 'scroll', 'drag'];
-const MAIL_VERBS = ['list', 'read', 'source', 'attachment', 'search', 'move', 'flag', 'delete', 'send', 'reply', 'forward'];
+const MAIL_VERBS = ['list', 'read', 'source', 'open', 'attachment', 'search', 'move', 'flag', 'delete', 'send', 'reply', 'forward'];
 const CAL_VERBS = ['list', 'read', 'freebusy', 'create', 'update', 'attach', 'detach', 'delete', 'respond', 'categories', 'category'];
 const CONTACT_VERBS = ['list', 'search', 'read', 'create', 'update', 'delete', 'attach'];
 const baseName = (p) => String(p).split('/').pop();
@@ -154,6 +155,7 @@ export function read(argv) {
                 case 'list': return ['mail.list', { target, ...box, ...(flags.since !== undefined ? { since: flags.since } : {}), ...(flags.before !== undefined ? { before: flags.before } : {}) }];
                 case 'read': return need(p[0], 'mail TARGET read UID [--mailbox NAME]') ?? ['mail.read', { target, uid: p[0], ...box }];
                 case 'source': return need(p[0], 'mail TARGET source UID [--mailbox NAME]') ?? ['mail.source', { target, uid: p[0], ...box }];
+                case 'open': return need(p[0], 'mail TARGET open REF') ?? ['mail.open', { target, ref: p[0] }];
                 case 'attachment': return need(p.length >= 2, 'mail TARGET attachment UID NAME|N [--mailbox NAME] [--out DIR]') ?? ['mail.attachment', { target, uid: p[0], which: p.slice(1).join(' '), ...box, ...(flags.out !== undefined ? { out: flags.out } : {}) }];
                 case 'search': return need(p.length, 'mail TARGET search "text" [--mailbox NAME]') ?? ['mail.search', { target, text: p.join(' '), ...box }];
                 case 'move': return need(p.length === 2, 'mail TARGET move UID MAILBOX [--from FOLDER]') ?? ['mail.move', { target, uid: p[0], mailbox: p[1], ...(flags.from !== undefined ? { from: flags.from } : {}), ...why }];

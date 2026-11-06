@@ -149,6 +149,17 @@ browser"):
 | `tether browser TARGET scroll [--dx N] [--dy N] [--selector S] [--tab N]` | `browser-scroll` | `browser.scroll` |
 | `tether browser TARGET drag FROM TO [--tab N]` | `browser-drag` | `browser.drag` |
 
+A MAIL REFERENCE, the same for every provider: `mail:TARGET/MESSAGE-ID[?in=FOLDER&uid=N]`
+(the Message-ID without its `<>`, encoded as in an address; `in`/`uid` only hints, where it
+was seen). `mail.list`, `mail.search` and `mail.read` give one per mail (`ref: mail:...`),
+and the card of a reply, a forward, a move or a delete has it as `about.ref`. `mail.open`
+(`tether mail TARGET open REF`, MCP `mail-open`, a read) finds the mail again wherever it is
+now: the hint first, checked against the Message-ID; then the folders by Message-ID (the
+one that holds every mail first, as Gmail's All Mail; on Microsoft, `internetMessageId`). It
+gives its raw source, capped as `mail.source`, and the folder it was found in; a mail found
+nowhere is said gone (`code: 'gone'`). An agent cites a mail to a person as a Markdown link
+`[subject · sender](mail:...)`.
+
 Every acting verb takes `why` (`--why`): one line a person reads before
 deciding. `--tab` picks which granted tab to act on (its id from
 `browser tabs`); with none, the agent's active granted tab. A verb on a tab the
@@ -316,6 +327,7 @@ own serve server and pairing UI.
     k.stop(agent?, by); k.resume(agent?, by);
     k.journal({ agent, target, since, limit });
     k.act(op, args, person);                    // the page's ops, below: Promise<{ ok, text, data }>
+    k.read('mail.open', { ref }, person);       // a person's read: Promise<{ ok, text, data: { raw, folder, ref, cut } } | { ok: false, text, code? }>
     k.onChange(fn);                             // something the page shows changed
     k.notice({ agent, target, kind, text, ref }); // something that happened later (connectors call it)
     k.close();                                  // connectors down
@@ -328,6 +340,11 @@ once), `agents`, `targets`, `approvals`, `journal`, `stops`, `decide {id,
 decision, word?}`, `level {target, agent, level|null}`, `allow` and `unallow
 {target, agent, rule}`, `stop {agent?}`, `resume {agent?}`, `put-target`,
 `remove-target`.
+
+`read` is a page opening a mail for a person the application already checked may read
+that mailbox (Tether does not know its people): a read verb only, never asked of anyone,
+journaled as that person's (`op: "read"`), the bytes whole up to 25 MB (`cut` says if
+not), handed back and kept nowhere.
 
 A connector: `{ run(verb, target, args, ctx) → Promise<{text, size, exit?}>,
 close(agent) }`; `ctx.secret(key)` gives the value of the secret the target

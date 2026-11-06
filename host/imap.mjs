@@ -37,8 +37,12 @@ export class Exchange {
         socket.on('close', () => this.#fail(new Error('the mailbox closed the connection')));
     }
     #fail(error) { this.#failure ??= error; this.#wake?.(); }
-    /* Lines up to the one `done` accepts; a literal {n} is taken whole. */
-    async #until(done) {
+    /* A new verb on a warm connection: what it may receive counts from here (a session kept open for
+       many verbs is not cut because the earlier ones read a lot). */
+    fresh() { this.#received = 0; }
+    /* Lines up to the one `done` accepts; a literal {n} is taken whole. `binary`: a literal is read
+       byte for byte (latin1), so a message's 8-bit bytes come back whole for whoever reads its raw source. */
+    async #until(done, binary = false) {
         for (;;) {
             let i = 0; let current = ''; const lines = [];
             while (i < this.#buffer.length) {
@@ -50,7 +54,7 @@ export class Exchange {
                 if (literal) {
                     const n = Number(literal[1]);
                     if (this.#buffer.length < i + n) { i = -1; break; }
-                    current += `${piece}\n${this.#buffer.subarray(i, i + n).toString('utf8')}`;
+                    current += `${piece}\n${this.#buffer.subarray(i, i + n).toString(binary ? 'latin1' : 'utf8')}`;
                     i += n;
                     continue;
                 }
@@ -71,10 +75,10 @@ export class Exchange {
         const [line] = await this.#until((l) => l.startsWith('* '));
         if (!/^\* (OK|PREAUTH)/i.test(line ?? '')) throw new Error('not an IMAP server (no greeting)');
     }
-    async command(text, failure) {
+    async command(text, failure, { binary = false } = {}) {
         const tag = `c${++this.#n}`;
         this.#socket.write(`${tag} ${text}\r\n`);
-        const lines = await this.#until((l) => l.startsWith(`${tag} `));
+        const lines = await this.#until((l) => l.startsWith(`${tag} `), binary);
         if (!new RegExp(`^${tag} OK`, 'i').test(lines.at(-1) ?? '')) throw new Error(failure);
         return lines;
     }
