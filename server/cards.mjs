@@ -7,7 +7,9 @@
  *   { kind: 'mail' | 'calendar' | 'contacts' | 'terminal' | 'files' | 'browser' | 'screen' | 'device' | 'other',
  *     action: 'send' | 'reply' | 'forward' | 'create' | 'respond' | ...,  ...fields }
  */
+/* A mail's text is approved as it will leave: whole, up to a long mail's size (06-11: cut at 600, a person could not read the end). */
 const BODY_MAX = 600;
+const MAIL_BODY_MAX = 20000;
 const list = (v) => String(v ?? '').split(/[,;]/).map((x) => x.trim()).filter(Boolean);
 const short = (v, n = BODY_MAX) => { const s = String(v ?? '').replace(/\r\n?/g, '\n').trim(); return s.length > n ? `${s.slice(0, n - 1)}…` : s; };
 const kb = (b64) => Math.max(1, Math.round((String(b64 ?? '').replace(/\s+/g, '').length * 3 / 4) / 1024));
@@ -22,7 +24,7 @@ export function cardOf(verb, a = {}, target = {}) {
         case 'mail': {
             const base = { kind: 'mail', action: act, self };
             if (act === 'send' || act === 'reply' || act === 'forward') {
-                return drop({ ...base, to: list(a.to), cc: list(a.cc), bcc: list(a.bcc), subject: a.subject, body: short(a.body), files: filesOf(a),
+                return drop({ ...base, to: list(a.to), cc: list(a.cc), bcc: list(a.bcc), subject: a.subject, body: short(a.body, MAIL_BODY_MAX), files: filesOf(a),
                     all: a.all === true || undefined, keep: a.keep, draft: a.draft === true || undefined, at: a.at, uid: a.uid });
             }
             return drop({ ...base, uid: a.uid, mailbox: a.mailbox, from: a.from, flag: a.flag, text: a.text });

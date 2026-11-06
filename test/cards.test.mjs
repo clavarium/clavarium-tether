@@ -3,13 +3,14 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { cardOf } from '../server/cards.mjs';
 
-test('a mail card: recipients as lists, the body kept short, files by name and size, never their bytes', () => {
+test('a mail card: recipients as lists, the body whole (up to 20 000 characters), files by name and size, never their bytes', () => {
     const c = cardOf('mail.forward', { to: 'a@example.com, b@example.org', cc: 'c@example.com', uid: '7', keep: 'none', body: 'x'.repeat(900), attachments: [{ name: 'f.pdf', bytes: 'QUJD'.repeat(1000) }] }, { config: { user: 'Me@Example.com' } });
     assert.deepEqual(c.to, ['a@example.com', 'b@example.org']);
     assert.deepEqual(c.cc, ['c@example.com']);
     assert.equal(c.self, 'me@example.com');
     assert.equal(c.keep, 'none');
-    assert.equal(c.body.length, 600);
+    assert.equal(c.body.length, 900, 'a 900-character mail is shown whole (06-11)');
+    assert.equal(cardOf('mail.send', { to: 'a@example.com', body: 'y'.repeat(30000) }).body.length, 20000, 'a huge one is still bounded');
     assert.deepEqual(c.files, [{ name: 'f.pdf', kb: 3 }]);
     assert.ok(!JSON.stringify(c).includes('QUJD'), 'no bytes');
 });
