@@ -203,9 +203,12 @@ export function classesOf(grant) {
  *   because: 'tool' (its own setting), 'class' (its class at this level), 'level' (no grant). */
 export function toolDecide(grant, tool) {
     if (!grant || !isLevel(grant.level) || !tool) return { go: 'no', because: 'level' };
+    /* A tool new on its server, or whose annotations changed (07-11, the owner's choice): asked, whatever
+       its class or its own setting says, until a person has seen it once (approved a call, or "seen"). */
     const own = grant.tools?.[tool.name];
-    if (GOES.includes(own)) return { go: own, because: 'tool' };
+    if (GOES.includes(own)) return own === 'yes' && tool.fresh === true ? { go: 'ask', because: 'fresh' } : { go: own, because: 'tool' };
     let go = classesOf(grant)[CLASSES.includes(tool.class) ? tool.class : 'destructive'] ?? 'no';
     if (go === 'yes' && grant.level === 'frame' && grant.askOpen === true && tool.open && tool.class !== 'read') go = 'ask';
+    if (go === 'yes' && tool.fresh === true) return { go: 'ask', because: 'fresh' };
     return { go, because: 'class' };
 }

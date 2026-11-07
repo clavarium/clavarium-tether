@@ -14,7 +14,7 @@ import { keeper } from '../host/keeper.mjs';
 import { mcp } from '../host/connectors/mcp.mjs';
 import { serve, externalTools } from '../server/mcp.mjs';
 import { classOf, toolDecide } from '../server/rights.mjs';
-import { exposedName, catalogOf, argsProblem, resultText, offered, RESULT_MAX } from '../server/external.mjs';
+import { exposedName, catalogOf, argsProblem, resultText, offered, freshened, RESULT_MAX } from '../server/external.mjs';
 import { cardOf } from '../server/cards.mjs';
 import { TOOL_ARGS_MAX } from '../server/verbs.mjs';
 
@@ -270,7 +270,7 @@ test('the key never reaches a conversation: its folder, its answers, the journal
     } finally { await done(); }
 });
 
-test('the server says its tools changed: listed again, the new tool goes straight into its class, the agent is told', async () => {
+test('the server says its tools changed: listed again, the new tool asked until a person has seen it once, the agent is told', async () => {
     const { k, s, dir, done } = await setup({ level: 'free' });
     try {
         await until(() => s.listening() > 0);
@@ -295,8 +295,30 @@ test('the server says its tools changed: listed again, the new tool goes straigh
         input.write(`${JSON.stringify({ jsonrpc: '2.0', id: 3, method: 'tools/list' })}\n`);
         await until(() => got.some((m) => m.id === 3));
         const arch = got.find((m) => m.id === 3).result.tools.find((t) => t.name === 'crm-archive');
-        assert.ok(arch, 'offered at once, in its class (All: a write is yes)');
-        assert.match(arch.description, /^\[External server "CRM" · writes, reaches outside\]/);
+        assert.ok(arch, 'offered at once');
+        assert.match(arch.description, /^\[External server "CRM" · writes, reaches outside · new or changed on its server: a person approves it first\]/);
+        assert.equal(k.store.target('crm').catalog.tools.find((t) => t.name === 'archive').fresh, true, '07-11: new, so fresh');
+        assert.equal(k.store.target('crm').catalog.tools.some((t) => t.name !== 'archive' && t.fresh), false, 'the tools already there are not');
+
+        /* Its first call is asked, even at All; approved, it goes by its class from then on. */
+        const p = call(k, 'archive', { id: 'c1' });
+        await until(() => k.approvals().length === 1);
+        assert.equal(k.approvals()[0].card.fresh, true);
+        k.decide(k.approvals()[0].id, 'yes', ME);
+        assert.equal((await p).ok, true);
+        assert.equal(k.store.target('crm').catalog.tools.find((t) => t.name === 'archive').fresh, undefined, 'seen once');
+        assert.equal((await call(k, 'archive', { id: 'c2' })).ok, true, 'then by its class: All, no card');
+        assert.equal(k.approvals().length, 0);
+
+        /* A tool whose annotations change (a read turned destructive): fresh again; "seen" in the page clears it. */
+        const search = s.tools.find((t) => t.annotations?.readOnlyHint === true);
+        search.annotations = { readOnlyHint: false, destructiveHint: true };
+        s.push({ jsonrpc: '2.0', method: 'notifications/tools/list_changed' });
+        await until(() => k.store.target('crm').catalog.tools.find((t) => t.name === search.name)?.fresh === true);
+        const seen = await k.act('mcp-seen', { target: 'crm' }, ME);
+        assert.equal(seen.ok, true, seen.text);
+        assert.deepEqual(seen.data.seen, [search.name]);
+        assert.equal(k.store.target('crm').catalog.tools.some((t) => t.fresh), false);
         rl.close();
     } finally { await done(); }
 });
@@ -427,4 +449,20 @@ test('serve: --mcp NAME=URL with its key named by an environment variable', asyn
     assert.deepEqual(o.mcp, { title: 'crm', url: 'https://mcp.example.com/mcp', keyEnv: 'CRM_KEY', header: '', http: false, level: 'watch' });
     assert.throws(() => options(['--mcp', 'nourl'], { env: {}, cwd: '/srv' }), /NAME=URL/);
     assert.throws(() => options(['--mcp', 'a=https://mcp.example.com', '--mcp-level', 'boss'], { env: {}, cwd: '/srv' }), /--mcp-level/);
+});
+
+/* 07-11, the owner's choice: a tool new on its server, or whose annotations changed, is asked until seen once. */
+test('fresh tools: none on a first listing; new or relabelled ones asked, even set to yes; unchanged stays as it was', () => {
+    const a = { name: 'a', annotations: { readOnlyHint: true } }; const b = { name: 'b', annotations: { destructiveHint: false } };
+    assert.deepEqual(freshened(null, [a, b]).map((t) => t.fresh), [undefined, undefined], 'the person adding it sees it whole');
+    const next = freshened([a], [a, b]);
+    assert.deepEqual(next.map((t) => t.fresh), [undefined, true]);
+    assert.deepEqual(freshened(next, next).map((t) => t.fresh), [undefined, true], 'fresh until seen');
+    assert.deepEqual(freshened([a, b], [{ ...a, annotations: { readOnlyHint: false } }, b]).map((t) => t.fresh), [true, undefined], 'a label changed');
+    assert.deepEqual(freshened([a, b], [{ ...a, description: 'other words' }, b]).map((t) => t.fresh), [undefined, undefined], 'only the labels count');
+    const tool = { name: 'b', ...classOf(b.annotations), fresh: true };
+    assert.deepEqual(toolDecide({ level: 'free' }, tool), { go: 'ask', because: 'fresh' });
+    assert.deepEqual(toolDecide({ level: 'free', tools: { b: 'yes' } }, tool), { go: 'ask', because: 'fresh' });
+    assert.equal(toolDecide({ level: 'free', tools: { b: 'no' } }, tool).go, 'no', 'a tool set to no stays no');
+    assert.equal(toolDecide({ level: 'off' }, tool).go, 'no');
 });

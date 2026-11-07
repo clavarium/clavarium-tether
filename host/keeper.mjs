@@ -37,7 +37,7 @@ import { openStore } from '../server/store.mjs';
 import { VERBS, Refused, check, detail as detailOf, no, oneLine, isVerb, reads } from '../server/verbs.mjs';
 import { decide as rightsOf, ruleFrom, LEVELS, toolDecide, classesOf } from '../server/rights.mjs';
 import { lines, notices as noticesOf, sayNotices, TOOLS } from '../server/mcp.mjs';
-import { offered, catalogOf, catalogDiff, argsProblem, resultText, TOOLS_FILE } from '../server/external.mjs';
+import { offered, catalogOf, freshened, catalogDiff, argsProblem, resultText, TOOLS_FILE } from '../server/external.mjs';
 import { mcp as mcpConnector } from './connectors/mcp.mjs';
 import { openJournal, hide } from './journal.mjs';
 import { approvals as openApprovals, TIMEOUT_MS } from './approvals.mjs';
@@ -286,6 +286,10 @@ export function keeper(dir, { sides = () => [], ask, notify, secrets = async () 
                 no('a person stopped everything for you: nothing was done');
             }
             if (store.stopped(who.id)) no('a person stopped everything for you: nothing was done');
+            /* A fresh tool approved: seen once, it goes by its class from now on (07-11). */
+            if (tool?.fresh === true) {
+                try { const seen = store.seenTools(t.id, [tool.name]); if (seen.length) journal.append({ op: 'seen', agent: me, target: base.target, detail: tool.name, by: outcome.by }); } catch { /* the call is still approved */ }
+            }
         }
         const started = now();
         /* A connector whose work waits for a person (a job run in their browser) says how much longer: the agent's ask keeps waiting. */
@@ -346,6 +350,12 @@ export function keeper(dir, { sides = () => [], ask, notify, secrets = async () 
                reference to a secret, "${NAME}": servers made from it. A value written in it is refused. */
             case 'mcp-import': return importServers(a.config);
             case 'mcp-refresh': return refresh(oneLine(a.target, 100));
+            /* New or changed tools a person looked at in the page: by their class from now on. */
+            case 'mcp-seen': {
+                const seen = store.seenTools(a.target, Array.isArray(a.tools) ? a.tools : undefined);
+                if (seen.length) journal.append({ op: 'seen', target: { id: a.target, title: store.target(a.target)?.title }, detail: seen.join(', '), by });
+                return { seen };
+            }
             case 'mcp-rights': {
                 const g = store.toolRights(a.target, a.agent, { classes: a.classes, tools: a.tools, askOpen: a.askOpen });
                 const said = [a.classes ? Object.entries(a.classes).map(([k, v]) => `${k}: ${v ?? 'as its level'}`).join(', ') : '', a.tools ? Object.entries(a.tools).map(([k, v]) => `${k}: ${v ?? 'as its class'}`).join(', ') : '', a.askOpen !== undefined ? `ask what reaches outside: ${a.askOpen === true}` : ''].filter(Boolean).join('; ');
@@ -505,6 +515,8 @@ export function keeper(dir, { sides = () => [], ask, notify, secrets = async () 
             /* A server that writes the key back into its list never has it shown. */
             try { tools = JSON.parse(hide(JSON.stringify(tools), known)); } catch { /* kept as listed */ }
             const diff = catalogDiff(t.catalog?.tools ?? [], tools);
+            const first = !t.catalog || (!(t.catalog.tools ?? []).length && Boolean(t.catalog.error));
+            tools = freshened(first ? null : (t.catalog.tools ?? []), tools);
             const c = store.setCatalog(t.id, { tools });
             if (!t.catalog || t.catalog.error || diff.added.length || diff.removed.length || diff.changed.length) {
                 const said = [diff.added.length ? `+ ${diff.added.join(', ')}` : '', diff.removed.length ? `- ${diff.removed.join(', ')}` : '', diff.changed.length ? `~ ${diff.changed.join(', ')}` : ''].filter(Boolean).join('; ');

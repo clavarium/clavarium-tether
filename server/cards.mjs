@@ -61,7 +61,7 @@ export function cardOf(verb, a = {}, target = {}, tool = null) {
         case 'screen': return drop({ kind: 'screen', action: act, text: a.text, key: a.key });
         /* "The server CRM: tool delete_contact", its class (an amber edge when destructive), its arguments shown plainly. */
         case 'mcp': return drop({ kind: 'mcp', action: 'call', server: String(target?.title ?? ''), tool: String(a.tool ?? ''), title: tool?.title,
-            class: tool?.class ?? 'destructive', open: tool?.open === true || undefined, args: argsOf(a.arguments) });
+            class: tool?.class ?? 'destructive', open: tool?.open === true || undefined, fresh: tool?.fresh === true || undefined, args: argsOf(a.arguments) });
         default: return { kind: 'other', action: String(verb) };
     }
 }

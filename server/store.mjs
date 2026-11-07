@@ -114,6 +114,17 @@ export function openStore(dir, { now = () => Date.now() } = {}) {
             save({ op: 'catalog', target: t.id });
             return structuredClone(t.catalog);
         },
+        /* Tools of an MCP server a person has seen (approved a call of, or marked seen): no longer fresh.
+           `names` absent: every tool of it. The names that were fresh, now seen. */
+        seenTools(target, names) {
+            const t = targetOf(target);
+            if (t.kind !== 'mcp') no(`${t.title} is not an MCP server`);
+            const want = Array.isArray(names) ? new Set(names.map(String)) : null;
+            const seen = [];
+            for (const tool of t.catalog?.tools ?? []) if (tool.fresh === true && (!want || want.has(tool.name))) { delete tool.fresh; seen.push(tool.name); }
+            if (seen.length) save({ op: 'seen', target: t.id });
+            return seen;
+        },
         /* An agent's rights on an MCP server's tools, beyond its level: the classes (custom level), one
            tool's own setting (yes / ask / no; null takes it back), whether what reaches outside is asked. */
         toolRights(target, agent, { classes, tools, askOpen } = {}) {

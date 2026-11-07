@@ -68,6 +68,19 @@ export function catalogDiff(before = [], after = []) {
     };
 }
 
+/* A NEW LISTING, ITS FRESH TOOLS (07-11): a tool the server did not list before, or whose annotations
+   changed, is marked fresh -- asked (rights.mjs, toolDecide) until a person has seen it once. A fresh
+   tool unchanged stays fresh. The first listing of a server (the person adding it sees it whole) marks none. */
+export function freshened(before, after) {
+    if (!Array.isArray(before)) return after.map(({ fresh, ...t }) => t);
+    const was = new Map(before.map((t) => [t.name, t]));
+    return after.map(({ fresh, ...t }) => {
+        const old = was.get(t.name);
+        const isFresh = !old || JSON.stringify(old.annotations ?? {}) !== JSON.stringify(t.annotations ?? {}) || old.fresh === true;
+        return isFresh ? { ...t, fresh: true } : t;
+    });
+}
+
 /* The name an agent sees: PREFIX-TOOL, only [A-Za-z0-9_-], 64 at most; too long or taken, cut with 4 characters of a hash. */
 export function exposedName(prefix, tool, taken = new Set()) {
     const clean = (s) => String(s).replace(/[^A-Za-z0-9_-]/g, '_');
@@ -80,6 +93,7 @@ export function exposedName(prefix, tool, taken = new Set()) {
 
 const CLASS_SAID = { read: 'read only', write: 'writes', destructive: 'deletes or overwrites' };
 const GO_SAID = { yes: '', ask: ' · a person approves each call' };
+const FRESH_SAID = ' · new or changed on its server: a person approves it first';
 
 /* THE TOOLS ONE AGENT IS OFFERED: [{ name, target, tool, class, open, go, description, inputSchema }].
  * `targets`: the store's targets (kind mcp, each with its catalog and grants); `reserved`: names
@@ -97,7 +111,7 @@ export function offered(targets, agent, { reserved = [], stopped = false } = {})
             if (d.go === 'no') continue;
             const name = exposedName(t.id, tool.name, taken);
             taken.add(name);
-            const head = `[External server "${oneLine(t.title, 60)}" · ${CLASS_SAID[tool.class] ?? tool.class}${tool.open && tool.class !== 'read' ? ', reaches outside' : ''}${GO_SAID[d.go] ?? ''}]`;
+            const head = `[External server "${oneLine(t.title, 60)}" · ${CLASS_SAID[tool.class] ?? tool.class}${tool.open && tool.class !== 'read' ? ', reaches outside' : ''}${d.because === 'fresh' ? FRESH_SAID : (GO_SAID[d.go] ?? '')}]`;
             const schema = structuredClone(tool.inputSchema ?? plainSchema());
             schema.properties = schema.properties && typeof schema.properties === 'object' ? schema.properties : {};
             /* A one-line why for the person, when the tool has no argument of that name itself. */
