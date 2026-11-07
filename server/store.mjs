@@ -14,7 +14,7 @@
 import { readFileSync, writeFileSync, renameSync, mkdirSync, lstatSync } from 'node:fs';
 import { join } from 'node:path';
 import { KINDS, Refused, no, oneLine } from './verbs.mjs';
-import { LEVELS, RULES_MAX, cleanRule } from './rights.mjs';
+import { LEVELS, RULES_MAX, cleanRule, CLASSES, GOES } from './rights.mjs';
 
 export { Refused };
 export const TARGETS_MAX = 200;
@@ -62,7 +62,9 @@ export function openStore(dir, { now = () => Date.now() } = {}) {
             }
             const sec = Object.fromEntries(Object.entries(secrets ?? {}).map(([k, v]) => [oneLine(k, 40), oneLine(v, 200)]));
             const before = s.targets[key];
-            s.targets[key] = { id: key, title: name || key, kind, connector: conn, config: conf, secrets: sec, grants: before?.grants ?? {}, created: before?.created ?? new Date(now()).toISOString() };
+            s.targets[key] = { id: key, title: name || key, kind, connector: conn, config: conf, secrets: sec, grants: before?.grants ?? {}, created: before?.created ?? new Date(now()).toISOString(),
+                /* An external MCP server keeps the tools it listed, until it is listed again. */
+                ...(kind === 'mcp' && before?.kind === 'mcp' && before.catalog && before.config?.url === conf.url ? { catalog: before.catalog } : {}) };
             save({ op: 'put-target', target: key });
             return shown(s.targets[key]);
         },
@@ -75,7 +77,8 @@ export function openStore(dir, { now = () => Date.now() } = {}) {
             if (level === null || level === undefined || level === 'none') delete t.grants[who];
             else {
                 if (!LEVELS.includes(level)) no(`a level is one of: ${LEVELS.join(', ')}`);
-                t.grants[who] = { level, rules: t.grants[who]?.rules ?? [] };
+                /* What else the grant holds stays (an MCP server's classes and tool settings). */
+                t.grants[who] = { ...(t.grants[who] ?? {}), level, rules: t.grants[who]?.rules ?? [] };
             }
             save({ op: 'grant', target: t.id, agent: who, level: level ?? null });
             return t.grants[who] ? structuredClone(t.grants[who]) : null;
@@ -102,6 +105,42 @@ export function openStore(dir, { now = () => Date.now() } = {}) {
             const [gone] = g.rules.splice(at, 1);
             save({ op: 'unallow', target: t.id, agent, rule: gone });
             return gone;
+        },
+        /* AN MCP SERVER'S TOOLS, as it listed them last (external.mjs, catalogOf): { at, tools, error? }. */
+        setCatalog(target, catalog) {
+            const t = targetOf(target);
+            if (t.kind !== 'mcp') no(`${t.title} is not an MCP server`);
+            t.catalog = { at: new Date(now()).toISOString(), tools: Array.isArray(catalog?.tools) ? catalog.tools : (t.catalog?.tools ?? []), ...(catalog?.error ? { error: oneLine(catalog.error, 500) } : {}) };
+            save({ op: 'catalog', target: t.id });
+            return structuredClone(t.catalog);
+        },
+        /* An agent's rights on an MCP server's tools, beyond its level: the classes (custom level), one
+           tool's own setting (yes / ask / no; null takes it back), whether what reaches outside is asked. */
+        toolRights(target, agent, { classes, tools, askOpen } = {}) {
+            const t = targetOf(target);
+            if (t.kind !== 'mcp') no(`${t.title} is not an MCP server`);
+            const g = t.grants[agent] ?? no(`${agent} was not given ${t.title}`);
+            if (classes !== undefined) {
+                const c = { ...(g.classes ?? {}) };
+                for (const [k, v] of Object.entries(classes ?? {})) {
+                    if (!CLASSES.includes(k)) no(`a class is one of: ${CLASSES.join(', ')}`);
+                    if (v === null) delete c[k]; else if (GOES.includes(v)) c[k] = v; else no(`a class says one of: ${GOES.join(', ')}`);
+                }
+                g.classes = c;
+            }
+            if (tools !== undefined) {
+                const own = { ...(g.tools ?? {}) };
+                for (const [k, v] of Object.entries(tools ?? {})) {
+                    const name = oneLine(k, 128);
+                    if (!name) no('say which tool');
+                    if (v === null) delete own[name]; else if (GOES.includes(v)) own[name] = v; else no(`a tool says one of: ${GOES.join(', ')}`);
+                }
+                if (Object.keys(own).length > 500) no('500 tool settings at most');
+                g.tools = own;
+            }
+            if (askOpen !== undefined) g.askOpen = askOpen === true;
+            save({ op: 'tool-rights', target: t.id, agent });
+            return structuredClone(g);
         },
         /* Stopped: every call of that agent refused until a person opens again. "*" is everybody. */
         stopped(agent) { return !!(s.stopped['*'] || s.stopped[agent]); },

@@ -10,7 +10,7 @@
  * nothing. Everything else ACTS.
  */
 
-export const KINDS = ['computer', 'ssh', 'browser', 'files', 'screen', 'mail', 'calendar', 'contacts', 'device', 'voicebox'];
+export const KINDS = ['computer', 'ssh', 'browser', 'files', 'screen', 'mail', 'calendar', 'contacts', 'device', 'voicebox', 'mcp'];
 const SHELLS = ['computer', 'ssh'];
 const FOLDERS = ['computer', 'ssh', 'files'];
 
@@ -23,6 +23,8 @@ export const PATH_MAX = 1000;
 /* A firmware handed over, as base64 (16 MB of image). */
 export const IMAGE_B64_MAX = Math.ceil(16 * 1024 * 1024 / 3) * 4;
 export const WHY_MAX = 300;
+/* The arguments of an external tool, as JSON: refused whole above this, never cut. */
+export const TOOL_ARGS_MAX = 100_000;
 
 /* name: { reads, kinds, needs: [arg names], done: false when declared only } */
 export const VERBS = Object.freeze({
@@ -110,6 +112,9 @@ export const VERBS = Object.freeze({
     'contacts.update': { reads: false, kinds: ['contacts'], needs: ['id'] },
     'contacts.delete': { reads: false, kinds: ['contacts'], needs: ['id'] },
     'contacts.attach': { reads: false, kinds: ['contacts'], needs: ['id', 'attach'] },
+    /* A TOOL OF AN EXTERNAL MCP SERVER, called by the keeper with a key the agent never holds.
+       Not a read by its verb: whether it is asked depends on the tool's class (rights.mjs, toolDecide). */
+    'mcp.call': { reads: false, kinds: ['mcp'], needs: ['tool'] },
 });
 
 export class Refused extends Error {}
@@ -334,6 +339,16 @@ export function check(verb, a = {}) {
         case 'contacts.create': str('name', 200); str('email', 200); str('phone', 60); break;
         case 'contacts.update': str('id', 1024); str('name', 200); str('email', 200); str('phone', 60); str('type', 20); break;
         case 'contacts.delete': str('id', 1024); break;
+        case 'mcp.call': {
+            str('tool', 200);
+            const given = a.arguments ?? {};
+            if (!given || typeof given !== 'object' || Array.isArray(given)) no('arguments is an object of the tool\'s arguments -- nothing was done');
+            let json;
+            try { json = JSON.stringify(given); } catch { no('the arguments cannot be sent as JSON -- nothing was done'); }
+            if (json.length > TOOL_ARGS_MAX) no(`the arguments are ${json.length} characters as JSON; ${TOOL_ARGS_MAX} at most -- nothing was done`);
+            out.arguments = JSON.parse(json);
+            break;
+        }
         default: for (const k of v.needs) str(k, COMMAND_MAX, true);
     }
     for (const k of v.needs) if (out[k] === undefined || out[k] === '') no(`${verb} needs ${k}`);
@@ -411,6 +426,20 @@ export function detail(verb, a = {}) {
         case 'contacts.update': return 'change a contact';
         case 'contacts.delete': return 'delete a contact';
         case 'contacts.attach': return "set a contact's photo";
+        case 'mcp.call': return `${a.tool} ${argsLine(a.arguments)}`.trim();
         default: return '';
     }
+}
+
+/* An external tool's arguments in one short line, for the journal and a card's summary:
+   each name, and its value cut short (a long text is its length). Never more than ~400 characters. */
+export function argsLine(args, { each = 60, most = 400 } = {}) {
+    if (!args || typeof args !== 'object' || Array.isArray(args)) return '';
+    const parts = Object.entries(args).map(([k, v]) => {
+        const s = typeof v === 'string' ? v : JSON.stringify(v) ?? '';
+        const t = oneLine(s, Infinity);
+        return `${oneLine(k, 40)}: ${t.length > each ? `${t.slice(0, each - 1)}… (${t.length} chars)` : t}`;
+    });
+    const line = parts.join(', ');
+    return line.length > most ? `${line.slice(0, most - 1)}…` : line;
 }

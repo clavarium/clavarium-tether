@@ -22,6 +22,7 @@ import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { createInterface } from 'node:readline';
 import { NAME, VERSION, FOLDER, ENV_DIR } from './name.mjs';
+import { TOOLS_FILE } from './external.mjs';
 
 export { VERSION, FOLDER };
 /* How long an ask waits for the keeper's answer. Most verbs answer in a second or
@@ -194,6 +195,23 @@ export const TOOLS = [
     tool('device-flash', 'Flash a device plugged by USB into a person\'s computer or Android phone (a target of kind device), with a firmware file of this machine: you hand the file over, the person approves, plugs the device in and clicks; it is flashed from their browser, then they choose its Wi-Fi. Waits until it is done, up to 30 minutes. Say why.', { target: TARGET, path: S('the firmware image to write at address 0, a file of this machine (for an ESP32: the merged .bin)'), name: S('what the device is called, shown to the person'), room: S('where it goes, e.g. Living room: its name once paired'), pair: { type: 'boolean', description: 'true: once on the Wi-Fi, the device is paired with the application whose page flashed it (a voice box)' }, wifi: { type: 'boolean', description: 'false: flash only, no Wi-Fi asked' }, why: WHY }, ['target', 'path']),
     tool('contacts-attach', "Set a contact's photo. A person may approve: say why.", { target: TARGET, id: S('the contact id from a list'), attach: S('the photo as base64 bytes'), attachName: S('the file name, optional'), why: WHY }, ['target', 'id', 'attach']),
 ];
+/* THE EXTERNAL TOOLS OFFERED TO THIS AGENT (external MCP servers the keeper reaches for it): read from
+ * its folder's tools.json, which the keeper writes. Only what to show and how to name it: the keeper
+ * checks every call against its own catalog and rights. Each, as the agent sees it: { name,
+ * description, inputSchema }; behind it { target, tool }. */
+export function externalTools(dir) {
+    try {
+        const file = join(dir, TOOLS_FILE);
+        if (lstatSync(file).isSymbolicLink()) return [];
+        const j = JSON.parse(readFileSync(file, 'utf8'));
+        const own = new Set(TOOLS.map((t) => t.name));
+        return (Array.isArray(j?.tools) ? j.tools : []).filter((t) => t && typeof t.name === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(t.name) && !own.has(t.name)
+            && typeof t.target === 'string' && typeof t.tool === 'string').slice(0, 1000);
+    } catch { return []; }
+}
+const shownTool = (t) => ({ name: t.name, description: String(t.description ?? ''), inputSchema: t.inputSchema && typeof t.inputSchema === 'object' ? t.inputSchema : { type: 'object', properties: {} } });
+/* How often the agent's MCP server looks whether its external tools changed. */
+export const TOOLS_EVERY_MS = 1000;
 /* A tool's arguments as the keeper reads them: [verb, args], or null. */
 export function asked(name, a = {}) {
     if (!TOOLS.some((t) => t.name === name)) return null;
@@ -201,20 +219,44 @@ export function asked(name, a = {}) {
     const keys = Object.keys(TOOLS.find((t) => t.name === name).inputSchema.properties);
     return [verb, Object.fromEntries(keys.filter((k) => a[k] !== undefined).map((k) => [k, a[k]]))];
 }
-export function serve(dir, { input = process.stdin, output = process.stdout, wait } = {}) {
+export function serve(dir, { input = process.stdin, output = process.stdout, wait, every = TOOLS_EVERY_MS } = {}) {
     const reply = (id, result, error) => output.write(`${JSON.stringify({ jsonrpc: '2.0', id, ...(error ? { error } : { result }) })}\n`);
     const rl = createInterface({ input });
+    /* Its external tools changed (a right given or taken, the server's own list): the agent is told, once it said hello. */
+    let ready = false;
+    let said = JSON.stringify(externalTools(dir).map(shownTool));
+    const look = setInterval(() => {
+        const now = JSON.stringify(externalTools(dir).map(shownTool));
+        if (now === said) return;
+        said = now;
+        if (ready) output.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'notifications/tools/list_changed' })}\n`);
+    }, every);
+    look.unref?.();
+    rl.on('close', () => clearInterval(look));
     rl.on('line', async (line) => {
         const m = parsed(line);
+        if (m?.method === 'notifications/initialized') { ready = true; return undefined; }
         if (!m || m.id === undefined) return;
-        if (m.method === 'initialize') return reply(m.id, { protocolVersion: m.params?.protocolVersion ?? '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: NAME, version: VERSION } });
-        if (m.method === 'tools/list') return reply(m.id, { tools: TOOLS });
+        if (m.method === 'initialize') return reply(m.id, { protocolVersion: m.params?.protocolVersion ?? '2024-11-05', capabilities: { tools: { listChanged: true } }, serverInfo: { name: NAME, version: VERSION } });
+        if (m.method === 'tools/list') { const ext = externalTools(dir); said = JSON.stringify(ext.map(shownTool)); return reply(m.id, { tools: [...TOOLS, ...ext.map(shownTool)] }); }
         if (m.method === 'ping') return reply(m.id, {});
         if (m.method === 'tools/call') {
             const { name, arguments: a = {} } = m.params ?? {};
             if (name === 'notices') {
                 const list = notices(dir, { all: a.all === true || a.all === 'true' });
                 return reply(m.id, { content: [{ type: 'text', text: list.length ? sayNotices(list) : 'Nothing new happened since.' }] });
+            }
+            /* A tool of an external server: asked of the keeper as mcp.call, the why kept apart (it is the person's, not the server's). */
+            const ext = TOOLS.some((t) => t.name === name) ? null : externalTools(dir).find((t) => t.name === name);
+            if (ext) {
+                const { why, ...rest } = a && typeof a === 'object' && !Array.isArray(a) ? a : {};
+                /* `why: true`: the why was added by Tether (the tool has none of its own). */
+                const own = ext.why !== true;
+                const args = own ? { ...rest, ...(why !== undefined ? { why } : {}) } : rest;
+                const r = await ask(dir, 'mcp.call', { target: ext.target, tool: ext.tool, arguments: args, ...(!own && why !== undefined ? { why } : {}) }, wait ? { wait } : {});
+                const fresh = notices(dir);
+                const since = fresh.length ? `Since your last call:\n${sayNotices(fresh)}\n\n` : '';
+                return reply(m.id, { content: [{ type: 'text', text: `${since}${r.ok ? r.text : failed(r.text)}` }], ...(r.ok ? {} : { isError: true }) });
             }
             const what = asked(name, a);
             if (!what) return reply(m.id, undefined, { code: -32601, message: `no tool ${name}` });

@@ -4,7 +4,7 @@
  * kept short), and, where the connector can tell, what the act is about (the mail
  * answered, the invitation). The page words it in its own language.
  *
- *   { kind: 'mail' | 'calendar' | 'contacts' | 'terminal' | 'files' | 'browser' | 'screen' | 'device' | 'other',
+ *   { kind: 'mail' | 'calendar' | 'contacts' | 'terminal' | 'files' | 'browser' | 'screen' | 'device' | 'mcp' | 'other',
  *     action: 'send' | 'reply' | 'forward' | 'create' | 'respond' | ...,  ...fields }
  */
 /* A mail's text is approved as it will leave: whole, up to a long mail's size (06-11: cut at 600, a person could not read the end). */
@@ -17,7 +17,14 @@ const filesOf = (a) => (Array.isArray(a.attachments) ? a.attachments.map((f) => 
     : a.attach ? [{ name: String(a.attachName || 'attachment'), kb: kb(a.attach) }] : []);
 const drop = (o) => Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined && v !== '' && !(Array.isArray(v) && !v.length)));
 
-export function cardOf(verb, a = {}, target = {}) {
+/* An external tool's arguments as a person reads them: each name and its value, plainly (a text as it
+   is, anything else as JSON), each bounded; never more than 40. */
+const ARG_MAX = 2000;
+const argsOf = (args) => Object.entries(args && typeof args === 'object' && !Array.isArray(args) ? args : {}).slice(0, 40)
+    .map(([name, v]) => ({ name: String(name).slice(0, 100), value: short(typeof v === 'string' ? v : (JSON.stringify(v, null, 2) ?? ''), ARG_MAX) }));
+
+/* `tool`: for an MCP server's call, the tool as its catalog has it ({ name, title, class, open }). */
+export function cardOf(verb, a = {}, target = {}, tool = null) {
     const [area, act] = String(verb).split('.');
     const self = String(target?.config?.user ?? '').trim().toLowerCase() || undefined;
     switch (area) {
@@ -52,6 +59,9 @@ export function cardOf(verb, a = {}, target = {}) {
         case 'voicebox': return drop({ kind: 'voicebox', action: act, level: a.level, text: a.text, version: a.version, kb: a.image ? kb(a.image) : undefined });
         case 'device': return drop({ kind: 'device', action: act, firmware: a.firmware, kb: a.image ? kb(a.image) : undefined, name: a.name, wifi: a.wifi === false ? false : undefined, pair: a.pair === true || undefined, app: a.app?.url, room: a.room ?? a.app?.room });
         case 'screen': return drop({ kind: 'screen', action: act, text: a.text, key: a.key });
+        /* "The server CRM: tool delete_contact", its class (an amber edge when destructive), its arguments shown plainly. */
+        case 'mcp': return drop({ kind: 'mcp', action: 'call', server: String(target?.title ?? ''), tool: String(a.tool ?? ''), title: tool?.title,
+            class: tool?.class ?? 'destructive', open: tool?.open === true || undefined, args: argsOf(a.arguments) });
         default: return { kind: 'other', action: String(verb) };
     }
 }

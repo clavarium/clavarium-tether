@@ -30,13 +30,15 @@
  * person deciding on the page (decide) ends the same request, whichever comes
  * first. Without `ask`, only decide does.
  */
-import { appendFileSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
+import { appendFileSync, mkdirSync, readFileSync, rmSync, writeFileSync, renameSync, lstatSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { openStore } from '../server/store.mjs';
 import { VERBS, Refused, check, detail as detailOf, no, oneLine, isVerb, reads } from '../server/verbs.mjs';
-import { decide as rightsOf, ruleFrom, LEVELS } from '../server/rights.mjs';
-import { lines, notices as noticesOf, sayNotices } from '../server/mcp.mjs';
+import { decide as rightsOf, ruleFrom, LEVELS, toolDecide, classesOf } from '../server/rights.mjs';
+import { lines, notices as noticesOf, sayNotices, TOOLS } from '../server/mcp.mjs';
+import { offered, catalogOf, catalogDiff, argsProblem, resultText, TOOLS_FILE } from '../server/external.mjs';
+import { mcp as mcpConnector } from './connectors/mcp.mjs';
 import { openJournal, hide } from './journal.mjs';
 import { approvals as openApprovals, TIMEOUT_MS } from './approvals.mjs';
 import { cardOf } from '../server/cards.mjs';
@@ -60,6 +62,13 @@ const MEANS = {
     frame: 'you read, and act where a rule allows; the rest is asked of a person',
     free: 'everything',
 };
+/* An MCP server's tools, by level (rights.mjs, CLASS_PRESETS). */
+const MCP_MEANS = {
+    watch: 'its read-only tools',
+    propose: 'its tools; a person approves each one that writes or deletes',
+    frame: 'its tools, as set class by class',
+    free: 'its tools; a person approves each one that deletes or overwrites',
+};
 const ruleText = (r) => (r.kind === 'path' ? `under ${r.value}` : r.kind === 'verb' ? r.value : r.kind === 'site' ? `site ${r.value}` : `"${r.value}"`);
 
 /* What an agent reads of its targets. */
@@ -67,6 +76,10 @@ export function sayTargets(list) {
     if (!list.length) return 'You were given no target.';
     const out = ['Your targets:'];
     for (const t of list) {
+        if (t.kind === 'mcp') {
+            out.push(`  ${t.id} (mcp) "${t.title}": an external MCP server: ${MCP_MEANS[t.level]}; they are among your tools, named ${t.id}-...${t.tools !== undefined ? ` (${t.tools} now)` : ''}`);
+            continue;
+        }
         out.push(`  ${t.id} (${t.kind}) "${t.title}": ${t.level}: ${MEANS[t.level]}`);
         if (t.level === 'frame' && t.rules.length) out.push(`      allowed without asking: ${t.rules.map(ruleText).join(', ')}`);
     }
@@ -120,6 +133,8 @@ export function keeper(dir, { sides = () => [], ask, notify, secrets = async () 
     if (!('contacts' in conns)) conns.contacts = contactsConnector();
     /* Work done in a person's browser (a device to flash): it waits for a page to run it. */
     if (!('device' in conns)) conns.device = deviceConnector({ now });
+    /* External MCP servers: an HTTP client that holds nothing until a target of kind mcp is listed or called. */
+    if (!('mcp' in conns)) conns.mcp = mcpConnector({ now });
     /* What a connector is handed for one target: who asks, and its secrets by the
        name the target gives them (the host keeps the values). */
     const ctxOf = (t, agent) => ({
@@ -175,7 +190,10 @@ export function keeper(dir, { sides = () => [], ask, notify, secrets = async () 
         }
         const a = check(verb, given);
         if (verb === 'targets') {
-            const list = store.targets().filter((t) => t.grants[who.id]).map((t) => ({ id: t.id, title: t.title, kind: t.kind, level: t.grants[who.id].level, rules: t.grants[who.id].rules }));
+            const all = store.targets();
+            const mine = all.filter((t) => t.kind === 'mcp').length ? offered(all, who.id, { reserved: RESERVED }) : [];
+            const list = all.filter((t) => t.grants[who.id]).map((t) => ({ id: t.id, title: t.title, kind: t.kind, level: t.grants[who.id].level, rules: t.grants[who.id].rules,
+                ...(t.kind === 'mcp' ? { tools: mine.filter((x) => x.target === t.id).length } : {}) }));
             return { text: sayTargets(list), data: list };
         }
         /* Its own requests still waiting for a person, and taking one back. Scoped to
@@ -201,18 +219,31 @@ export function keeper(dir, { sides = () => [], ask, notify, secrets = async () 
         if (VERBS[verb].done === false) no(`${verb} is not available yet`);
         const conn = conns[t.connector];
         if (!conn) no(`${t.title} cannot be reached from here: its connector is off`);
-        const base = { agent: me, target: { id: t.id, title: t.title }, verb, detail: detailOf(verb, a), why: a.why };
-        const d = rightsOf(g.level, verb, a, g.rules);
+        /* A tool of an external MCP server: the keeper's own catalog says what it is, never the agent's list. */
+        const tool = t.kind === 'mcp' ? (t.catalog?.tools ?? []).find((x) => x.name === a.tool) ?? null : null;
+        const base = { agent: me, target: { id: t.id, title: t.title }, verb, detail: detailOf(verb, a), why: a.why, ...(tool ? { tool: tool.name, class: tool.class } : {}) };
+        if (t.kind === 'mcp' && !tool) {
+            journal.append({ ...base, decision: 'refused', because: 'tool' });
+            no(`${t.title} has no tool ${oneLine(a.tool, 128)} (its list may have changed: look at your tools again) -- nothing was done`);
+        }
+        const d = tool ? toolDecide(g, tool) : rightsOf(g.level, verb, a, g.rules);
         if (d.go === 'no') {
-            journal.append({ ...base, decision: 'refused', because: 'level', level: g.level });
+            journal.append({ ...base, decision: 'refused', because: d.because, level: g.level });
+            if (tool) no(`${t.title}: the tool ${tool.name} (${tool.class}) is not allowed to you -- nothing was done`);
             no(`${t.title} is at level ${g.level}: ${MEANS[g.level]}`);
+        }
+        if (tool) {
+            const problem = argsProblem(tool.inputSchema, a.arguments);
+            if (problem) no(`${tool.name}: ${problem} -- nothing was done`);
+            try { conn.admit?.(t, who.id); } catch (e) { journal.append({ ...base, decision: 'refused', because: 'rate' }); throw e; }
         }
         let outcome = { decision: 'auto' }; let asked = null;
         if (d.go === 'ask') {
-            const rule = ruleFrom(verb, a);
+            /* "Always" on an external tool: yes for that tool, for this agent -- never for a destructive one (only the page sets that). */
+            const rule = tool ? (tool.class !== 'destructive' ? { kind: 'tool', value: tool.name } : null) : ruleFrom(verb, a);
             /* What a person approves, as facts for a card; and what it is about (the mail
                answered, the invitation), when the connector can tell -- a read, briefly. */
-            const card = cardOf(verb, a, t);
+            const card = cardOf(verb, a, t, tool);
             if (typeof conn.describe === 'function') {
                 try {
                     const about = await Promise.race([conn.describe(verb, t, a, ctxOf(t, who.id)), new Promise((r) => { setTimeout(() => r(null), DESCRIBE_MS).unref?.(); })]);
@@ -230,7 +261,12 @@ export function keeper(dir, { sides = () => [], ask, notify, secrets = async () 
                 }, () => {});
             }
             outcome = await decision;
-            if (outcome.decision === 'always' && rule) {
+            if (outcome.decision === 'always' && rule && tool) {
+                try {
+                    store.toolRights(t.id, who.id, { tools: { [tool.name]: 'yes' } });
+                    journal.append({ op: 'allow', agent: me, target: base.target, rule, by: outcome.by });
+                } catch { /* the call is still approved */ }
+            } else if (outcome.decision === 'always' && rule) {
                 try {
                     store.allow(t.id, who.id, rule);
                     journal.append({ op: 'allow', agent: me, target: base.target, rule, by: outcome.by });
@@ -261,9 +297,11 @@ export function keeper(dir, { sides = () => [], ask, notify, secrets = async () 
         try { res = await conn.run(verb, t, a, ctx); } catch (e) {
             ok = false; error = e instanceof Refused ? e.message : `failed: ${e?.message ?? e}`;
         }
+        /* An external server's answer: marked as data from that server, never instructions, and cut to size. */
+        if (ok && tool) res = resultText(t.title, tool.name, res);
         /* What happened is told even if the journal cannot keep it (a full disk): a done act is never answered "not done" (loop 18). */
         let unjournaled = false;
-        try { journal.append({ ...base, decision: outcome.decision, because: d.go === 'yes' ? d.because : undefined, by: outcome.by, ok, error, size: res?.size, exit: res?.exit, ms: now() - started, request: asked }); } catch { unjournaled = true; }
+        try { journal.append({ ...base, decision: outcome.decision, because: d.go === 'yes' ? d.because : undefined, by: outcome.by, ok: ok && !res?.toolError, error: error ?? (res?.toolError ? 'the tool reported an error' : undefined), size: res?.size, exit: res?.exit, ms: now() - started, request: asked }); } catch { unjournaled = true; }
         if (ok && unjournaled) res = { ...res, text: `${res.text}\n(The journal could not record this act.)` };
         if (!ok) no(hide(error, known));
         return { text: hide(res.text, known), data: { ...(res.exit !== undefined ? { exit: res.exit } : {}), size: res.size ?? 0 } };
@@ -295,8 +333,25 @@ export function keeper(dir, { sides = () => [], ask, notify, secrets = async () 
                 journal.append({ op, agent: { id: a.agent, name: nameOf(a.agent) }, target: { id: a.target, title: store.target(a.target)?.title }, rule: r, by });
                 return r;
             }
-            case 'put-target': return store.putTarget(a);
-            case 'remove-target': return store.removeTarget(a.target);
+            case 'put-target': {
+                const t = store.putTarget(a);
+                if (t.kind === 'mcp') { conns[t.connector]?.forget?.(t.id); void refresh(t.id).catch(() => { /* said in its catalog */ }); }
+                return t;
+            }
+            case 'remove-target': { const r = store.removeTarget(a.target); for (const c of Object.values(conns)) { try { c?.forget?.(r.id); } catch { /* gone */ } } return r; }
+            /* AN EXTERNAL MCP SERVER, from the page: its name, its address, the NAME of the secret that holds
+               its key (never the key: the application keeps it in its vault). Listed at once. */
+            case 'mcp-add': return addServer(a);
+            /* A file in the usual form ({ "mcpServers": { name: { url, headers } } }) where every key is a
+               reference to a secret, "${NAME}": servers made from it. A value written in it is refused. */
+            case 'mcp-import': return importServers(a.config);
+            case 'mcp-refresh': return refresh(oneLine(a.target, 100));
+            case 'mcp-rights': {
+                const g = store.toolRights(a.target, a.agent, { classes: a.classes, tools: a.tools, askOpen: a.askOpen });
+                const said = [a.classes ? Object.entries(a.classes).map(([k, v]) => `${k}: ${v ?? 'as its level'}`).join(', ') : '', a.tools ? Object.entries(a.tools).map(([k, v]) => `${k}: ${v ?? 'as its class'}`).join(', ') : '', a.askOpen !== undefined ? `ask what reaches outside: ${a.askOpen === true}` : ''].filter(Boolean).join('; ');
+                journal.append({ op: 'tools', agent: { id: a.agent, name: nameOf(a.agent) }, target: { id: a.target, title: store.target(a.target)?.title }, detail: said, by });
+                return { ...g, classes: classesOf(g) };
+            }
             default: return no(`there is no ${oneLine(op, 40)}`);
         }
     }
@@ -347,6 +402,7 @@ export function keeper(dir, { sides = () => [], ask, notify, secrets = async () 
     const write = (side, line) => { mkdirSync(side.dir, { recursive: true }); appendFileSync(join(side.dir, 'answers.jsonl'), `${JSON.stringify({ at: new Date(now()).toISOString(), ...line })}\n`); };
     function pump() {
         let n = 0;
+        try { offerTools(); } catch { /* written again next time */ }
         for (const side of sides()) {
             const answers = lines(join(side.dir, 'answers.jsonl'));
             const done = new Set(answers.filter((x) => x.held !== true).map((x) => x.ask));
@@ -375,8 +431,127 @@ export function keeper(dir, { sides = () => [], ask, notify, secrets = async () 
         return n;
     }
 
+    /* ---- external MCP servers ---- */
+    const RESERVED = TOOLS.map((x) => x.name);
+    const SECRET_REF = /^[A-Za-z0-9_][A-Za-z0-9_.:-]{0,99}$/;
+    function serverConfig(a) {
+        const url = String(a.url ?? '').trim();
+        let u; try { u = new URL(url); } catch { no('the address of an MCP server is a URL, like https://mcp.example.com/mcp'); }
+        if (u.protocol !== 'https:' && !(u.protocol === 'http:' && a.allowHttp === true)) no('the address must be https (plain http only where allowed, for a local network)');
+        if (u.username || u.password) no('no user or password in the address: the key is a secret, named apart');
+        const config = { url: u.href };
+        if (a.header) { const h = oneLine(a.header, 60); if (!/^[A-Za-z0-9-]{1,60}$/.test(h)) no('the header is a header name, like Authorization or X-API-Key'); config.header = h; }
+        if (a.allowHttp === true) config.allowHttp = true;
+        for (const k of ['perMinute', 'perDay']) if (a[k] !== undefined && a[k] !== null && a[k] !== '') { const n = Math.trunc(Number(a[k])); if (!(n > 0)) no(`${k} is a number of calls`); config[k] = n; }
+        return config;
+    }
+    async function addServer(a) {
+        const title = oneLine(a.title ?? a.name, 120);
+        if (!title) no('an MCP server needs a name');
+        const secret = a.secret === undefined || a.secret === null || a.secret === '' ? '' : oneLine(a.secret, 200);
+        if (secret && !SECRET_REF.test(secret)) no('the key is given by the NAME of a secret of the vault, never by its value');
+        const t = store.putTarget({ id: a.id, title, kind: 'mcp', connector: 'mcp', config: serverConfig(a), secrets: secret ? { token: secret } : {} });
+        conns.mcp?.forget?.(t.id);
+        let catalog = null; let error = '';
+        try { catalog = await refresh(t.id); } catch (e) { error = e.message; }
+        const { secrets: sec, ...shown } = store.target(t.id);
+        return { ...shown, secrets: Object.keys(sec ?? {}), ...(catalog ? {} : { error }) };
+    }
+    async function importServers(config) {
+        const all = config && typeof config === 'object' ? (config.mcpServers ?? config.servers) : null;
+        if (!all || typeof all !== 'object' || Array.isArray(all)) no('the file holds { "mcpServers": { "name": { "url": "https://...", "headers": { "Authorization": "Bearer ${SECRET_NAME}" } } } }');
+        const made = [];
+        for (const [name, s] of Object.entries(all)) {
+            if (!s || typeof s !== 'object') no(`${oneLine(name, 60)}: not a server`);
+            if (s.command) no(`${oneLine(name, 60)}: a program to start (stdio) is not run here; only servers reached by an address`);
+            const url = s.url ?? s.serverUrl;
+            const heads = s.headers && typeof s.headers === 'object' ? Object.entries(s.headers) : [];
+            if (heads.length > 1) no(`${oneLine(name, 60)}: one header for the key at most`);
+            let header; let secret;
+            for (const [h, v] of heads) {
+                const m = /^(Bearer\s+)?\$\{([A-Za-z0-9_][A-Za-z0-9_.:-]{0,99})\}$/.exec(String(v ?? '').trim());
+                if (!m) no(`${oneLine(name, 60)}: the header ${oneLine(h, 60)} holds a value, not a reference to a secret ("\${NAME}") -- nothing was made`);
+                if (h.toLowerCase() === 'authorization' && !m[1]) no(`${oneLine(name, 60)}: Authorization is "Bearer \${NAME}"`);
+                header = h.toLowerCase() === 'authorization' ? undefined : h; secret = m[2];
+            }
+            made.push({ title: name, url, header, secret, allowHttp: s.allowHttp === true });
+        }
+        for (const m of made) serverConfig(m);
+        const out = [];
+        for (const m of made) out.push(await addServer(m));
+        return out;
+    }
+    /* A server listed again: one at a time each; asked again meanwhile, once more after. */
+    const refreshing = new Map();
+    function refresh(id) {
+        const on = refreshing.get(id);
+        if (on) { on.again = true; return on.done; }
+        const entry = { again: false };
+        entry.done = (async () => {
+            try { let c; do { entry.again = false; c = await listOnce(id); } while (entry.again); return c; } finally { refreshing.delete(id); }
+        })();
+        refreshing.set(id, entry);
+        return entry.done;
+    }
+    async function listOnce(id) {
+        const t = store.target(id);
+        if (!t || t.kind !== 'mcp') no(`no MCP server ${oneLine(id, 100)}`);
+        const conn = conns[t.connector];
+        if (typeof conn?.discover !== 'function') no(`${t.title} cannot be reached from here: its connector is off`);
+        const target = { id: t.id, title: t.title };
+        try {
+            const raw = await conn.discover(t, ctxOf(t, 'keeper'));
+            let tools = catalogOf(raw);
+            /* A server that writes the key back into its list never has it shown. */
+            try { tools = JSON.parse(hide(JSON.stringify(tools), known)); } catch { /* kept as listed */ }
+            const diff = catalogDiff(t.catalog?.tools ?? [], tools);
+            const c = store.setCatalog(t.id, { tools });
+            if (!t.catalog || t.catalog.error || diff.added.length || diff.removed.length || diff.changed.length) {
+                const said = [diff.added.length ? `+ ${diff.added.join(', ')}` : '', diff.removed.length ? `- ${diff.removed.join(', ')}` : '', diff.changed.length ? `~ ${diff.changed.join(', ')}` : ''].filter(Boolean).join('; ');
+                journal.append({ op: 'catalog', target, detail: `${tools.length} tool${tools.length === 1 ? '' : 's'}${said ? `: ${said}` : ''}`, ok: true });
+            }
+            return c;
+        } catch (e) {
+            const msg = hide(e instanceof Refused ? e.message : `failed: ${e?.message ?? e}`, known);
+            try { store.setCatalog(t.id, { error: msg }); } catch { /* removed meanwhile */ }
+            journal.append({ op: 'catalog', target, ok: false, error: msg });
+            throw new Refused(msg);
+        }
+    }
+    /* Each agent's external tools, in its folder (tools.json): written when they change. The agent's
+       MCP server reads it and tells the agent; a call is checked here again, whatever the file says. */
+    let toolsGen = 0; let toolsSeen = -1;
+    const toolsWritten = new Map();
+    store.onChange(() => { toolsGen++; });
+    function offerTools() {
+        const list = sides();
+        if (toolsSeen === toolsGen && list.every((s) => toolsWritten.has(s.dir))) return;
+        toolsSeen = toolsGen;
+        const all = store.targets();
+        const any = all.some((t) => t.kind === 'mcp');
+        for (const side of list) {
+            const tools = any ? offered(all, side.who.id, { reserved: RESERVED, stopped: store.stopped(side.who.id) }) : [];
+            const text = hide(JSON.stringify({ v: 1, tools }), known);
+            if (toolsWritten.get(side.dir) === text) continue;
+            const file = join(side.dir, TOOLS_FILE);
+            let there = null;
+            try { if (!lstatSync(file).isSymbolicLink()) there = readFileSync(file, 'utf8'); } catch { /* none yet */ }
+            if (there === text || (there === null && !tools.length)) { toolsWritten.set(side.dir, text); continue; }
+            mkdirSync(side.dir, { recursive: true });
+            /* A fresh name, created only if nothing is there (a link the agent planted is never followed), then put in place whole. */
+            const tmp = join(side.dir, `.${TOOLS_FILE}.${randomUUID()}.tmp`);
+            writeFileSync(tmp, text, { flag: 'wx' }); renameSync(tmp, file);
+            toolsWritten.set(side.dir, text);
+        }
+    }
+    conns.mcp?.attach?.({ changed: (id) => { void refresh(id).catch(() => { /* said in its catalog */ }); }, targets: () => store.targets().filter((t) => t.kind === 'mcp' && t.connector === 'mcp') });
+    /* Listed once at the start: their streams of changes listened to again. */
+    for (const t of store.targets()) if (t.kind === 'mcp') void refresh(t.id).catch(() => { /* said in its catalog */ });
+
     const api = {
         store,
+        /* An MCP server listed again now: Promise<catalog>. */
+        refresh,
         act,
         read,
         pump,

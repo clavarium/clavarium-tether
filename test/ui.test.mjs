@@ -8,6 +8,7 @@ import { LEVELS as RIGHTS_LEVELS } from '../server/rights.mjs';
 import { VERBS } from '../server/verbs.mjs';
 import { keeper } from '../host/keeper.mjs';
 import { options } from '../host/serve.mjs';
+import { catalogOf } from '../server/external.mjs';
 
 const words = (lang) => JSON.parse(readFileSync(new URL(`../ui/texts/${lang}.json`, import.meta.url)));
 const BOT = { id: 'agent:site', kind: 'agent', name: 'Assistant' };
@@ -88,4 +89,49 @@ test('the screen: a card per call waiting, hostile text stays text, Accept decid
         assert.equal(s.state.waiting, 0);
         s.destroy();
     } finally { Object.assign(globalThis, was); }
+});
+
+test('the screen: an external MCP server -- its card says the server and the tool, its arguments plainly; its tools with their class', async () => {
+    class Node { constructor() { this.childNodes = []; } append(...k) { for (const c of k) { c.parent = this; this.childNodes.push(c); } }
+        replaceChildren(...k) { this.childNodes = []; this.append(...k); } remove() {} contains() { return false; }
+        get textContent() { return this.childNodes.map((c) => c.textContent).join(''); } }
+    class Text extends Node { constructor(t) { super(); this.data = t; } get textContent() { return this.data; } }
+    class El extends Node {
+        constructor(tag) { super(); this.tag = tag; this.attrs = {}; this.on = {}; }
+        setAttribute(k, v) { this.attrs[k] = String(v); } getAttribute(k) { return this.attrs[k] ?? null; }
+        addEventListener(k, fn) { this.on[k] = fn; } focus() {} querySelector() { return null; }
+        set innerHTML(_) { throw new Error('innerHTML used'); }
+        set className(v) { this.attrs.class = v; }
+    }
+    const all = (n, out = []) => { if (n instanceof El) { out.push(n); n.childNodes.forEach((c) => all(c, out)); } return out; };
+    const was = { document: globalThis.document, Node: globalThis.Node };
+    Object.assign(globalThis, { Node, document: { createElement: (t) => new El(t), createTextNode: (t) => new Text(t), activeElement: null } });
+    const ran = [];
+    const k = keeper(mkdtempSync(join(tmpdir(), 'tether-ui-')), { sides: () => [{ dir: mkdtempSync(join(tmpdir(), 'tether-side-')), who: BOT }], connectors: { mcp: { run: async (v, t, a) => { ran.push(a); return { content: [] }; } }, ssh: null } });
+    try {
+        k.store.putTarget({ id: 'crm', title: 'CRM', kind: 'mcp', connector: 'mcp', config: { url: 'https://mcp.example.com/mcp' }, secrets: { token: 'CRM_KEY' } });
+        k.store.setCatalog('crm', { tools: catalogOf([
+            { name: 'search', annotations: { readOnlyHint: true } },
+            { name: 'delete_contact', title: 'Delete a contact', inputSchema: { type: 'object', properties: { id: { type: 'string' } } } },
+        ]) });
+        k.store.grant('crm', BOT.id, 'propose');
+        const pending = k.act('mcp.call', { target: 'crm', tool: 'delete_contact', arguments: { id: '<script>x</script>' } }, BOT);
+        await new Promise((r) => setTimeout(r, 20));
+        const root = new El('div');
+        const s = mount(root, { call: (op, args) => k.act(op, args, ME), words: words('fr'), lang: 'fr', agent: BOT.id });
+        await new Promise((r) => setTimeout(r, 30));
+        const els = all(root);
+        assert.match(root.textContent, /Le serveur CRM : Delete a contact \?/);
+        assert.match(root.textContent, /<script>x<\/script>/, 'its argument shown as text');
+        assert.ok(!els.some((e) => e.tag === 'script'));
+        assert.ok(els.some((e) => e.attrs.class?.includes('tether-amber')), 'destructive: an amber edge');
+        assert.equal(els.filter((e) => e.attrs['data-act'] === 'always').length, 0, 'no Always on a destructive tool');
+        assert.deepEqual(els.filter((e) => e.attrs['data-level']).map((e) => e.attrs['data-level']), ['none', 'watch', 'propose', 'free', 'frame']);
+        assert.equal(els.find((e) => e.attrs['data-level'] === 'propose').attrs['aria-pressed'], 'true');
+        assert.deepEqual(els.filter((e) => e.attrs['data-class'] && e.tag === 'span' && e.parent?.attrs?.['data-tool']).map((e) => e.textContent), ['Lecture', 'Supprime ou écrase']);
+        await els.find((e) => e.attrs['data-act'] === 'no').on.click();
+        assert.equal((await pending).ok, false);
+        assert.equal(ran.length, 0, 'refused: never run');
+        s.destroy();
+    } finally { Object.assign(globalThis, was); await k.close(); }
 });

@@ -146,3 +146,66 @@ const parentOf = (p) => {
     if (p.startsWith('~/') && at === 1) return '~';
     return at <= 0 ? '/' : p.slice(0, at);
 };
+
+/* ---- THE TOOLS OF AN EXTERNAL MCP SERVER (a target of kind `mcp`) ----
+ *
+ * Each tool has a CLASS, read from what the server declares of it (its annotations,
+ * standard hints): trusted as declared, a person can still set one tool otherwise.
+ *
+ *   read          readOnlyHint true
+ *   write         not read-only, and destructiveHint false
+ *   destructive   not read-only, and destructiveHint true OR NOT SAID
+ *   + open        openWorldHint true or not said: it reaches out (sends, publishes)
+ *
+ * A tool that declares nothing is destructive and open: the strictest, as the
+ * protocol's own defaults say.
+ *
+ * The LEVEL of the grant says, class by class, yes / ask / no:
+ *
+ *   (no grant)  Off             no tool at all: the agent does not even see them
+ *   watch       Read            read yes, write no,  destructive no
+ *   propose     All, approved   read yes, write ask, destructive ask
+ *   free        All             read yes, write yes, destructive ask
+ *   frame       Custom          the grant's own `classes` (propose's where unsaid)
+ *
+ * A TOOL'S OWN SETTING (`tools: { name: yes | ask | no }`) wins over its class, at
+ * any level: "delete_contact: no", "create_issue: yes". Yes for a destructive tool
+ * is only ever set so, by a person, tool by tool: never by a class preset, never by
+ * "Always" on a card. `askOpen` (custom): a write tool that reaches out is asked
+ * even where its class says yes. */
+export const CLASSES = Object.freeze(['read', 'write', 'destructive']);
+export const GOES = Object.freeze(['yes', 'ask', 'no']);
+export const CLASS_PRESETS = Object.freeze({
+    watch: Object.freeze({ read: 'yes', write: 'no', destructive: 'no' }),
+    propose: Object.freeze({ read: 'yes', write: 'ask', destructive: 'ask' }),
+    free: Object.freeze({ read: 'yes', write: 'yes', destructive: 'ask' }),
+});
+
+/* A tool's class from its annotations: { class, open, idempotent }. */
+export function classOf(annotations) {
+    const a = annotations && typeof annotations === 'object' && !Array.isArray(annotations) ? annotations : {};
+    const open = a.openWorldHint !== false;
+    const idempotent = a.idempotentHint === true;
+    if (a.readOnlyHint === true) return { class: 'read', open, idempotent };
+    if (a.destructiveHint === false) return { class: 'write', open, idempotent };
+    return { class: 'destructive', open, idempotent };
+}
+
+/* The classes a grant applies: its level's preset, or (frame) its own. */
+export function classesOf(grant) {
+    if (!grant || !isLevel(grant.level)) return { read: 'no', write: 'no', destructive: 'no' };
+    if (grant.level !== 'frame') return { ...CLASS_PRESETS[grant.level] };
+    const own = grant.classes && typeof grant.classes === 'object' ? grant.classes : {};
+    return Object.fromEntries(CLASSES.map((c) => [c, GOES.includes(own[c]) ? own[c] : CLASS_PRESETS.propose[c]]));
+}
+
+/* THE DECISION for one tool of a catalog ({ name, class, open }): { go, because }.
+ *   because: 'tool' (its own setting), 'class' (its class at this level), 'level' (no grant). */
+export function toolDecide(grant, tool) {
+    if (!grant || !isLevel(grant.level) || !tool) return { go: 'no', because: 'level' };
+    const own = grant.tools?.[tool.name];
+    if (GOES.includes(own)) return { go: own, because: 'tool' };
+    let go = classesOf(grant)[CLASSES.includes(tool.class) ? tool.class : 'destructive'] ?? 'no';
+    if (go === 'yes' && grant.level === 'frame' && grant.askOpen === true && tool.open && tool.class !== 'read') go = 'ask';
+    return { go, because: 'class' };
+}

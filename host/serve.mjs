@@ -55,6 +55,13 @@
  * the page. Given at level "propose" (every action asked). --browser-title and
  * --browser-level change its name and level.
  *
+ * --mcp NAME=URL declares one external MCP server (Streamable HTTP, https; --mcp-http allows plain
+ * http, for a local network). --mcp-key-env VAR names the environment variable holding its API key,
+ * sent as "Authorization: Bearer KEY" (--mcp-header H: in the header H instead). The key stays in
+ * this process: the agents get the server's tools, never the key. Given at --mcp-level (propose:
+ * "All, approved" -- every tool that writes or deletes is asked). On the page, a server added names
+ * its key "env:VAR" the same way.
+ *
  * The page listens on 127.0.0.1 only: who reaches it is the person.
  */
 import { createServer } from 'node:http';
@@ -113,7 +120,8 @@ new EventSource('/api/changes').onmessage = () => { clearTimeout(soon); soon = s
 </script></html>`;
 
 export function options(argv, { env = process.env, cwd = process.cwd() } = {}) {
-    const o = { store: env[ENV_STORE] || join(homedir(), '.local', 'share', PACKAGE), port: PORT, sides: [], lang: 'en', local: null, timeout: 10, ssh: null, webdav: null, graph: null, browser: null, screen: null };
+    const o = { store: env[ENV_STORE] || join(homedir(), '.local', 'share', PACKAGE), port: PORT, sides: [], lang: 'en', local: null, timeout: 10, ssh: null, webdav: null, graph: null, browser: null, screen: null, mcp: null };
+    const mcpOf = () => (o.mcp ??= { title: '', url: '', keyEnv: '', header: '', http: false, level: 'propose' });
     const sshOf = () => (o.ssh ??= { port: 22, title: '', pin: '', root: '', level: 'propose', keyFile: '', passphraseEnv: '' });
     const webdavOf = () => (o.webdav ??= { url: '', user: '', root: '', title: '', level: 'propose', passEnv: '' });
     const graphOf = () => (o.graph ??= { drive: '', root: '', title: '', level: 'propose', tokenEnv: '' });
@@ -153,6 +161,11 @@ export function options(argv, { env = process.env, cwd = process.cwd() } = {}) {
         else if (a === '--screen-node' && v) { screenOf().node = v; i++; }
         else if (a === '--screen-title' && v) { screenOf().title = v; i++; }
         else if (a === '--screen-level' && v) { screenOf().level = v; i++; }
+        else if (a === '--mcp' && v) { const at = v.indexOf('='); if (at <= 0) throw new Error('--mcp takes NAME=URL'); const m = mcpOf(); m.title = v.slice(0, at); m.url = v.slice(at + 1); i++; }
+        else if (a === '--mcp-key-env' && v) { mcpOf().keyEnv = v; i++; }
+        else if (a === '--mcp-header' && v) { mcpOf().header = v; i++; }
+        else if (a === '--mcp-level' && v) { mcpOf().level = v; i++; }
+        else if (a === '--mcp-http') { mcpOf().http = true; }
         else if (a === '--browser') { o.browser ??= { title: 'Browser', level: 'propose' }; }
         else if (a === '--browser-title' && v) { (o.browser ??= { title: 'Browser', level: 'propose' }).title = v; i++; }
         else if (a === '--browser-level' && v) { (o.browser ??= { title: 'Browser', level: 'propose' }).level = v; i++; }
@@ -186,6 +199,10 @@ export function options(argv, { env = process.env, cwd = process.cwd() } = {}) {
         if (!levelOk(o.graph.level)) throw new Error('--graph-level is one of: watch, propose, frame, free');
         o.graph.title ||= 'Online folder';
     }
+    if (o.mcp) {
+        if (!o.mcp.url) throw new Error('--mcp takes NAME=URL');
+        if (!levelOk(o.mcp.level)) throw new Error('--mcp-level is one of: watch, propose, frame, free');
+    }
     if (o.browser) {
         if (!['watch', 'propose', 'frame', 'free'].includes(o.browser.level)) throw new Error('--browser-level is one of: watch, propose, frame, free');
         o.browser.title ||= 'Browser';
@@ -204,14 +221,16 @@ export function start(o, { quiet = false, screenEngine = null } = {}) {
     /* The SSH key and its passphrase are read here, when a connector asks for
        them by the name the target gave. Neither is written to the store, the
        journal or the page: only the names "ssh-key" and "ssh-passphrase" are. */
-    const secrets = (o.ssh || o.webdav || o.graph || o.screen) ? async (name) => {
+    const secrets = async (name) => {
+        /* A key named "env:VAR" (an MCP server's): read from this process's environment, never written anywhere. */
+        if (/^env:[A-Za-z_][A-Za-z0-9_]{0,99}$/.test(name)) { const v = process.env[name.slice(4)]; if (!v) throw new Error(`the variable ${name.slice(4)} is not set`); return v; }
         if (o.ssh && name === 'ssh-key') return readFileSync(o.ssh.keyFile, 'utf8');
         if (o.ssh && name === 'ssh-passphrase' && o.ssh.passphraseEnv) return process.env[o.ssh.passphraseEnv] ?? '';
         if (o.webdav && name === 'webdav-pass') return process.env[o.webdav.passEnv] ?? '';
         if (o.graph && name === 'graph-token') return process.env[o.graph.tokenEnv] ?? '';
         if (o.screen && name === 'screen-token') return process.env[o.screen.tokenEnv] ?? '';
         throw new Error(`no secret named ${name}`);
-    } : undefined;
+    };
     /* The browser connector: the extension connects out to it over a WebSocket
        (the /browser endpoint below). Its tokens are kept in a file of the store,
        never in the journal; only names and tab lists ever leave this process. */
@@ -264,6 +283,12 @@ export function start(o, { quiet = false, screenEngine = null } = {}) {
         if (o.screen.node) config.node = o.screen.node;
         const t = k.store.putTarget({ id: 'screen', title: o.screen.title, kind: 'screen', connector: 'screen', config, secrets: { token: 'screen-token' } });
         for (const s of o.sides) if (!t.grants[s.who.id]) k.store.grant(t.id, s.who.id, o.screen.level);
+    }
+    if (o.mcp) {
+        void k.act('mcp-add', { id: o.mcp.title, name: o.mcp.title, url: o.mcp.url, ...(o.mcp.keyEnv ? { secret: `env:${o.mcp.keyEnv}` } : {}), ...(o.mcp.header ? { header: o.mcp.header } : {}), ...(o.mcp.http ? { allowHttp: true } : {}) }, PERSON).then((r) => {
+            if (!r.ok) { if (!quiet) process.stderr.write(`${NAME}: MCP server ${o.mcp.title}: ${r.text}\n`); return; }
+            for (const s of o.sides) if (!k.store.target(r.data.id)?.grants?.[s.who.id]) k.store.grant(r.data.id, s.who.id, o.mcp.level);
+        });
     }
     const watchers = new Set();
     const nudge = () => { for (const res of watchers) res.write('data: change\n\n'); };

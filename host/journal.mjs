@@ -14,7 +14,7 @@
 import { appendFileSync, readFileSync, mkdirSync, lstatSync } from 'node:fs';
 import { join } from 'node:path';
 
-export const FIELDS = Object.freeze(['op', 'agent', 'target', 'verb', 'detail', 'why', 'decision', 'because', 'by', 'word', 'ok', 'error', 'size', 'exit', 'ms', 'rule', 'level', 'request', 'kind', 'ref']);
+export const FIELDS = Object.freeze(['op', 'agent', 'target', 'verb', 'detail', 'why', 'decision', 'because', 'by', 'word', 'ok', 'error', 'size', 'exit', 'ms', 'rule', 'level', 'request', 'kind', 'ref', 'tool', 'class']);
 export const DETAIL_MAX = 2000;
 export const HIDDEN = '[secret]';
 

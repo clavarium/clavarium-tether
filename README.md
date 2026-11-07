@@ -35,7 +35,8 @@ same way, universal (nothing in it is specific to Clavarium).
 
 - **Hold a key.** Passwords and keys stay with the keeper (the application,
   or `tether serve`), from the application's secret store. The agent asks
-  through its own folder; it never connects, and never sees a secret.
+  through its own folder; it never connects, and never sees a secret. The
+  same holds for the API key of an external MCP server (below).
 - **Approve.** Only a person does, on the screen or wherever the
   application asks them.
 - **Hide.** Each call is a line of the journal: who, where, what exactly,
@@ -44,6 +45,47 @@ same way, universal (nothing in it is specific to Clavarium).
 - **Go on after Stop.** One button cuts every target of an agent: what
   waits is refused, terminals are closed, every call after is refused until
   a person resumes.
+
+## Reach an external MCP server
+
+A CRM's MCP server, a forge's, one of your own: added once to Tether, its tools
+become tools of the agents you give it to, **and its API key never goes down
+into their machines.**
+
+That is the difference with giving the key to the agent. A key in an agent's
+machine can be read and copied by the agent (or by whatever text talks it into
+it); a key kept by Tether cannot. The keeper connects to the server itself, over
+Streamable HTTP (`initialize`, `tools/list`, `tools/call`), puts the key in the
+request's header, and gives the agent only the answer, framed as data from that
+server, never as instructions. A server that says the key back has it masked.
+
+It also brings what every other target has:
+
+- **Classes, from what the server declares.** Each tool is *read*, *writes* or
+  *deletes or overwrites*, from its annotations (`readOnlyHint`,
+  `destructiveHint`), plus *sends outside* (`openWorldHint`). A tool that
+  declares nothing is the strictest: deletes or overwrites.
+- **Rights per conversation.** Off (the agent does not even see the tools) ·
+  Read · All, approved (what writes or deletes is asked) · All (only what
+  deletes is asked) · Custom (Yes / Ask / No class by class). And one tool
+  otherwise: "`delete_contact`: No", "`create_issue`: Yes".
+- **A card to approve.** "The server CRM: Delete a contact?", with the
+  arguments exactly as they will be sent. Always on a card gives Yes to that
+  tool for that conversation, never to one that deletes.
+- **A journal, limits, Stop.** Each call: who, which tool, its arguments in
+  short, the decision, how it went (never the result). A time limit, a size
+  limit, 60 calls a minute and 1000 a day per server and conversation. Stop
+  takes the tools away.
+- **Changes followed.** When the server says its tools changed
+  (`notifications/tools/list_changed`), Tether lists them again; a new tool
+  goes straight into its class, and each agent's list is updated.
+
+The tools appear in the agent's own Tether MCP server, named after the server:
+`crm-search_contacts`. Add one from the page (a name, an `https` address, the
+**name** of the secret holding its key, never the key), from a file in the
+usual `mcpServers` form whose keys are references (`"Bearer ${CRM_KEY}"`; a
+value written in it is refused), or with `tether serve --mcp crm=URL
+--mcp-key-env VAR`. See [docs/protocol.md](docs/protocol.md#external-mcp-servers).
 
 ## Reach a server over SSH
 

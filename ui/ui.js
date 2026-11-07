@@ -24,7 +24,13 @@ export const KEYS = Object.freeze(['requests', 'access', 'journal', 'nothing-wai
     'ask-terminal.run', 'ask-terminal.type', 'ask-terminal.open', 'ask-files.write', 'ask-files.move', 'ask-files.delete', 'ask-device.flash', 'ask-other', 'job', 'job-run', 'job-cancel',
     'did-yes', 'did-always', 'did-no', 'did-timeout', 'did-stopped', 'did-refused', 'did-read', 'did-rule', 'did-free', 'did-failed',
     'op-level', 'op-allow', 'op-unallow', 'op-stop', 'op-resume',
-    'allowed', 'under', 'rule', 'rule-command', 'rule-path', 'add', 'cancel', 'remove', 'stop', 'stopped', 'resume', 'more', 'agent']);
+    'allowed', 'under', 'rule', 'rule-command', 'rule-path', 'add', 'cancel', 'remove', 'stop', 'stopped', 'resume', 'more', 'agent',
+    'kind-mcp', 'ask-mcp.call', 'did-class', 'did-tool', 'op-catalog', 'op-tools',
+    'mcp-none', 'mcp-watch', 'mcp-propose', 'mcp-free', 'mcp-frame', 'class-read', 'class-write', 'class-destructive', 'class-open',
+    'go-yes', 'go-ask', 'go-no', 'go-class', 'mcp-tools', 'mcp-empty', 'mcp-refresh', 'mcp-add', 'mcp-name', 'mcp-url', 'mcp-secret', 'mcp-ask-open']);
+/* An MCP server's levels as a person reads them: Off, Read, All approved, All, Custom (rights.mjs). */
+export const MCP_LEVELS = ['none', 'watch', 'propose', 'free', 'frame'];
+export const CLASSES = ['read', 'write', 'destructive'];
 
 /* Words with {name} holes filled. A missing word shows its key, so a gap is seen. */
 export const fill = (text, values = {}) => String(text).replace(/\{(\w+)\}/g, (m, k) => (values[k] ?? m));
@@ -96,7 +102,8 @@ export function mount(root, { call, words = {}, lang = 'en', agent = null } = {}
     function card(r) {
         const t = targetOf(r.target.id);
         const level = t?.grants?.[r.agent.id]?.level ?? r.level;
-        const title = fill(w(`ask-${r.verb}`) === `ask-${r.verb}` ? w('ask-other') : w(`ask-${r.verb}`), { target: r.target.title });
+        const title = fill(w(`ask-${r.verb}`) === `ask-${r.verb}` ? w('ask-other') : w(`ask-${r.verb}`), { target: r.target.title, tool: r.card?.title || r.card?.tool || '' });
+        const mcp = r.card?.kind === 'mcp';
         const always = alwaysLabel(r.rule, w);
         const busy = ui.busy.has(r.id);
         const decide = (decision) => async () => {
@@ -105,16 +112,19 @@ export function mount(root, { call, words = {}, lang = 'en', agent = null } = {}
             ui.busy.delete(r.id); await refresh();
         };
         const several = !agent && (ui.data?.agents.length ?? 0) > 1;
-        return h('article', { class: 'tether-card tether-wait', 'data-request': r.id },
+        return h('article', { class: `tether-card tether-wait${mcp && r.card.class === 'destructive' ? ' tether-amber' : ''}`, 'data-request': r.id },
             h('h3', {}, h('span', { class: 'tether-dot', 'aria-hidden': 'true' }), title),
-            r.detail ? h('pre', { class: 'tether-code' }, r.detail) : null,
+            mcp ? h('p', { class: 'tether-dim' }, h('span', { class: `tether-pill tether-class-${r.card.class}`, 'data-class': r.card.class }, w(`class-${r.card.class}`)), r.card.open ? ` ${w('class-open')}` : '') : null,
+            /* Its arguments, plainly: each name and its value as the server will get it. */
+            mcp ? (r.card.args?.length ? h('dl', { class: 'tether-args' }, r.card.args.flatMap((x) => [h('dt', {}, x.name), h('dd', {}, h('pre', { class: 'tether-code' }, x.value))])) : null)
+                : r.detail ? h('pre', { class: 'tether-code' }, r.detail) : null,
             r.why ? h('p', { class: 'tether-why' }, r.why) : null,
             h('div', { class: 'tether-buttons' },
                 h('button', { type: 'button', class: 'tether-accept', 'data-act': 'yes', disabled: busy, onclick: decide('yes') }, w('accept')),
                 h('button', { type: 'button', class: 'tether-plain', 'data-act': 'no', disabled: busy, onclick: decide('no') }, w('refuse')),
                 always ? h('button', { type: 'button', class: 'tether-soft', 'data-act': 'always', disabled: busy, onclick: decide('always') }, always) : null),
             h('p', { class: 'tether-foot' },
-                `${several ? `${r.agent.name} · ` : ''}${fill(w('level-of'), { target: r.target.title })} ${w(`level-${level}`)} · ${w(`means-${level}`)} · ${fill(w('until'), { time: time(r.until) })}`));
+                `${several ? `${r.agent.name} · ` : ''}${fill(w('level-of'), { target: r.target.title })} ${mcp ? w(`mcp-${level}`) : `${w(`level-${level}`)} · ${w(`means-${level}`)}`} · ${fill(w('until'), { time: time(r.until) })}`));
     }
     /* A call a person decided, as it ended. */
     function ended(l) {
@@ -177,7 +187,43 @@ export function mount(root, { call, words = {}, lang = 'en', agent = null } = {}
             h('button', { type: 'button', class: 'tether-accept', 'data-act': 'save-rule', onclick: add }, w('add')),
             h('button', { type: 'button', class: 'tether-plain', onclick: () => { ui.adding = null; paint(); } }, w('cancel'))));
     }
+    /* An external MCP server: its level (Off, Read, All approved, All, Custom), its tools with their
+       class, each one's own setting; Custom sets the classes. */
+    function mcpTarget(t) {
+        const g = t.grants?.[ui.agent] ?? null;
+        const now = g?.level ?? 'none';
+        const rights = (args) => act('mcp-rights', { target: t.id, agent: ui.agent, ...args });
+        const pick = (value, options, onchange, label) => h('select', { 'aria-label': label, onchange: (e) => { void onchange(e.target.value)(); } },
+            options.map(([v, text]) => h('option', { value: v, selected: v === value }, text)));
+        const tools = t.catalog?.tools ?? [];
+        return h('div', { class: 'tether-target', 'data-target': t.id },
+            h('div', { class: 'tether-head' },
+                h('div', { class: 'tether-name' }, h('b', {}, t.title), h('span', { class: 'tether-dim' }, w('kind-mcp'))),
+                h('div', { class: 'tether-seg', role: 'group', 'aria-label': t.title }, MCP_LEVELS.map((l) => h('button', { type: 'button', 'data-level': l, 'aria-pressed': String(now === l),
+                    onclick: now === l ? null : act('level', { target: t.id, agent: ui.agent, level: l === 'none' ? null : l }) }, w(`mcp-${l}`))))),
+            g?.level === 'frame' ? h('p', { class: 'tether-rules' }, CLASSES.map((c) => h('label', { class: 'tether-pick' }, h('span', { class: 'tether-dim' }, w(`class-${c}`)),
+                pick(g.classes?.[c] ?? (c === 'read' ? 'yes' : 'ask'), ['yes', 'ask', 'no'].map((v) => [v, w(`go-${v}`)]), (v) => rights({ classes: { [c]: v } }), w(`class-${c}`)))),
+            h('label', { class: 'tether-pick' }, h('input', { type: 'checkbox', checked: g.askOpen === true, onchange: (e) => { void rights({ askOpen: e.target.checked })(); } }), w('mcp-ask-open'))) : null,
+            t.catalog?.error ? h('p', { class: 'tether-error', role: 'status' }, t.catalog.error) : null,
+            h('details', { class: 'tether-tools' }, h('summary', {}, `${w('mcp-tools')} (${tools.length})`),
+                tools.length ? h('ul', {}, tools.map((x) => h('li', { 'data-tool': x.name },
+                    h('code', {}, x.name), ' ',
+                    h('span', { class: `tether-pill tether-class-${x.class}`, 'data-class': x.class }, w(`class-${x.class}`)), x.open && x.class !== 'read' ? h('span', { class: 'tether-dim' }, ` ${w('class-open')}`) : null,
+                    g ? [' ', pick(g.tools?.[x.name] ?? '', [['', w('go-class')], ...['yes', 'ask', 'no'].map((v) => [v, w(`go-${v}`)])], (v) => rights({ tools: { [x.name]: v || null } }), x.name)] : null,
+                    x.description ? h('div', { class: 'tether-dim' }, x.description.split('\n')[0].slice(0, 200)) : null))) : h('p', { class: 'tether-empty' }, w('mcp-empty')),
+                h('button', { type: 'button', class: 'tether-link', 'data-act': 'mcp-refresh', onclick: act('mcp-refresh', { target: t.id }) }, w('mcp-refresh'))));
+    }
+    /* A server added from the page: its name, its address, the NAME of the secret holding its key. */
+    function addServer() {
+        const d = ui.server ??= { name: '', url: '', secret: '' };
+        const field = (k, label, placeholder) => h('input', { type: 'text', value: d[k], 'aria-label': label, placeholder, maxlength: '1000', oninput: (e) => { d[k] = e.target.value; } });
+        const go = async () => { const r = await ask('mcp-add', { name: d.name, url: d.url, secret: d.secret }); if (r.ok) ui.server = null; await refresh(); };
+        return h('details', { class: 'tether-addserver' }, h('summary', {}, `+ ${w('mcp-add')}`),
+            h('div', { class: 'tether-addrule' }, field('name', w('mcp-name'), 'CRM'), field('url', w('mcp-url'), 'https://mcp.example.com/mcp'), field('secret', w('mcp-secret'), 'CRM_MCP_KEY'),
+                h('button', { type: 'button', class: 'tether-accept', 'data-act': 'mcp-add', onclick: go }, w('add'))));
+    }
     function target(t) {
+        if (t.kind === 'mcp') return mcpTarget(t);
         const g = t.grants?.[ui.agent] ?? null;
         return h('div', { class: 'tether-target', 'data-target': t.id },
             h('div', { class: 'tether-head' },
@@ -194,6 +240,7 @@ export function mount(root, { call, words = {}, lang = 'en', agent = null } = {}
         const body = !ui.agent ? [h('p', { class: 'tether-empty' }, w('no-agent'))]
             : [
                 ...(ui.data.targets.length ? ui.data.targets.map(target) : [h('p', { class: 'tether-empty' }, w('no-targets'))]),
+                addServer(),
                 stopped
                     ? h('div', { class: 'tether-stopped', role: 'status' }, h('b', {}, w('stopped')), h('button', { type: 'button', class: 'tether-plain', 'data-act': 'resume', onclick: act('resume', { agent: ui.data.stops['*'] ? '*' : ui.agent }) }, w('resume')))
                     : h('button', { type: 'button', class: 'tether-stop', 'data-act': 'stop', onclick: act('stop', { agent: ui.agent }) }, w('stop')),

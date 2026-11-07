@@ -93,3 +93,13 @@
   .tether-seg { width: 100%; }
   .tether-seg button { flex: 1; padding: .45em .4em; }
 }
+/* External MCP servers: a destructive call waits with an amber edge; its arguments, plainly; each tool's class. */
+.tether-amber { border-left: 4px solid #c77700; }
+.tether-args { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: .25em .6em; margin: .4em 0; }
+.tether-args dt { font-weight: 600; }
+.tether-args dd { margin: 0; min-width: 0; }
+.tether-pill.tether-class-destructive { color: #c77700; border-color: #c77700; }
+.tether-pill.tether-class-write { color: var(--tether-text, inherit); }
+.tether-tools ul { list-style: none; padding: 0; margin: .4em 0; display: grid; gap: .45em; }
+.tether-tools li { overflow-wrap: anywhere; }
+.tether-addserver { margin: .6em 0; }
