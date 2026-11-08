@@ -240,7 +240,9 @@ export default defineBackground(() => {
             getPairKey: () => pairKey,
             clearPairKey: () => { pairKey = null; browser.storage.local.remove('pairKey'); },
             onCall: (m: any) => dispatch(m, { grants, actions, mark: mark as any }),
-            onStatus: () => { /* the popup reads status on demand */ },
+            /* The popup reads status on demand. Once the keeper says welcome (or paired), the granted tabs are said again:
+               a keeper that restarted knows none (08-11, found on a real browser: "no tab granted" while the popup showed them ticked). */
+            onStatus: (s: string) => { if (s === 'ready') pushTabs().catch(() => {}); },
         });
     }
     function restart() { try { link.stop(); } catch { /* idle */ } link = makeLink(); link.start(); }
