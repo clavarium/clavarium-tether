@@ -12,7 +12,7 @@
         .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #999; margin-right: 5px; vertical-align: middle; }
         .dot.ready, .dot.connected { background: #2a2; }
         .dot.pairing, .dot.connecting { background: #d90; }
-        .dot.disconnected, .dot.idle { background: #d33; }
+        .dot.disconnected, .dot.idle, .dot.refused { background: #d33; }
         .code { font-size: 20px; letter-spacing: 3px; font-weight: 600; text-align: center; padding: 6px; border: 1px dashed currentColor; border-radius: 8px; margin: 8px 0; }
         .tab { display: flex; align-items: center; gap: 8px; padding: 4px 0; border-top: 1px solid #8884; }
         .tab .t { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -26,8 +26,13 @@
 <body>
     <h1>Clavarium Tether</h1>
     <div class="status"><span class="dot" id="dot"></span><span id="statusText">…</span></div>
+    <div id="pasteBox">
+        <label class="mini" for="config">Paste the configuration from Clavarium:</label>
+        <div class="row"><input id="config" autocomplete="off" spellcheck="false" placeholder='{"url":"wss://…","key":"…"}'><button id="paste">Pair</button></div>
+        <div class="mini" id="pasteSaid"></div>
+    </div>
     <div id="pairBox" hidden>
-        <div class="mini">Enter this code in the keeper page to pair:</div>
+        <div class="mini">Or type this code in the keeper page:</div>
         <div class="code" id="code">------</div>
     </div>
     <div class="row">

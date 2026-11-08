@@ -9,6 +9,10 @@
  * in extension storage (through setToken) and never logged. With a token it
  * says hello and is welcomed.
  *
+ * Pairing by a configuration (0.1.0-next.59): a one-time key pasted in the popup (getPairKey) is said once
+ * connected ({ t:"claim", key }); the keeper swaps it for the token (`paired`), and the key is forgotten
+ * (clearPairKey). A key refused (`claim-refused`: wrong, spent or expired) is forgotten too, and said.
+ *
  * Everything the clock and the socket do is injected, so this runs under test
  * with fakes and in the worker with the real globals.
  */
@@ -19,6 +23,8 @@ export function createLink(opts) {
         getToken = () => null,
         setToken = () => {},
         pairingCode = () => '',
+        getPairKey = () => null,
+        clearPairKey = () => {},
         onCall = async () => ({}),
         onStatus = () => {},
         heartbeatMs = 20_000,
@@ -61,8 +67,9 @@ export function createLink(opts) {
     function handle(data) {
         let m; try { m = JSON.parse(data); } catch { return; }
         switch (m.t) {
-            case 'pair-needed': sendRaw({ t: 'pair', code: pairingCode() }); break;
-            case 'paired': if (m.token) { try { setToken(m.token); } catch { /* storage */ } setStatus('ready'); } break;
+            case 'pair-needed': { const key = getPairKey(); sendRaw(key ? { t: 'claim', key } : { t: 'pair', code: pairingCode() }); break; }
+            case 'paired': if (m.token) { try { setToken(m.token); } catch { /* storage */ } try { clearPairKey(); } catch { /* storage */ } setStatus('ready'); } break;
+            case 'claim-refused': try { clearPairKey(); } catch { /* storage */ } setStatus('refused'); break;
             case 'welcome': setStatus('ready'); break;
             case 'pong': alive = true; break;
             case 'ping': sendRaw({ t: 'pong' }); break;
@@ -78,8 +85,10 @@ export function createLink(opts) {
         ws.onopen = () => {
             tries = 0;
             const token = getToken();
+            const key = token ? null : getPairKey();
             sendRaw(token ? { t: 'hello', token } : { t: 'hello' });
-            if (!token) sendRaw({ t: 'pair', code: pairingCode() });
+            if (key) sendRaw({ t: 'claim', key });
+            else if (!token) sendRaw({ t: 'pair', code: pairingCode() });
             startHeartbeat();
             setStatus(token ? 'connected' : 'pairing');
         };
@@ -96,4 +105,19 @@ export function createLink(opts) {
         status: () => status,
         _ping() { if (hb) { if (!alive) { try { ws.close(); } catch { /* gone */ } } else { alive = false; sendRaw({ t: 'ping' }); } } },
     };
+}
+
+/* THE CONFIGURATION THE KEEPER PAGE SHOWS, pasted in the popup: {"url":"wss://…","key":"…"}. Checked here: a
+ * WebSocket address (wss://, or ws:// to this computer only) and a key of the right shape; anything else refused. */
+export function readConfig(text) {
+    let c;
+    try { c = JSON.parse(String(text ?? '').trim()); } catch { return { error: 'Not a configuration: paste the whole line.' }; }
+    const url = typeof c?.url === 'string' ? c.url.trim() : '';
+    const key = typeof c?.key === 'string' ? c.key.trim() : '';
+    let u;
+    try { u = new URL(url); } catch { return { error: 'The configuration has no address.' }; }
+    const local = ['127.0.0.1', 'localhost', '[::1]'].includes(u.hostname);
+    if (!(u.protocol === 'wss:' || (u.protocol === 'ws:' && local))) return { error: 'The address must start with wss://.' };
+    if (!/^[A-Za-z0-9_-]{20,200}$/.test(key)) return { error: 'The configuration has no key.' };
+    return { url: u.href, key };
 }

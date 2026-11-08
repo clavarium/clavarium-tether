@@ -369,12 +369,21 @@ On every later connection the extension sends `{t:"hello", token}` and is
 welcomed. The token is never logged, never journalled, and never reaches an
 agent; it lives only in the connector's token store and the extension's storage.
 
+**Pairing by a configuration** (0.1.0-next.59, the person copies once, from the keeper into the extension). The
+keeper page shows one line, `{"url":"wss://…/browser","key":"…"}`; the key is single-use, good for ten minutes, and
+the keeper keeps only its SHA-256 (`offer({key?, ttl})`). Pasted in the popup, the extension keeps the url, connects,
+and says `{t:"claim", key}`: a key offered and not expired is spent at once and swapped for the token (`paired`); any
+other is refused (`{t:"claim-refused"}`) and counted. The extension forgets the key either way, and from then on says
+`hello` with its token each time it starts. The code flow above stays, as a fallback.
+
 **The messages** (JSON, each way):
 
 | From | Message | Meaning |
 |---|---|---|
 | extension | `{t:"hello", token?}` | on connect; with a token, authenticate |
 | extension | `{t:"pair", code}` | offer the code shown in the popup |
+| extension | `{t:"claim", key}` | the one-time key of a pasted configuration |
+| keeper | `{t:"claim-refused"}` | that key is wrong, spent or expired |
 | keeper | `{t:"pair-needed"}` / `{t:"welcome"}` / `{t:"paired", token}` | pairing state |
 | extension | `{t:"tabs", tabs:[{id,url,title,site}]}` | the granted tabs (only those), pushed on change |
 | keeper | `{t:"call", id, verb, args}` | run one browser verb (`verb` without the `browser.` prefix) |

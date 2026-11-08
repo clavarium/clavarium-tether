@@ -16,7 +16,9 @@ async function render() {
     $('statusText').textContent = s.paired ? `Paired · ${s.status}` : `Not paired · ${s.status}`;
     ($('keeper') as HTMLInputElement).placeholder = s.keeperUrl;
     const pairBox = $('pairBox');
-    pairBox.hidden = s.paired;
+    pairBox.hidden = s.paired || s.claiming;
+    $('pasteBox').hidden = s.paired;
+    if (s.status === 'refused') $('pasteSaid').textContent = 'That configuration was refused (spent or expired): make a new one.';
     $('code').textContent = s.code;
 
     const sites = new Set<string>(s.sites);
@@ -43,6 +45,12 @@ async function render() {
     }
 }
 
+$('paste').onclick = async () => {
+    const r = await ask('paste', { text: ($('config') as HTMLInputElement).value });
+    $('pasteSaid').textContent = r.ok ? 'Pairing…' : r.error;
+    if (r.ok) ($('config') as HTMLInputElement).value = '';
+    setTimeout(render, 300);
+};
 $('saveKeeper').onclick = async () => { const url = ($('keeper') as HTMLInputElement).value.trim(); await ask('setKeeper', { url }); setTimeout(render, 200); };
 $('repair').onclick = async () => { await ask('repair'); setTimeout(render, 200); };
 

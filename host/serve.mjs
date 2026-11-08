@@ -90,7 +90,7 @@ body{font:15px/1.4 system-ui,sans-serif;padding:16px 20px 40px;max-width:1240px;
 #pair{border:1px solid #0002;border-radius:10px;padding:10px 14px;margin:0 0 16px;max-width:460px}@media (prefers-color-scheme:dark){#pair{border-color:#fff2}}
 #pair h2{font-size:.95rem;margin:0 0 6px}#pair input{font:inherit;padding:4px 8px;width:7em}#pair button{font:inherit;padding:4px 10px}#pair .s{font-size:.85rem;opacity:.75}</style>
 <h1>${TITLE}</h1>
-${hasBrowser ? '<section id="pair"><h2>Pair a browser</h2><div class="s" id="pstat">…</div><p>Enter the code shown in the Tether extension: <input id="pcode" inputmode="numeric" autocomplete="off"> <button id="pgo">Pair</button></p></section>' : ''}
+${hasBrowser ? '<section id="pair"><h2>Pair a browser</h2><div class="s" id="pstat">…</div><p><button id="poffer">Make a configuration</button> then paste it in the extension: <input id="pconf" readonly style="width:100%"></p><p>Or enter the code shown in the Tether extension: <input id="pcode" inputmode="numeric" autocomplete="off"> <button id="pgo">Pair</button></p></section>' : ''}
 <div id="app"></div>
 <script type="module">
 import { mount } from '/ui/ui.js';
@@ -112,6 +112,11 @@ if (hasBrowser) {
     document.getElementById('pstat').textContent = r.ok ? 'Paired.' : r.text;
     if (r.ok) document.getElementById('pcode').value = '';
     browserStatus();
+  };
+  document.getElementById('poffer').onclick = async () => {
+    const r = await call('offer', {});
+    const url = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/browser';
+    document.getElementById('pconf').value = r.ok ? JSON.stringify({ url, key: r.data.key }) : r.text;
   };
   browserStatus();
 }
@@ -316,6 +321,8 @@ export function start(o, { quiet = false, screenEngine = null } = {}) {
                 const args = q?.args && typeof q.args === 'object' ? q.args : {};
                 /* Pairing and browser status are the connector's, not the keeper store's. */
                 if (browser && op === 'pair') { try { return send(200, 'application/json', JSON.stringify({ ok: true, text: 'Paired.', data: browser.pair(args.code) })); } catch (e) { return send(200, 'application/json', JSON.stringify({ ok: false, text: e.message })); } }
+                /* A one-time pairing key, for the configuration pasted in the extension: shown once, kept only as its hash. */
+                if (browser && op === 'offer') return send(200, 'application/json', JSON.stringify({ ok: true, text: 'ok', data: browser.offer() }));
                 if (browser && op === 'browser') return send(200, 'application/json', JSON.stringify({ ok: true, text: 'ok', data: browser.status() }));
                 const r = await k.act(op, args, PERSON);
                 return send(200, 'application/json', JSON.stringify(r));

@@ -24,6 +24,13 @@
  * agent; it is held only here (in the `tokens` store the host gives) and in
  * the extension's own storage.
  *
+ * PAIRING BY A CONFIGURATION (0.1.0-next.59), the other way round: the keeper page shows one line to copy,
+ * {"url":"wss://…/browser","key":"…"}, and the person pastes it in the extension's popup. `offer({key?, ttl})`
+ * makes that key (or takes the host's): single-use, good for `ttl` ms, kept only as its SHA-256. The
+ * extension connects to the url and says { t:"claim", key }: a key offered and not expired is spent at once
+ * and swapped for the long-lived token, as `pair` does ({ t:"paired", token }); any other is refused
+ * ({ t:"claim-refused" }) and counted (`refusedClaims`). The code flow stays, as a fallback.
+ *
  * TAB SCOPING. The extension pushes { t:"tabs", tabs:[{id,url,title,site}] }:
  * the tabs the person granted, and only those. A verb that names a tab the
  * person did not grant is refused HERE, before anything is sent — the same
@@ -34,10 +41,13 @@
  * applied by the keeper BEFORE it calls this connector, exactly as for ssh and
  * local; this connector only carries an already-allowed call to the extension.
  */
-import { randomBytes } from 'node:crypto';
+import { randomBytes, createHash } from 'node:crypto';
 import { no, Refused } from '../../server/verbs.mjs';
 
 export const CALL_TIMEOUT_MS = 30_000;
+/* A pairing key pasted in the extension is good this long. */
+export const OFFER_TTL_MS = 10 * 60_000;
+const sha = (s) => createHash('sha256').update(String(s)).digest('hex');
 const TABS_MAX = 200;
 
 /* A token store the host may replace (serve backs it with a file). In memory
@@ -58,6 +68,8 @@ export function browser({ tokens = memTokens(), newToken = mintToken, timeout = 
     const unpaired = new Map();      // code -> connection waiting to be paired
     const pending = new Map();       // callId -> { resolve, agent, timer }
     const listeners = new Set();     // notified when the connection or its tabs change
+    const offers = new Map();        // sha256(key) -> expiry time
+    let refusedClaims = 0;
     let seq = 0;
     const announce = () => { for (const fn of listeners) { try { fn(status()); } catch { /* a listener's fault */ } } };
 
@@ -87,6 +99,17 @@ export function browser({ tokens = memTokens(), newToken = mintToken, timeout = 
             case 'pair':
                 if (typeof msg.code === 'string' && msg.code) { conn.code = msg.code; unpaired.set(msg.code, conn); }
                 break;
+            case 'claim': {
+                const h = typeof msg.key === 'string' && msg.key ? sha(msg.key) : '';
+                const until = h ? offers.get(h) : undefined;
+                if (h) offers.delete(h);    // spent, whatever comes next
+                if (until === undefined || until < now()) { refusedClaims++; conn.channel.send({ t: 'claim-refused' }); break; }
+                const token = newToken();
+                tokens.add(token);
+                makeLive(conn);
+                conn.channel.send({ t: 'paired', token });
+                break;
+            }
             case 'tabs':
                 conn.tabs = new Map();
                 for (const t of Array.isArray(msg.tabs) ? msg.tabs.slice(0, TABS_MAX) : []) if (t && t.id !== undefined) conn.tabs.set(String(t.id), { id: t.id, url: t.url ?? '', title: t.title ?? '', site: t.site ?? '' });
@@ -120,6 +143,14 @@ export function browser({ tokens = memTokens(), newToken = mintToken, timeout = 
         makeLive(conn);
         conn.channel.send({ t: 'paired', token });
         return { paired: true };
+    }
+
+    /* A pairing key to paste in the extension: single-use, for `ttl` ms; only its hash is kept. */
+    function offer({ key = mintToken(), ttl = OFFER_TTL_MS } = {}) {
+        const t = now();
+        for (const [h, until] of offers) if (until < t) offers.delete(h);
+        offers.set(sha(key), t + ttl);
+        return { key, expires: t + ttl };
     }
 
     function status() {
@@ -175,6 +206,8 @@ export function browser({ tokens = memTokens(), newToken = mintToken, timeout = 
         run,
         accept,
         pair,
+        offer,
+        refusedClaims: () => refusedClaims,
         status,
         onChange(fn) { listeners.add(fn); return () => listeners.delete(fn); },
         /* A stop for an agent: drop its calls in flight. The socket stays — the

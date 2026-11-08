@@ -8,7 +8,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { grants } from '../extension/lib/scope.js';
 import { dispatch } from '../extension/lib/protocol.js';
-import { createLink } from '../extension/lib/link.js';
+import { createLink, readConfig } from '../extension/lib/link.js';
 
 /* A fake browser: it records every call and answers from a tiny tab world. */
 function fakeActions(world) {
@@ -174,4 +174,33 @@ test('link: a dropped socket reconnects after a backoff', () => {
     assert.equal(typeof timer, 'function');
     timer();                      // the backoff fires
     assert.equal(made.length, 2, 'a second socket was opened');
+});
+
+test('link: a pasted configuration says its one-time key once connected, keeps the token, forgets the key; refused, forgets it too', () => {
+    let made = null; let stored = null; let key = 'one-time-key-0123456789abcdef';
+    const link = createLink({
+        url: 'wss://clavarium.example.com/c/api/browser',
+        WebSocketImpl: function () { made = fakeSocket(); return made; },
+        getToken: () => stored, setToken: (t) => { stored = t; },
+        getPairKey: () => key, clearPairKey: () => { key = null; },
+        pairingCode: () => '123456',
+        setInt: () => 0, clearInt: () => {}, setTmo: () => 0, clearTmo: () => {},
+    });
+    link.start(); made.open();
+    assert.deepEqual(made.sent, [{ t: 'hello' }, { t: 'claim', key: 'one-time-key-0123456789abcdef' }], 'no code offered');
+    made.recv({ t: 'paired', token: 'tok-long' });
+    assert.equal(stored, 'tok-long'); assert.equal(key, null); assert.equal(link.status(), 'ready');
+    key = 'another-key-0123456789abcdef'; stored = null;
+    link.stop(); link.start(); made.open();
+    made.recv({ t: 'claim-refused' });
+    assert.equal(key, null); assert.equal(link.status(), 'refused');
+});
+
+test('config: one JSON line, wss:// (ws:// only to this computer) and a key; anything else refused', () => {
+    assert.deepEqual(readConfig(' {"url":"wss://clavarium.example.com/c/api/browser","key":"abcdefghij0123456789_-"} '), { url: 'wss://clavarium.example.com/c/api/browser', key: 'abcdefghij0123456789_-' });
+    assert.equal(readConfig('{"url":"ws://127.0.0.1:8787/browser","key":"abcdefghij0123456789"}').url, 'ws://127.0.0.1:8787/browser');
+    assert.match(readConfig('{"url":"ws://clavarium.example.com/x","key":"abcdefghij0123456789"}').error, /wss/);
+    assert.match(readConfig('{"url":"https://clavarium.example.com/x","key":"abcdefghij0123456789"}').error, /wss/);
+    assert.match(readConfig('{"url":"wss://clavarium.example.com/x","key":"short"}').error, /key/);
+    assert.match(readConfig('not json').error, /whole line/);
 });

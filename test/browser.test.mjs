@@ -232,3 +232,36 @@ test('browser site rules: at frame, an act in a granted tab of an allowed site r
     await q;
     await k.close();
 });
+
+test('browser: a pasted configuration -- its one-time key is swapped for the token once; spent, wrong or expired is refused and counted; only its hash is kept', async () => {
+    let t = 1000;
+    const tokens = memTokens();
+    const conn = browser({ tokens, now: () => t });
+    const { key, expires } = conn.offer({ ttl: 60_000 });
+    assert.ok(key.length >= 40 && expires === 61_000);
+    const { keeperSide, extSide } = makePair();
+    const ext = fakeExtension(extSide);
+    conn.accept(keeperSide);
+    ext.hello(); await tick();
+    extSide.send({ t: 'claim', key }); await tick();
+    assert.equal(ext.control.t, 'paired');
+    assert.ok(tokens.has(ext.token), 'the token kept, the extension holds it');
+    assert.equal(conn.status().connected, true);
+    /* The same key again: spent. */
+    const again = makePair(); const ext2 = fakeExtension(again.extSide); const seen = [];
+    again.extSide.onMessage((m) => seen.push(m.t));
+    conn.accept(again.keeperSide);
+    again.extSide.send({ t: 'claim', key }); await tick();
+    assert.deepEqual(seen, ['claim-refused']);
+    again.extSide.send({ t: 'claim', key: 'x'.repeat(43) }); await tick();
+    /* Expired. */
+    const late = conn.offer({ ttl: 1000 });
+    t += 5000;
+    again.extSide.send({ t: 'claim', key: late.key }); await tick();
+    assert.equal(conn.refusedClaims(), 3);
+    assert.ok(!ext2.token);
+    assert.equal(conn.status().connected, true, 'the paired one still live');
+    /* A host's own key, as Clavarium makes it. */
+    const own = conn.offer({ key: 'host-made-key-0123456789abcdef' });
+    assert.equal(own.key, 'host-made-key-0123456789abcdef');
+});

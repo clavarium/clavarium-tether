@@ -11,7 +11,7 @@ import { browser } from 'wxt/browser';
 import { defineBackground } from 'wxt/utils/define-background';
 import { grants as makeGrants } from '../lib/scope.js';
 import { dispatch } from '../lib/protocol.js';
-import { createLink } from '../lib/link.js';
+import { createLink, readConfig } from '../lib/link.js';
 
 /* 4190 (the keeper's page port) is a port browsers refuse (ERR_UNSAFE_PORT),
  * so the browser endpoint is served on a browser-safe port instead; run
@@ -23,13 +23,15 @@ export default defineBackground(() => {
     let grants = makeGrants({});
     let keeperUrl = DEFAULT_KEEPER;
     let token: string | null = null;
+    let pairKey: string | null = null;     // a one-time key pasted in the popup, until it is swapped for a token
     let pairingCode = String(Math.floor(100000 + Math.random() * 900000));
     let lastTab: number | null = null;
     const consoles = new Map<number, string[]>(); // tabId -> recent console lines
 
     /* ---- storage ---- */
     async function load() {
-        const s = await browser.storage.local.get(['grants', 'keeperToken', 'keeperUrl']);
+        const s = await browser.storage.local.get(['grants', 'keeperToken', 'keeperUrl', 'pairKey']);
+        pairKey = (s.pairKey as string) ?? null;
         grants = makeGrants((s.grants as object) ?? {});
         token = (s.keeperToken as string) ?? null;
         keeperUrl = (s.keeperUrl as string) ?? DEFAULT_KEEPER;
@@ -181,6 +183,8 @@ export default defineBackground(() => {
             getToken: () => token,
             setToken: (t: string) => { token = t; browser.storage.local.set({ keeperToken: t }); },
             pairingCode: () => pairingCode,
+            getPairKey: () => pairKey,
+            clearPairKey: () => { pairKey = null; browser.storage.local.remove('pairKey'); },
             onCall: (m: any) => dispatch(m, { grants, actions, mark: mark as any }),
             onStatus: () => { /* the popup reads status on demand */ },
         });
@@ -201,7 +205,7 @@ export default defineBackground(() => {
                     const all = await browser.tabs.query({});
                     reply({
                         status: link.status(),
-                        keeperUrl, paired: !!token, code: pairingCode,
+                        keeperUrl, paired: !!token, code: pairingCode, claiming: !!pairKey,
                         sites: grants.siteList(),
                         tabs: all.filter((t) => t.id !== undefined).map((t) => ({ id: t.id, title: t.title, url: t.url, granted: grants.isGranted(t.id!, t.url), on: grants.tabOn(t.id!) })),
                     });
@@ -210,6 +214,15 @@ export default defineBackground(() => {
                 case 'toggleTab': grants.setTab(msg.id, msg.on); await saveGrants(); await pushTabs(); reply({ ok: true }); break;
                 case 'allowSite': grants.allowSite(msg.site, msg.on); await saveGrants(); await pushTabs(); reply({ ok: true }); break;
                 case 'setKeeper': keeperUrl = msg.url || DEFAULT_KEEPER; await browser.storage.local.set({ keeperUrl }); restart(); reply({ ok: true }); break;
+                /* The configuration copied from the keeper page: its address kept, its one-time key said once connected. */
+                case 'paste': {
+                    const c = readConfig(msg.text);
+                    if (c.error) { reply({ ok: false, error: c.error }); break; }
+                    keeperUrl = c.url; pairKey = c.key; token = null;
+                    await browser.storage.local.set({ keeperUrl, pairKey });
+                    await browser.storage.local.remove('keeperToken');
+                    restart(); reply({ ok: true }); break;
+                }
                 case 'repair': token = null; await browser.storage.local.remove('keeperToken'); pairingCode = String(Math.floor(100000 + Math.random() * 900000)); restart(); reply({ ok: true, code: pairingCode }); break;
                 default: reply({ ok: false }); break;
             }
