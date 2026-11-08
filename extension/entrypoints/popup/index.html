@@ -15,7 +15,10 @@
         .dot.disconnected, .dot.idle, .dot.refused { background: #d33; }
         .code { font-size: 20px; letter-spacing: 3px; font-weight: 600; text-align: center; padding: 6px; border: 1px dashed currentColor; border-radius: 8px; margin: 8px 0; }
         .tab { display: flex; align-items: center; gap: 8px; padding: 4px 0; border-top: 1px solid #8884; }
-        .tab .t { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .tab .t { flex: 1; min-width: 0; }
+        .tab .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .tab .sub { display: block; font-size: 11px; opacity: .7; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .tab .sub input { margin: 0 3px 0 0; vertical-align: middle; width: 11px; height: 11px; }
         .site { font-size: 11px; opacity: .7; }
         button, input { font: inherit; }
         .row { display: flex; gap: 6px; margin: 6px 0; }
@@ -41,6 +44,7 @@
     </div>
     <div class="mini">Grant the agent a tab (it can see and act only in granted tabs):</div>
     <div id="tabs"></div>
+    <div class="mini" id="inheritHint" hidden>Unticking keeps what it already opened.</div>
     <div class="row"><button id="repair">Re-pair</button></div>
     <script type="module" src="./main.ts"></script>
 </body>

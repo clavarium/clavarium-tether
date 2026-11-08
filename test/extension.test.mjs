@@ -6,7 +6,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { grants } from '../extension/lib/scope.js';
+import { grants, onTabCreated } from '../extension/lib/scope.js';
 import { dispatch } from '../extension/lib/protocol.js';
 import { createLink, readConfig } from '../extension/lib/link.js';
 
@@ -43,7 +43,64 @@ test('scope: a tab is granted by its id or by its site; nothing else', () => {
     assert.equal(g.isGranted('42', 'https://evil.test/x'), false);
     g.setTab('7', false);
     assert.equal(g.isGranted('7', 'https://example.com/a'), false, 'turned back off');
-    assert.deepEqual(g.toJSON(), { tabs: [], sites: ['shop.example'] });
+    assert.deepEqual(g.toJSON(), { tabs: [], sites: ['shop.example'], inherit: [], parents: {} });
+});
+
+/* ---- "Also the windows it opens": a granted tab passes its right to what it opens ---- */
+function created(g) {
+    const said = { saved: 0, pushed: 0 };
+    const on = onTabCreated({ grants: g, save: async () => { said.saved++; }, push: async () => { said.pushed++; } });
+    return { on, said };
+}
+
+test('opener: a child is granted only when its opener has the option on, and the keeper is told at once', async () => {
+    const g = grants({ tabs: ['7'] });
+    const { on, said } = created(g);
+    assert.equal(await on({ id: 20, openerTabId: 7 }), false, 'option off: nothing');
+    assert.equal(g.isGranted(20, 'https://accounts.example.com/signin'), false);
+    assert.equal(said.pushed, 0);
+    g.setInherit(7, true);
+    assert.equal(await on({ id: 21, openerTabId: 7 }), true);
+    assert.equal(g.isGranted(21, 'https://accounts.example.com/signin'), true, 'granted by id');
+    assert.equal(g.parentOf(21), '7', 'it remembers who opened it');
+    assert.deepEqual(said, { saved: 1, pushed: 1 }, 'kept and pushed');
+    assert.equal(await on({ id: 22 }), false, 'no opener: nothing');
+    assert.equal(await on({ id: 23, openerTabId: 9 }), false, 'another tab: nothing');
+});
+
+test('opener: one level only; a child passes nothing on unless ticked itself', async () => {
+    const g = grants({ tabs: ['7'], inherit: ['7'] });
+    const { on } = created(g);
+    await on({ id: 21, openerTabId: 7 });
+    assert.equal(g.inherits(21), false, 'the child does not inherit the option');
+    assert.equal(await on({ id: 30, openerTabId: 21 }), false);
+    assert.equal(g.isGranted(30, 'https://x.example.com/'), false, 'grandchild not granted');
+    g.setInherit(21, true);
+    assert.equal(await on({ id: 31, openerTabId: 21 }), true, 'ticked on the child: its own children too');
+});
+
+test('opener: unticking takes nothing back; turning the tab off or closing it ends the option', async () => {
+    const g = grants({ tabs: ['7'], inherit: ['7'] });
+    const { on } = created(g);
+    await on({ id: 21, openerTabId: 7 });
+    g.setInherit(7, false);
+    assert.equal(g.isGranted(21, ''), true, 'the child already granted stays');
+    assert.equal(await on({ id: 22, openerTabId: 7 }), false, 'new children are not');
+    g.setInherit(7, true); g.setTab(7, false);
+    assert.equal(g.inherits(7), false, 'off with the tab');
+    g.setTab(7, true); g.setInherit(7, true); g.forget(7);
+    assert.equal(g.inherits(7), false); assert.equal(g.parentOf(21), null, 'a closed opener is no longer named');
+});
+
+test('opener: the option and the openers survive a restart (stored with the grants)', async () => {
+    const g = grants({ tabs: ['7'] });
+    g.setInherit(7, true);
+    await created(g).on({ id: 21, openerTabId: 7 });
+    const back = grants(JSON.parse(JSON.stringify(g.toJSON())));
+    assert.equal(back.inherits(7), true);
+    assert.equal(back.isGranted(21, ''), true);
+    assert.equal(back.parentOf(21), '7');
+    assert.equal(await created(back).on({ id: 40, openerTabId: 7 }), true, 'still passes it on after the restart');
 });
 
 test('protocol: tabs lists only granted tabs', async () => {

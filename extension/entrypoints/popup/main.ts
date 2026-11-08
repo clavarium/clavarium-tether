@@ -32,8 +32,28 @@ async function render() {
         cb.onchange = async () => { await ask('toggleTab', { id: t.id, on: cb.checked }); render(); };
         const label = document.createElement('div');
         label.className = 't';
-        label.textContent = t.title || t.url || `tab ${t.id}`;
-        label.title = t.url || '';
+        const name = document.createElement('div');
+        name.className = 'name';
+        name.textContent = t.title || t.url || `tab ${t.id}`;
+        name.title = t.url || '';
+        label.append(name);
+        if (t.openedBy) {
+            const by = document.createElement('div');
+            by.className = 'sub';
+            by.textContent = `opened by ${t.openedBy}`;
+            label.append(by);
+        }
+        /* A granted tab may also grant the tabs and windows it opens (one level; unticking takes nothing back). */
+        if (t.granted) {
+            const opt = document.createElement('label');
+            opt.className = 'sub';
+            opt.title = 'Tabs and windows it already opened stay granted when you untick.';
+            const ib = document.createElement('input');
+            ib.type = 'checkbox'; ib.checked = !!t.inherit;
+            ib.onchange = async () => { await ask('setInherit', { id: t.id, on: ib.checked }); render(); };
+            opt.append(ib, ' Also the windows it opens');
+            label.append(opt);
+        }
         const site = siteOf(t.url || '');
         const siteBtn = document.createElement('button');
         siteBtn.className = 'site';
@@ -43,6 +63,7 @@ async function render() {
         row.append(cb, label, siteBtn);
         box.append(row);
     }
+    $('inheritHint').hidden = !s.tabs.some((t: any) => t.inherit);
 }
 
 $('paste').onclick = async () => {

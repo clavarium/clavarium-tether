@@ -14,7 +14,7 @@
  */
 import { browser } from 'wxt/browser';
 import { defineBackground } from 'wxt/utils/define-background';
-import { grants as makeGrants } from '../lib/scope.js';
+import { grants as makeGrants, onTabCreated } from '../lib/scope.js';
 import { dispatch } from '../lib/protocol.js';
 import { createLink, readConfig } from '../lib/link.js';
 import { createDriver } from '../lib/cdp.js';
@@ -263,11 +263,16 @@ export default defineBackground(() => {
                         status: link.status(),
                         keeperUrl, paired: !!token, code: pairingCode, claiming: !!pairKey,
                         sites: grants.siteList(),
-                        tabs: all.filter((t) => t.id !== undefined).map((t) => ({ id: t.id, title: t.title, url: t.url, granted: grants.isGranted(t.id!, t.url), on: grants.tabOn(t.id!) })),
+                        tabs: all.filter((t) => t.id !== undefined).map((t) => {
+                            const parent = grants.parentOf(t.id!);
+                            const opener = parent === null ? undefined : all.find((x) => String(x.id) === parent);
+                            return { id: t.id, title: t.title, url: t.url, granted: grants.isGranted(t.id!, t.url), on: grants.tabOn(t.id!), inherit: grants.inherits(t.id!), openedBy: opener ? (opener.title || opener.url || `tab ${opener.id}`) : null };
+                        }),
                     });
                     break;
                 }
                 case 'toggleTab': grants.setTab(msg.id, msg.on); await saveGrants(); await pushTabs(); reply({ ok: true }); break;
+                case 'setInherit': grants.setInherit(msg.id, msg.on); await saveGrants(); reply({ ok: true }); break;
                 case 'allowSite': grants.allowSite(msg.site, msg.on); await saveGrants(); await pushTabs(); reply({ ok: true }); break;
                 case 'setKeeper': keeperUrl = msg.url || DEFAULT_KEEPER; await browser.storage.local.set({ keeperUrl }); restart(); reply({ ok: true }); break;
                 /* The configuration copied from the keeper page: its address kept, its one-time key said once connected. */
@@ -296,7 +301,11 @@ export default defineBackground(() => {
     });
     browser.tabs.onRemoved.addListener((id) => { consoles.delete(id); grants.forget(id); driver.forget(id); });
     browser.tabs.onUpdated.addListener(() => { pushTabs().catch(() => {}); });
+    /* A tab or window opened by a tab with "Also the windows it opens" on is granted too (one level). */
+    /* It waits for the stored grants: a Chrome service worker may wake on this very event. */
+    browser.tabs.onCreated.addListener((t) => { loaded.then(() => onTabCreated({ grants, save: saveGrants, push: pushTabs })(t)).catch(() => {}); });
 
     /* Load the stored grants, token and keeper URL, then open the link. */
-    (async () => { await load(); restart(); await pushTabs(); })();
+    const loaded = load();
+    (async () => { await loaded; restart(); await pushTabs(); })();
 });
