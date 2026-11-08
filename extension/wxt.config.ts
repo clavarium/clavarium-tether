@@ -21,6 +21,7 @@ export default defineConfig({
     manifest: ({ browser }) => ({
         name: 'Clavarium Tether',
         description: 'Give an AI agent, on a tether, access to the browser tabs you grant it.',
+        default_locale: 'en', // the popup's words: public/_locales/{en,fr}, French when the browser is in French
         permissions: ['tabs', 'scripting', 'storage', 'activeTab', ...(browser === 'firefox' ? [] : ['debugger'])],
         host_permissions: ['<all_urls>'],
         action: { default_popup: 'popup/index.html', default_title: 'Clavarium Tether' },

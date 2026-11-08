@@ -9,6 +9,7 @@ import assert from 'node:assert/strict';
 import { grants, onTabCreated } from '../extension/lib/scope.js';
 import { dispatch } from '../extension/lib/protocol.js';
 import { createLink, readConfig } from '../extension/lib/link.js';
+import { rows as popupRows, isInternal, master, masterFlip, givenCount } from '../extension/lib/popup.js';
 
 /* A fake browser: it records every call and answers from a tiny tab world. */
 function fakeActions(world) {
@@ -260,4 +261,49 @@ test('config: one JSON line, wss:// (ws:// only to this computer) and a key; any
     assert.match(readConfig('{"url":"https://clavarium.example.com/x","key":"abcdefghij0123456789"}').error, /wss/);
     assert.match(readConfig('{"url":"wss://clavarium.example.com/x","key":"short"}').error, /key/);
     assert.match(readConfig('not json').error, /whole line/);
+});
+
+/* ---- the popup's list (lib/popup.js) ---- */
+const SELF = 'chrome-extension://abc/';
+const tab = (id, title, url, more = {}) => ({ id, title, url, granted: false, inherit: false, ...more });
+
+test('popup: internal pages and the extension\'s own are not listed', () => {
+    const list = popupRows([
+        tab(1, 'New tab', 'chrome://newtab/'), tab(2, 'Blank', 'about:blank'), tab(3, 'Other ext', 'chrome-extension://zzz/x.html'),
+        tab(4, 'Fx ext', 'moz-extension://u/p.html'), tab(5, 'Popup', `${SELF}popup.html`), tab(6, 'Mail', 'https://mail.example.org/inbox'), tab(7, 'No url', ''),
+    ], SELF);
+    assert.deepEqual(list.map((r) => r.id), [6]);
+    assert.equal(list[0].site, 'mail.example.org');
+    assert.equal(isInternal('https://example.org/'), false);
+});
+
+test('popup: two tabs with the same title get (2), (3); grants stay by id', () => {
+    const list = popupRows([tab(10, 'Notebook', 'https://a.example.org/1'), tab(11, 'Notebook', 'https://a.example.org/2', { granted: true }), tab(12, 'Notebook', 'https://a.example.org/3'), tab(13, 'Other', 'https://b.example.org/')], SELF);
+    assert.deepEqual(list.map((r) => r.label), ['Notebook', 'Notebook (2)', 'Notebook (3)', 'Other']);
+    assert.deepEqual(list.map((r) => [r.id, r.given]), [[10, false], [11, true], [12, false], [13, false]]);
+});
+
+test('popup: a child granted through its opener says which (deduped) tab opened it', () => {
+    const list = popupRows([tab(1, 'Notebook', 'https://a.example.org/'), tab(2, 'Notebook', 'https://a.example.org/b', { granted: true, inherit: true }), tab(3, 'Sign in', 'https://login.example.org/', { granted: true, parent: '2', openedBy: 'Notebook' })], SELF);
+    assert.equal(list[2].openedBy, 'Notebook (2)');
+    assert.equal(list[0].openedBy, null);
+});
+
+test('popup: the master switch is on only when all are given; it gives all, or takes all back', () => {
+    const none = popupRows([tab(1, 'A', 'https://a.example.org/'), tab(2, 'B', 'https://b.example.org/')], SELF);
+    assert.equal(master(none), 'none');
+    assert.deepEqual(masterFlip(none), { on: true, ids: [1, 2] });
+    const some = popupRows([tab(1, 'A', 'https://a.example.org/', { granted: true }), tab(2, 'B', 'https://b.example.org/')], SELF);
+    assert.equal(master(some), 'some');
+    assert.deepEqual(masterFlip(some), { on: true, ids: [2] });
+    const all = popupRows([tab(1, 'A', 'https://a.example.org/', { granted: true }), tab(2, 'B', 'https://b.example.org/', { granted: true })], SELF);
+    assert.equal(master(all), 'all');
+    assert.deepEqual(masterFlip(all), { on: false, ids: [1, 2] });
+    assert.equal(givenCount(some), 1);
+    assert.equal(master([]), 'none');
+});
+
+test('popup: "also the windows it opens" shows only under a given tab', () => {
+    const list = popupRows([tab(1, 'A', 'https://a.example.org/', { granted: true, inherit: true }), tab(2, 'B', 'https://b.example.org/', { inherit: false })], SELF);
+    assert.deepEqual(list.map((r) => [r.showInherit, r.inherit]), [[true, true], [false, false]]);
 });

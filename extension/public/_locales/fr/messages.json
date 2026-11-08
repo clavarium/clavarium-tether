@@ -1,0 +1,74 @@
+{
+  "notPaired": {
+    "message": "non associée"
+  },
+  "pasteLabel": {
+    "message": "Collez la ligne donnée par Clavarium"
+  },
+  "pastePlaceholder": {
+    "message": "Assets › Nouveau › Navigateur"
+  },
+  "pair": {
+    "message": "Associer"
+  },
+  "pairing": {
+    "message": "Association…"
+  },
+  "refused": {
+    "message": "Ligne refusée (déjà servie ou expirée) : faites-en une nouvelle."
+  },
+  "scope": {
+    "message": "L'IA ne voit et n'agit que dans les onglets donnés."
+  },
+  "giveAll": {
+    "message": "Tout donner"
+  },
+  "giveAllNote": {
+    "message": "donne aussi messagerie, banque… si ouvertes"
+  },
+  "inherit": {
+    "message": "aussi les fenêtres qu'il ouvre"
+  },
+  "openedBy": {
+    "message": "ouvert par $N$",
+    "placeholders": {
+      "n": {
+        "content": "$1"
+      }
+    }
+  },
+  "noTabs": {
+    "message": "Aucun onglet à donner."
+  },
+  "countOne": {
+    "message": "$N$ onglet donné",
+    "placeholders": {
+      "n": {
+        "content": "$1"
+      }
+    }
+  },
+  "countMany": {
+    "message": "$N$ onglets donnés",
+    "placeholders": {
+      "n": {
+        "content": "$1"
+      }
+    }
+  },
+  "unpair": {
+    "message": "Retirer l'association"
+  },
+  "unpairConfirm": {
+    "message": "Retirer ?"
+  },
+  "statusReady": {
+    "message": "connectée"
+  },
+  "statusConnecting": {
+    "message": "connexion…"
+  },
+  "statusDown": {
+    "message": "déconnectée"
+  }
+}

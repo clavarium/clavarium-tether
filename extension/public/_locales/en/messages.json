@@ -1,0 +1,74 @@
+{
+  "notPaired": {
+    "message": "not paired"
+  },
+  "pasteLabel": {
+    "message": "Paste the line Clavarium gives you"
+  },
+  "pastePlaceholder": {
+    "message": "Assets › New › Browser"
+  },
+  "pair": {
+    "message": "Pair"
+  },
+  "pairing": {
+    "message": "Pairing…"
+  },
+  "refused": {
+    "message": "Line refused (used or expired): make a new one."
+  },
+  "scope": {
+    "message": "The AI sees and acts only in the tabs you give."
+  },
+  "giveAll": {
+    "message": "Give all"
+  },
+  "giveAllNote": {
+    "message": "also gives mail, bank… if open"
+  },
+  "inherit": {
+    "message": "also the windows it opens"
+  },
+  "openedBy": {
+    "message": "opened by $N$",
+    "placeholders": {
+      "n": {
+        "content": "$1"
+      }
+    }
+  },
+  "noTabs": {
+    "message": "No tab to give."
+  },
+  "countOne": {
+    "message": "$N$ tab given",
+    "placeholders": {
+      "n": {
+        "content": "$1"
+      }
+    }
+  },
+  "countMany": {
+    "message": "$N$ tabs given",
+    "placeholders": {
+      "n": {
+        "content": "$1"
+      }
+    }
+  },
+  "unpair": {
+    "message": "Remove pairing"
+  },
+  "unpairConfirm": {
+    "message": "Remove?"
+  },
+  "statusReady": {
+    "message": "connected"
+  },
+  "statusConnecting": {
+    "message": "connecting…"
+  },
+  "statusDown": {
+    "message": "disconnected"
+  }
+}

@@ -266,12 +266,14 @@ export default defineBackground(() => {
                         tabs: all.filter((t) => t.id !== undefined).map((t) => {
                             const parent = grants.parentOf(t.id!);
                             const opener = parent === null ? undefined : all.find((x) => String(x.id) === parent);
-                            return { id: t.id, title: t.title, url: t.url, granted: grants.isGranted(t.id!, t.url), on: grants.tabOn(t.id!), inherit: grants.inherits(t.id!), openedBy: opener ? (opener.title || opener.url || `tab ${opener.id}`) : null };
+                            return { id: t.id, title: t.title, url: t.url, granted: grants.isGranted(t.id!, t.url), on: grants.tabOn(t.id!), inherit: grants.inherits(t.id!), parent, openedBy: opener ? (opener.title || opener.url || `tab ${opener.id}`) : null };
                         }),
                     });
                     break;
                 }
                 case 'toggleTab': grants.setTab(msg.id, msg.on); await saveGrants(); await pushTabs(); reply({ ok: true }); break;
+                /* « Tout donner »: many tabs at once, one save, one push. */
+                case 'setTabs': for (const id of msg.ids ?? []) grants.setTab(id, msg.on); await saveGrants(); await pushTabs(); reply({ ok: true }); break;
                 case 'setInherit': grants.setInherit(msg.id, msg.on); await saveGrants(); reply({ ok: true }); break;
                 case 'allowSite': grants.allowSite(msg.site, msg.on); await saveGrants(); await pushTabs(); reply({ ok: true }); break;
                 case 'setKeeper': keeperUrl = msg.url || DEFAULT_KEEPER; await browser.storage.local.set({ keeperUrl }); restart(); reply({ ok: true }); break;
@@ -284,6 +286,12 @@ export default defineBackground(() => {
                     await browser.storage.local.remove('keeperToken');
                     restart(); reply({ ok: true }); break;
                 }
+                /* « Retirer l'association »: the token and the stored address forgotten, the link closed; the popup asks for a new line. */
+                case 'unpair':
+                    token = null; pairKey = null; keeperUrl = DEFAULT_KEEPER;
+                    await browser.storage.local.remove(['keeperToken', 'keeperUrl', 'pairKey']);
+                    try { link.stop(); } catch { /* idle */ }
+                    reply({ ok: true }); break;
                 case 'repair': token = null; await browser.storage.local.remove('keeperToken'); pairingCode = String(Math.floor(100000 + Math.random() * 900000)); restart(); reply({ ok: true, code: pairingCode }); break;
                 default: reply({ ok: false }); break;
             }

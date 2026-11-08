@@ -1,7 +1,7 @@
 {
   "name": "clavarium-tether-extension",
   "private": true,
-  "version": "0.1.62",
+  "version": "0.1.63",
   "description": "Clavarium Tether browser extension (Chrome and Firefox): give an AI agent, on a tether, access to the tabs you grant it.",
   "type": "module",
   "scripts": {
