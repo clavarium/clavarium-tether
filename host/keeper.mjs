@@ -226,7 +226,13 @@ export function keeper(dir, { sides = () => [], ask, notify, secrets = async () 
             journal.append({ ...base, decision: 'refused', because: 'tool' });
             no(`${t.title} has no tool ${oneLine(a.tool, 128)} (its list may have changed: look at your tools again) -- nothing was done`);
         }
-        const d = tool ? toolDecide(g, tool) : rightsOf(g.level, verb, a, g.rules);
+        /* A browser verb on a tab: the site of the page in it, read from the connector (the tabs its person granted), for
+           the site rules -- never taken from the agent. */
+        let seen = a;
+        if (t.kind === 'browser' && verb !== 'browser.open' && typeof conn.siteOf === 'function') {
+            try { const site = conn.siteOf(t, a); if (site) seen = { ...a, tabSite: String(site) }; } catch { /* no site: asked */ }
+        }
+        const d = tool ? toolDecide(g, tool) : rightsOf(g.level, verb, seen, g.rules);
         if (d.go === 'no') {
             journal.append({ ...base, decision: 'refused', because: d.because, level: g.level });
             if (tool) no(`${t.title}: the tool ${tool.name} (${tool.class}) is not allowed to you -- nothing was done`);
@@ -240,7 +246,7 @@ export function keeper(dir, { sides = () => [], ask, notify, secrets = async () 
         let outcome = { decision: 'auto' }; let asked = null;
         if (d.go === 'ask') {
             /* "Always" on an external tool: yes for that tool, for this agent -- never for a destructive one (only the page sets that). */
-            const rule = tool ? (tool.class !== 'destructive' ? { kind: 'tool', value: tool.name } : null) : ruleFrom(verb, a);
+            const rule = tool ? (tool.class !== 'destructive' ? { kind: 'tool', value: tool.name } : null) : ruleFrom(verb, seen);
             /* What a person approves, as facts for a card; and what it is about (the mail
                answered, the invitation), when the connector can tell -- a read, briefly. */
             const card = cardOf(verb, a, t, tool);

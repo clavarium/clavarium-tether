@@ -13,7 +13,8 @@
  *             ("git status" covers "git status --short", not "git stash")
  *   path      files.write / move / delete at or under this path ("~/Projects")
  *   verb      one verb with nothing to compare (terminal.open)
- *   site      browser.open of this host or one under it
+ *   site      browser.open of this host or one under it; and every acting browser verb on a granted tab
+ *             whose page is on that host or under it ("*.example.com": only the hosts under it)
  *
  * A COMMAND WITH SHELL CONTROL IN IT IS NEVER COVERED BY A RULE. "git status;
  * rm -rf ~" starts with "git status"; the rule was given for git status. So a
@@ -56,6 +57,15 @@ const under = (path, top) => {
 };
 const hostOf = (url) => { try { return new URL(url).hostname.toLowerCase(); } catch { return null; } };
 
+/* A host against a site rule: "example.com" is it and the hosts under it; "*.example.com" only those under it. */
+export function siteMatches(host, value) {
+    const h = String(host ?? '').toLowerCase().replace(/\.$/, '');
+    const v = String(value ?? '').toLowerCase();
+    if (!h || !v) return false;
+    if (v.startsWith('*.')) return h.endsWith(v.slice(1)) && h.length > v.length - 1;
+    return h === v || h.endsWith(`.${v}`);
+}
+
 /* A rule, checked and cleaned; a refusal says why. */
 export function cleanRule(rule) {
     const kind = String(rule?.kind ?? '');
@@ -64,7 +74,11 @@ export function cleanRule(rule) {
     if (!value) return { refused: 'a rule needs a value' };
     if (kind === 'command') { if (CONTROL.test(value)) return { refused: 'a command rule holds no shell control' }; value = words(value).join(' '); }
     if (kind === 'path') { value = normalPath(value); if (value === null) return { refused: 'that path climbs above its folder' }; }
-    if (kind === 'site') value = value.toLowerCase().replace(/^https?:\/\//, '').replace(/\/.*$/, '');
+    if (kind === 'site') {
+        value = value.toLowerCase().replace(/^https?:\/\//, '').replace(/[/?#].*$/, '').replace(/:\d+$/, '').replace(/\.$/, '');
+        /* A host, or "*.host" (the hosts under it); a star anywhere else is no pattern. */
+        if (!/^(\*\.)?[a-z0-9-]+(\.[a-z0-9-]+)*$/.test(value)) return { refused: 'a site is a host name, or *.host' };
+    }
     return { kind, value };
 }
 
@@ -81,9 +95,11 @@ export function covers(rule, verb, a = {}) {
             return verb === 'files.move' ? under(a.from, rule.value) && under(a.to, rule.value) : under(a.path, rule.value);
         case 'verb': return verb === rule.value;
         case 'site': {
-            if (verb !== 'browser.open') return false;
-            const h = hostOf(a.url);
-            return !!h && (h === rule.value || h.endsWith(`.${rule.value}`));
+            if (!String(verb).startsWith('browser.')) return false;
+            /* Opening: the address it goes to. Acting in a tab: the site of the page in it, as the keeper read it from
+               the connector (`tabSite`, never the agent's word: check() keeps no such argument). */
+            const h = verb === 'browser.open' ? hostOf(a.url) : String(a.tabSite ?? '').toLowerCase();
+            return siteMatches(h, rule.value);
         }
         default: return false;
     }
@@ -137,6 +153,11 @@ export function ruleFrom(verb, a = {}) {
         case 'terminal.open': return { kind: 'verb', value: verb };
         case 'screen.move': case 'screen.click': case 'screen.drag': case 'screen.scroll': case 'screen.type': case 'screen.key': return { kind: 'verb', value: verb };
         case 'browser.open': { const h = hostOf(a.url); return h ? { kind: 'site', value: h } : null; }
+        /* Acting in a tab: its page's site, when the keeper knows it. */
+        case 'browser.click': case 'browser.type': case 'browser.key': case 'browser.scroll': case 'browser.drag': case 'browser.eval': {
+            const h = String(a.tabSite ?? '').toLowerCase();
+            return h && cleanRule({ kind: 'site', value: h }).kind ? { kind: 'site', value: h } : null;
+        }
         default: return null;
     }
 }

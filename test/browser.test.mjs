@@ -205,3 +205,30 @@ test('browser through the keeper: an ungranted tab is refused with the result jo
     assert.match(r.text, /was not granted/);
     await k.close();
 });
+
+test('browser site rules: at frame, an act in a granted tab of an allowed site runs; elsewhere it asks; the agent cannot say the site', async () => {
+    const asked = [];
+    const { k, ext } = await keeperWith('frame', { ask: (r) => { asked.push(r); return undefined; } });
+    ext.tabs([{ id: 7, url: 'https://shop.example.com/a', title: 'A', site: 'shop.example.com' }, { id: 9, url: 'https://other.example.org/b', title: 'B', site: 'other.example.org' }]);
+    await tick();
+    k.store.allow('browser', BOT.id, { kind: 'site', value: '*.example.com' });
+    for (const [verb, extra] of [['browser.click', { selector: '.go' }], ['browser.type', { text: 'hi' }], ['browser.key', { key: 'Enter' }], ['browser.scroll', { dy: 3 }], ['browser.drag', { from: '#a', to: '#b' }], ['browser.eval', { script: '1' }]]) {
+        const r = await k.act(verb, { target: 'browser', tab: 7, ...extra }, BOT);
+        assert.equal(r.ok, true, verb);
+    }
+    assert.equal(asked.length, 0, 'nothing asked on an allowed site');
+    /* Another site: asked, and "Always" would allow that site. */
+    const p = k.act('browser.click', { target: 'browser', tab: 9, selector: '.go', tabSite: 'shop.example.com' }, BOT);
+    await new Promise((r) => setImmediate(r));
+    assert.equal(asked.length, 1, 'a tab on another site is asked, whatever the agent says its site is');
+    assert.deepEqual(asked[0].rule, { kind: 'site', value: 'other.example.org' });
+    k.decide(k.approvals()[0].id, 'no', ME);
+    assert.equal((await p).ok, false);
+    /* No tab named: its site is not known, so it is asked. */
+    const q = k.act('browser.key', { target: 'browser', key: 'Enter' }, BOT);
+    await new Promise((r) => setImmediate(r));
+    assert.equal(asked.length, 2);
+    k.decide(k.approvals()[0].id, 'no', ME);
+    await q;
+    await k.close();
+});

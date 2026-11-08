@@ -668,3 +668,22 @@ test('loop 32: attach and attachments together all go; a card names the fields a
     const { cardOf } = await import('../server/cards.mjs');
     assert.deepEqual(cardOf('calendar.update', { id: 'e', where: '', with: '', categories: [] }, {}).cleared, ['where', 'with', 'categories']);
 });
+
+test('site rules: a host covers it and the hosts under it, *.host only those under it; acting in a tab by its page\'s site', async () => {
+    const { siteMatches } = await import('../server/rights.mjs');
+    assert.equal(siteMatches('example.com', 'example.com'), true);
+    assert.equal(siteMatches('a.example.com', 'example.com'), true);
+    assert.equal(siteMatches('badexample.com', 'example.com'), false);
+    assert.equal(siteMatches('example.com', '*.example.com'), false);
+    assert.equal(siteMatches('a.b.example.com', '*.example.com'), true);
+    assert.deepEqual(cleanRule({ kind: 'site', value: 'https://*.Example.com/path' }), { kind: 'site', value: '*.example.com' });
+    assert.ok(cleanRule({ kind: 'site', value: 'ex*ample.com' }).refused);
+    assert.ok(cleanRule({ kind: 'site', value: '*' }).refused);
+    const rule = { kind: 'site', value: 'example.com' };
+    assert.equal(covers(rule, 'browser.click', { tabSite: 'www.example.com' }), true);
+    assert.equal(covers(rule, 'browser.eval', { tabSite: 'example.org' }), false);
+    assert.equal(covers(rule, 'browser.click', {}), false, 'no site known: not covered');
+    assert.equal(covers(rule, 'terminal.run', { tabSite: 'example.com', command: 'ls' }), false);
+    assert.deepEqual(ruleFrom('browser.click', { tabSite: 'www.example.com' }), { kind: 'site', value: 'www.example.com' });
+    assert.equal(ruleFrom('browser.click', {}), null);
+});

@@ -40,7 +40,7 @@ An **allow rule** is `{kind, value}`:
 | `command` | `terminal.run` of a command whose first words are these |
 | `path` | `files.write`, `files.move` (both ends), `files.delete` at or under this path |
 | `verb` | one verb (`terminal.open`) |
-| `site` | `browser.open` of this host or one under it |
+| `site` | `browser.open` of this host or one under it; and every acting browser verb (click, type, key, scroll, drag, eval) on a granted tab whose page is on that host or under it. `*.example.com`: only the hosts under it |
 
 A command holding shell control (`; & | $ \` < > ( ) { }` or a backslash) is
 never covered by a rule. Paths are `~/...` from the target's folder, or
@@ -388,6 +388,8 @@ same refusal the extension makes on its side, as a second lock. `browser.open`
 with no tab opens a new tab, which the extension grants as it opens it.
 `browser.tabs` is answered by the keeper from the pushed list without a round
 trip. `browser.shot` returns a `data:image/png;base64,…` URL.
+
+**Site rules.** At level `frame`, a `site` rule lets the agent act without asking on the pages of that site: the keeper asks the connector the site of the tab named (`siteOf(target, args)`, from the tabs the extension pushed — never the agent's word) and compares it with the rules. A tab not named, or not granted, has no site: the act is asked. "Always" on an act in a tab adds that tab's site.
 
 **Rights and the indicator.** The level (watch / propose / frame / free) and a
 person's approval are applied by the keeper BEFORE it calls the connector,

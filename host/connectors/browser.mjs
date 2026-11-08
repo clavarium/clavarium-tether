@@ -160,8 +160,17 @@ export function browser({ tokens = memTokens(), newToken = mintToken, timeout = 
         return { text, size: res.size ?? Buffer.byteLength(text) };
     }
 
+    /* The site of a granted tab's page (its host), for the keeper's site rules: none for a tab not granted, or none named. */
+    function siteOf(target, a = {}) {
+        if (!live || a.tab === undefined) return '';
+        const t = live.tabs.get(String(a.tab));
+        if (!t) return '';
+        try { return new URL(t.url).hostname.toLowerCase(); } catch { return String(t.site ?? '').toLowerCase(); }
+    }
+
     return {
         name: 'browser',
+        siteOf,
         verbs: ['browser.tabs', 'browser.open', 'browser.shot', 'browser.html', 'browser.console', 'browser.eval', 'browser.click', 'browser.type', 'browser.key', 'browser.scroll', 'browser.drag'],
         run,
         accept,
