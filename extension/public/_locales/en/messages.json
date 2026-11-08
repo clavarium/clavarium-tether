@@ -70,5 +70,19 @@
   },
   "statusDown": {
     "message": "disconnected"
+  },
+  "addOne": {
+    "message": "Add a Clavarium"
+  },
+  "heldBy": {
+    "message": "given to $N$",
+    "placeholders": {
+      "n": {
+        "content": "$1"
+      }
+    }
+  },
+  "tabsTitle": {
+    "message": "Tabs"
   }
 }

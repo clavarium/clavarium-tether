@@ -7,6 +7,10 @@
  * a red border show on a tab while the agent acts in it (the visible-indicator
  * requirement). The pairing token is kept in extension storage and never logged.
  *
+ * SEVERAL CLAVARIUM (0.1.0-next.64): a list of pairings (lib/pairings.js), each with its own link, heartbeat and
+ * granted tabs. A call from one Clavarium runs only on the tabs given to it; a tab is given to one only. The CDP
+ * driver is per tab and shared; screenshots, which activate a tab, go one at a time.
+ *
  * On Chrome the acting verbs are REAL input, through the debugging protocol
  * (lib/cdp.js): Chrome shows its "is debugging this browser" banner while the
  * agent acts, detached after 30 s idle. Firefox has no debugger API and keeps
@@ -14,7 +18,7 @@
  */
 import { browser } from 'wxt/browser';
 import { defineBackground } from 'wxt/utils/define-background';
-import { grants as makeGrants, onTabCreated } from '../lib/scope.js';
+import { createPairings, migrate, LEGACY_KEYS, oneAtATime } from '../lib/pairings.js';
 import { dispatch } from '../lib/protocol.js';
 import { createLink, readConfig } from '../lib/link.js';
 import { createDriver } from '../lib/cdp.js';
@@ -27,23 +31,21 @@ const DEFAULT_KEEPER = 'ws://127.0.0.1:8787/browser';
 const CONSOLE_MAX = 200;
 
 export default defineBackground(() => {
-    let grants = makeGrants({});
-    let keeperUrl = DEFAULT_KEEPER;
-    let token: string | null = null;
-    let pairKey: string | null = null;     // a one-time key pasted in the popup, until it is swapped for a token
-    let pairingCode = String(Math.floor(100000 + Math.random() * 900000));
-    let lastTab: number | null = null;
+    let P = createPairings([]);
+    const links = new Map<string, ReturnType<typeof createLink>>();   // pairing id -> its link
+    const lastTab = new Map<string, number>();                        // pairing id -> the tab it acted in last
+    let refusedAt = 0;                                                // a pasted line refused, said for a while
+    const pairingCode = String(Math.floor(100000 + Math.random() * 900000));
     const consoles = new Map<number, string[]>(); // tabId -> recent console lines
 
-    /* ---- storage ---- */
+    /* ---- storage: { pairings: [...] }; the flat single pairing of 0.1.63 and before is moved into it once ---- */
     async function load() {
-        const s = await browser.storage.local.get(['grants', 'keeperToken', 'keeperUrl', 'pairKey']);
-        pairKey = (s.pairKey as string) ?? null;
-        grants = makeGrants((s.grants as object) ?? {});
-        token = (s.keeperToken as string) ?? null;
-        keeperUrl = (s.keeperUrl as string) ?? DEFAULT_KEEPER;
+        const s = await browser.storage.local.get(['pairings', ...LEGACY_KEYS]);
+        const { list, migrated } = migrate(s, DEFAULT_KEEPER);
+        P = createPairings(list);
+        if (migrated) { await save(); await browser.storage.local.remove(LEGACY_KEYS); }
     }
-    const saveGrants = () => browser.storage.local.set({ grants: grants.toJSON() });
+    const save = () => browser.storage.local.set({ pairings: P.toJSON() });
 
     /* ---- the indicator: a badge, and a red border injected into the page ---- */
     async function mark(tabId: number) {
@@ -174,125 +176,149 @@ export default defineBackground(() => {
     const driver = createDriver({ dbg: (globalThis as any).chrome?.debugger });
     const acts = makeActs({ driver, page });
 
-    /* ---- the browser work the protocol maps onto ---- */
+    /* ---- the browser work the protocol maps onto, for one pairing: its grants (scoped), its last tab ---- */
     const text = (t: string, size?: number) => ({ text: t, size: size ?? new TextEncoder().encode(t).length });
-    const actions = {
-        async tabs() {
-            const all = await browser.tabs.query({});
-            const on = all.filter((t) => t.id !== undefined && grants.isGranted(t.id, t.url));
-            const lines = on.map((t) => `${t.id}  ${t.title ?? '(no title)'}  ${t.url ?? ''}`.trim());
-            return text(lines.length ? lines.join('\n') : 'No tab granted to the agent.', on.length);
-        },
-        async openTab(url: string) {
-            const t = await browser.tabs.create({ url });
-            if (t.id !== undefined) { grants.grantTab(t.id); lastTab = t.id; await saveGrants(); await pushTabs(); }
-            return { ...text(`opened ${url} in a new tab (${t.id})`), tabId: t.id };
-        },
-        async activeGrantedTab() {
-            if (lastTab !== null) { try { const t = await browser.tabs.get(lastTab); if (t && grants.isGranted(t.id!, t.url)) return t.id!; } catch { /* gone */ } }
-            const [active] = await browser.tabs.query({ active: true, currentWindow: true });
-            if (active?.id !== undefined && grants.isGranted(active.id, active.url)) return active.id;
-            const all = await browser.tabs.query({});
-            const t = all.find((x) => x.id !== undefined && grants.isGranted(x.id, x.url));
-            return t?.id ?? null;
-        },
-        async tabInfo(tabId: number) { try { const t = await browser.tabs.get(Number(tabId)); return { url: t.url ?? '', title: t.title ?? '' }; } catch { return null; } },
-        async navigate(tabId: number, url: string) { await browser.tabs.update(Number(tabId), { url }); lastTab = Number(tabId); return text(`went to ${url}`); },
-        async shot(tabId: number) {
-            const t = await browser.tabs.get(Number(tabId));
-            await browser.tabs.update(Number(tabId), { active: true });
-            const data = await browser.tabs.captureVisibleTab(t.windowId!, { format: 'png' });
-            lastTab = Number(tabId);
-            return text(data, data.length);
-        },
-        async html(tabId: number, a: { selector?: string; readable?: boolean }) {
-            const html = await inPage(Number(tabId), (sel: string, readable: boolean) => {
-                const node = sel ? document.querySelector(sel) : document.documentElement;
-                if (!node) return `(no element ${sel})`;
-                return readable ? (node as HTMLElement).innerText : (node as HTMLElement).outerHTML;
-            }, [a.selector ?? '', !!a.readable]);
-            lastTab = Number(tabId);
-            return text(String(html ?? ''));
-        },
-        async console(tabId: number, a: { lines?: number }) {
-            const buf = consoles.get(Number(tabId)) ?? [];
-            const n = Math.max(1, Math.min(CONSOLE_MAX, a.lines ?? 40));
-            const out = buf.slice(-n).join('\n');
-            return text(out || '(no console messages captured)');
-        },
-        async eval(tabId: number, script: string) { lastTab = Number(tabId); return text(String(await acts.eval(Number(tabId), script) ?? 'undefined')); },
-        async click(tabId: number, a: any) { lastTab = Number(tabId); return text(await acts.click(Number(tabId), a)); },
-        async type(tabId: number, a: any) { lastTab = Number(tabId); return text(await acts.type(Number(tabId), a)); },
-        async key(tabId: number, a: any) { lastTab = Number(tabId); return text(await acts.key(Number(tabId), a)); },
-        async scroll(tabId: number, a: any) { lastTab = Number(tabId); return text(await acts.scroll(Number(tabId), a)); },
-        async drag(tabId: number, a: any) { lastTab = Number(tabId); return text(await acts.drag(Number(tabId), a)); },
-        async upload(tabId: number, a: any) { lastTab = Number(tabId); return text(await acts.upload(Number(tabId), a)); },
-    };
+    const shots = oneAtATime();
+    function actionsFor(p: any) {
+        const touch = (tabId: number) => { lastTab.set(p.id, Number(tabId)); };
+        return {
+            async tabs(g: any) {
+                const all = await browser.tabs.query({});
+                const on = all.filter((t) => t.id !== undefined && g.isGranted(t.id, t.url));
+                const lines = on.map((t) => `${t.id}  ${t.title ?? '(no title)'}  ${t.url ?? ''}`.trim());
+                return text(lines.length ? lines.join('\n') : 'No tab granted to the agent.', on.length);
+            },
+            async openTab(url: string, g: any) {
+                const t = await browser.tabs.create({ url });
+                if (t.id !== undefined) { g.grantTab(t.id); touch(t.id); await save(); await pushTabs(p); }
+                return { ...text(`opened ${url} in a new tab (${t.id})`), tabId: t.id };
+            },
+            async activeGrantedTab(g: any) {
+                const last = lastTab.get(p.id);
+                if (last !== undefined) { try { const t = await browser.tabs.get(last); if (t && g.isGranted(t.id!, t.url)) return t.id!; } catch { /* gone */ } }
+                const [active] = await browser.tabs.query({ active: true, currentWindow: true });
+                if (active?.id !== undefined && g.isGranted(active.id, active.url)) return active.id;
+                const all = await browser.tabs.query({});
+                const t = all.find((x) => x.id !== undefined && g.isGranted(x.id, x.url));
+                return t?.id ?? null;
+            },
+            async tabInfo(tabId: number) { try { const t = await browser.tabs.get(Number(tabId)); return { url: t.url ?? '', title: t.title ?? '' }; } catch { return null; } },
+            async navigate(tabId: number, url: string) { await browser.tabs.update(Number(tabId), { url }); touch(tabId); return text(`went to ${url}`); },
+            async shot(tabId: number) {
+                touch(tabId);
+                return shots(async () => {
+                    const t = await browser.tabs.get(Number(tabId));
+                    await browser.tabs.update(Number(tabId), { active: true });
+                    const data = await browser.tabs.captureVisibleTab(t.windowId!, { format: 'png' });
+                    return text(data, data.length);
+                });
+            },
+            async html(tabId: number, a: { selector?: string; readable?: boolean }) {
+                const html = await inPage(Number(tabId), (sel: string, readable: boolean) => {
+                    const node = sel ? document.querySelector(sel) : document.documentElement;
+                    if (!node) return `(no element ${sel})`;
+                    return readable ? (node as HTMLElement).innerText : (node as HTMLElement).outerHTML;
+                }, [a.selector ?? '', !!a.readable]);
+                touch(tabId);
+                return text(String(html ?? ''));
+            },
+            async console(tabId: number, a: { lines?: number }) {
+                const buf = consoles.get(Number(tabId)) ?? [];
+                const n = Math.max(1, Math.min(CONSOLE_MAX, a.lines ?? 40));
+                const out = buf.slice(-n).join('\n');
+                return text(out || '(no console messages captured)');
+            },
+            async eval(tabId: number, script: string) { touch(tabId); return text(String(await acts.eval(Number(tabId), script) ?? 'undefined')); },
+            async click(tabId: number, a: any) { touch(tabId); return text(await acts.click(Number(tabId), a)); },
+            async type(tabId: number, a: any) { touch(tabId); return text(await acts.type(Number(tabId), a)); },
+            async key(tabId: number, a: any) { touch(tabId); return text(await acts.key(Number(tabId), a)); },
+            async scroll(tabId: number, a: any) { touch(tabId); return text(await acts.scroll(Number(tabId), a)); },
+            async drag(tabId: number, a: any) { touch(tabId); return text(await acts.drag(Number(tabId), a)); },
+            async upload(tabId: number, a: any) { touch(tabId); return text(await acts.upload(Number(tabId), a)); },
+        };
+    }
 
-    /* ---- the link (rebuilt when the keeper URL changes) ---- */
-    let link = makeLink();
-    function makeLink() {
+    /* ---- one link per pairing ---- */
+    function makeLink(p: any) {
+        const actions = actionsFor(p);
         return createLink({
-            url: keeperUrl,
-            getToken: () => token,
-            setToken: (t: string) => { token = t; browser.storage.local.set({ keeperToken: t }); },
+            url: p.url,
+            getToken: () => p.token,
+            setToken: (t: string) => { p.token = t; save(); },
             pairingCode: () => pairingCode,
-            getPairKey: () => pairKey,
-            clearPairKey: () => { pairKey = null; browser.storage.local.remove('pairKey'); },
-            onCall: (m: any) => dispatch(m, { grants, actions, mark: mark as any }),
-            /* The popup reads status on demand. Once the keeper says welcome (or paired), the granted tabs are said again:
-               a keeper that restarted knows none (08-11, found on a real browser: "no tab granted" while the popup showed them ticked). */
-            onStatus: (s: string) => { if (s === 'ready') pushTabs().catch(() => {}); },
+            getPairKey: () => p.pairKey,
+            clearPairKey: () => { p.pairKey = null; save(); },
+            onCall: (m: any) => dispatch(m, { grants: P.scoped(p), actions, mark: mark as any }),
+            /* Once the keeper says welcome (or paired), its granted tabs are said again: a keeper that restarted knows none.
+               A pasted line refused, on a pairing that never had a token, takes that pairing away (the popup says so). */
+            onStatus: (s: string) => {
+                if (s === 'ready') pushTabs(p).catch(() => {});
+                if (s === 'refused' && !p.token) { refusedAt = Date.now(); queueMicrotask(() => { drop(p.id).catch(() => {}); }); }
+            },
         });
     }
-    function restart() { try { link.stop(); } catch { /* idle */ } link = makeLink(); link.start(); }
+    function startLink(p: any) { stopLink(p.id); const l = makeLink(p); links.set(p.id, l); l.start(); }
+    function stopLink(pid: string) { const l = links.get(pid); if (l) { try { l.stop(); } catch { /* idle */ } links.delete(pid); } }
+    async function drop(pid: string) { stopLink(pid); lastTab.delete(pid); if (P.remove(pid)) await save(); }
 
-    async function pushTabs() {
+    async function pushTabs(p: any) {
+        const link = links.get(p?.id);
+        if (!link) return;
+        const g = P.scoped(p);
         const all = await browser.tabs.query({});
-        const tabs = all.filter((t) => t.id !== undefined && grants.isGranted(t.id, t.url)).map((t) => ({ id: t.id, url: t.url ?? '', title: t.title ?? '', site: (() => { try { return new URL(t.url ?? '').hostname; } catch { return ''; } })() }));
+        const tabs = all.filter((t) => t.id !== undefined && g.isGranted(t.id, t.url)).map((t) => ({ id: t.id, url: t.url ?? '', title: t.title ?? '', site: (() => { try { return new URL(t.url ?? '').hostname; } catch { return ''; } })() }));
         link.send({ t: 'tabs', tabs });
     }
+    const pushAll = async () => { for (const p of P.list()) await pushTabs(p); };
 
-    /* ---- popup <-> background ---- */
+    /* ---- popup <-> background: every change names its pairing (pid) ---- */
     browser.runtime.onMessage.addListener((msg: any, _sender, reply) => {
         (async () => {
+            await loaded;
+            const p = msg?.pid !== undefined ? P.get(msg.pid) : null;
             switch (msg?.op) {
                 case 'state': {
                     const all = await browser.tabs.query({});
+                    const list = P.list();
                     reply({
-                        status: link.status(),
-                        keeperUrl, paired: !!token, code: pairingCode, claiming: !!pairKey,
-                        sites: grants.siteList(),
+                        pairings: list.map((x) => ({ id: x.id, host: x.host, url: x.url, paired: !!x.token, claiming: !x.token && !!x.pairKey, status: links.get(x.id)?.status() ?? 'idle' })),
+                        refused: Date.now() - refusedAt < 10_000,
                         tabs: all.filter((t) => t.id !== undefined).map((t) => {
-                            const parent = grants.parentOf(t.id!);
+                            const owner = P.ownerOf(t.id!);
+                            const parent = owner ? owner.grants.parentOf(t.id!) : null;
                             const opener = parent === null ? undefined : all.find((x) => String(x.id) === parent);
-                            return { id: t.id, title: t.title, url: t.url, granted: grants.isGranted(t.id!, t.url), on: grants.tabOn(t.id!), inherit: grants.inherits(t.id!), parent, openedBy: opener ? (opener.title || opener.url || `tab ${opener.id}`) : null };
+                            return {
+                                id: t.id, title: t.title, url: t.url, owner: owner?.id ?? null, inherit: !!owner?.grants.inherits(t.id!), parent,
+                                sites: list.filter((x) => P.scoped(x).isGranted(t.id!, t.url)).map((x) => x.id),
+                                openedBy: opener ? (opener.title || opener.url || `tab ${opener.id}`) : null,
+                            };
                         }),
                     });
                     break;
                 }
-                case 'toggleTab': grants.setTab(msg.id, msg.on); await saveGrants(); await pushTabs(); reply({ ok: true }); break;
-                /* « Tout donner »: many tabs at once, one save, one push. */
-                case 'setTabs': for (const id of msg.ids ?? []) grants.setTab(id, msg.on); await saveGrants(); await pushTabs(); reply({ ok: true }); break;
-                case 'setInherit': grants.setInherit(msg.id, msg.on); await saveGrants(); reply({ ok: true }); break;
-                case 'allowSite': grants.allowSite(msg.site, msg.on); await saveGrants(); await pushTabs(); reply({ ok: true }); break;
-                case 'setKeeper': keeperUrl = msg.url || DEFAULT_KEEPER; await browser.storage.local.set({ keeperUrl }); restart(); reply({ ok: true }); break;
-                /* The configuration copied from the keeper page: its address kept, its one-time key said once connected. */
+                case 'toggleTab': {
+                    if (!p) { reply({ ok: false }); break; }
+                    const r = P.setTab(p.id, msg.id, msg.on); await save(); await pushTabs(p); reply(r); break;
+                }
+                /* « Tout donner » of one block: many tabs at once, one save, one push; a tab held by another is left alone. */
+                case 'setTabs': {
+                    if (!p) { reply({ ok: false }); break; }
+                    for (const id of msg.ids ?? []) P.setTab(p.id, id, msg.on);
+                    await save(); await pushTabs(p); reply({ ok: true }); break;
+                }
+                case 'setInherit': { if (!p) { reply({ ok: false }); break; } const r = P.setInherit(p.id, msg.id, msg.on); await save(); reply(r); break; }
+                case 'allowSite': if (!p) { reply({ ok: false }); break; } p.grants.allowSite(msg.site, msg.on); await save(); await pushTabs(p); reply({ ok: true }); break;
+                /* The configuration copied from a keeper page: a new pairing (or the same address paired again, its tabs kept). */
                 case 'paste': {
                     const c = readConfig(msg.text);
                     if (c.error) { reply({ ok: false, error: c.error }); break; }
-                    keeperUrl = c.url; pairKey = c.key; token = null;
-                    await browser.storage.local.set({ keeperUrl, pairKey });
-                    await browser.storage.local.remove('keeperToken');
-                    restart(); reply({ ok: true }); break;
+                    let q = P.list().find((x) => x.url === c.url);
+                    if (q) { q.token = null; q.pairKey = c.key; } else q = P.add({ url: c.url, key: c.key });
+                    refusedAt = 0;
+                    await save(); startLink(q); reply({ ok: true, pid: q.id }); break;
                 }
-                /* « Retirer l'association »: the token and the stored address forgotten, the link closed; the popup asks for a new line. */
-                case 'unpair':
-                    token = null; pairKey = null; keeperUrl = DEFAULT_KEEPER;
-                    await browser.storage.local.remove(['keeperToken', 'keeperUrl', 'pairKey']);
-                    try { link.stop(); } catch { /* idle */ }
-                    reply({ ok: true }); break;
-                case 'repair': token = null; await browser.storage.local.remove('keeperToken'); pairingCode = String(Math.floor(100000 + Math.random() * 900000)); restart(); reply({ ok: true, code: pairingCode }); break;
+                /* « Retirer l'association » of one block: that pairing, its token and its grants forgotten, its link closed. The others stay. */
+                case 'unpair': if (!p) { reply({ ok: false }); break; } await drop(p.id); reply({ ok: true }); break;
                 default: reply({ ok: false }); break;
             }
         })();
@@ -307,13 +333,19 @@ export default defineBackground(() => {
             consoles.set(sender.tab.id, buf);
         }
     });
-    browser.tabs.onRemoved.addListener((id) => { consoles.delete(id); grants.forget(id); driver.forget(id); });
-    browser.tabs.onUpdated.addListener(() => { pushTabs().catch(() => {}); });
-    /* A tab or window opened by a tab with "Also the windows it opens" on is granted too (one level). */
-    /* It waits for the stored grants: a Chrome service worker may wake on this very event. */
-    browser.tabs.onCreated.addListener((t) => { loaded.then(() => onTabCreated({ grants, save: saveGrants, push: pushTabs })(t)).catch(() => {}); });
+    browser.tabs.onRemoved.addListener((id) => { consoles.delete(id); P.forget(id); driver.forget(id); });
+    browser.tabs.onUpdated.addListener(() => { pushAll().catch(() => {}); });
+    /* A tab or window opened by a tab with "Also the windows it opens" on goes to the pairing that holds the opener (one level). */
+    /* It waits for the stored pairings: a Chrome service worker may wake on this very event. */
+    browser.tabs.onCreated.addListener((t) => {
+        loaded.then(async () => {
+            if (t?.id === undefined) return;
+            const p = P.adopt(t.id, t.openerTabId);
+            if (p) { await save(); await pushTabs(p); }
+        }).catch(() => {});
+    });
 
-    /* Load the stored grants, token and keeper URL, then open the link. */
+    /* Load the stored pairings (moving a 0.1.63 one in), then open one link each. */
     const loaded = load();
-    (async () => { await loaded; restart(); await pushTabs(); })();
+    (async () => { await loaded; for (const p of P.list()) startLink(p); await pushAll(); })();
 });

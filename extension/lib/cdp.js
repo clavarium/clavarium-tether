@@ -78,11 +78,19 @@ export function createDriver({ dbg, setTimer = setTimeout, clearTimer = clearTim
         if (old !== undefined) clearTimer(old);
         attached.set(tabId, setTimer(() => { detach(tabId).catch(() => {}); }, idleMs));
     }
+    /* Per tab, shared by every pairing: two Clavarium acting on two tabs attach two tabs, each on its own; two commands
+       arriving at once on one tab wait for the one attachment in flight. */
+    const attaching = new Map();      // tabId -> the attach in flight
     async function attach(tabId) {
         if (attached.has(tabId)) return;
-        try { await dbg.attach({ tabId }, PROTOCOL); }
-        catch (e) { if (!/already attached/i.test(String(e?.message ?? e))) throw e; }
-        attached.set(tabId, undefined);
+        if (attaching.has(tabId)) return attaching.get(tabId);
+        const go = (async () => {
+            try { await dbg.attach({ tabId }, PROTOCOL); }
+            catch (e) { if (!/already attached/i.test(String(e?.message ?? e))) throw e; }
+            attached.set(tabId, undefined);
+        })();
+        attaching.set(tabId, go);
+        try { await go; } finally { attaching.delete(tabId); }
     }
     async function detach(tabId) {
         const id = Number(tabId);

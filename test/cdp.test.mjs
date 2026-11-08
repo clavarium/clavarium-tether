@@ -57,6 +57,18 @@ test('cdp: attached once on the first command, kept while acting, detached after
     assert.equal(dbg.log.filter((l) => l[0] === 'attach').length, 2, 'the next act attaches again');
 });
 
+test('cdp: two Clavarium acting at once on two tabs attach each tab once, and do not wait on each other', async () => {
+    const dbg = fakeDebugger(); const clock = fakeClock(); const d = driverWith(dbg, clock);
+    let release; const gate = new Promise((r) => { release = r; });
+    const attach = dbg.attach; dbg.attach = async (t, v) => { await attach(t, v); if (t.tabId === 7) await gate; };
+    const a1 = d.key(7, 'a'); const a2 = d.key(7, 'b');           // one Clavarium, twice on its tab 7, the attach slow
+    await d.key(9, 'c');                                           // the other, on its tab 9: not held up by tab 7
+    assert.equal(d.isAttached(9), true);
+    release(); await Promise.all([a1, a2]);
+    assert.deepEqual(dbg.log.filter((l) => l[0] === 'attach').map((l) => l[1]).sort(), [7, 9], 'tab 7 attached once, tab 9 once');
+    assert.ok(sends(dbg, 'Input.dispatchKeyEvent').some((l) => l[1] === 9) && sends(dbg, 'Input.dispatchKeyEvent').some((l) => l[1] === 7));
+});
+
 test('cdp: a person closing the banner detaches it; the next command attaches again', async () => {
     const dbg = fakeDebugger(); const clock = fakeClock(); const d = driverWith(dbg, clock);
     await d.key(3, 'Tab');

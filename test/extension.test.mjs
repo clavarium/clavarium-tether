@@ -9,7 +9,8 @@ import assert from 'node:assert/strict';
 import { grants, onTabCreated } from '../extension/lib/scope.js';
 import { dispatch } from '../extension/lib/protocol.js';
 import { createLink, readConfig } from '../extension/lib/link.js';
-import { rows as popupRows, isInternal, master, masterFlip, givenCount } from '../extension/lib/popup.js';
+import { rows as popupRows, isInternal, master, masterFlip, givenCount, blockTabs } from '../extension/lib/popup.js';
+import { createPairings, migrate, oneAtATime, LEGACY_KEYS } from '../extension/lib/pairings.js';
 
 /* A fake browser: it records every call and answers from a tiny tab world. */
 function fakeActions(world) {
@@ -307,4 +308,148 @@ test('popup: the master switch is on only when all are given; it gives all, or t
 test('popup: "also the windows it opens" shows only under a given tab', () => {
     const list = popupRows([tab(1, 'A', 'https://a.example.org/', { granted: true, inherit: true }), tab(2, 'B', 'https://b.example.org/', { inherit: false })], SELF);
     assert.deepEqual(list.map((r) => [r.showInherit, r.inherit]), [[true, true], [false, false]]);
+});
+
+/* ---- several Clavarium at once (0.1.64) ---- */
+const two = () => createPairings([
+    { id: 'a', url: 'wss://one.example.com/c/api/browser', token: 'tok-a', grants: { tabs: ['7'] } },
+    { id: 'b', url: 'wss://two.example.net/c/api/browser', token: 'tok-b', grants: { tabs: ['9'] } },
+]);
+
+test('pairings: a single 0.1.63 pairing moves into the list, token and grants kept, nothing to pair again', () => {
+    const old = { keeperUrl: 'wss://one.example.com/c/api/browser', keeperToken: 'tok-old', grants: { tabs: ['7'], inherit: ['7'], parents: { 8: '7' } } };
+    const { list, migrated } = migrate(old, 'ws://127.0.0.1:8787/browser');
+    assert.equal(migrated, true);
+    assert.equal(list.length, 1);
+    const P = createPairings(list);
+    const p = P.list()[0];
+    assert.equal(p.token, 'tok-old');
+    assert.equal(p.host, 'one.example.com');
+    assert.equal(p.grants.tabOn(7), true);
+    assert.equal(p.grants.inherits(7), true);
+    assert.equal(p.grants.parentOf(8), '7');
+    /* Stored back as a list, it loads the same and is not migrated twice. */
+    const again = migrate({ pairings: P.toJSON() });
+    assert.equal(again.migrated, false);
+    assert.equal(createPairings(again.list).get(p.id).token, 'tok-old');
+    /* A key still being claimed moves too; flat grants with no pairing are dropped, their keys removed. */
+    assert.equal(migrate({ keeperUrl: 'wss://x.example.com/b', pairKey: 'k'.repeat(24) }).list[0].pairKey, 'k'.repeat(24));
+    assert.deepEqual(migrate({ grants: { tabs: ['7'] } }), { list: [], migrated: true });
+    assert.deepEqual(migrate({}), { list: [], migrated: false });
+    assert.deepEqual(LEGACY_KEYS.sort(), ['grants', 'keeperToken', 'keeperUrl', 'pairKey']);
+});
+
+test('pairings: two links, each with its own token, each call run on its own tabs only', async () => {
+    const P = two();
+    const w = world();
+    const socks = {};
+    const links = P.list().map((p) => {
+        const actions = fakeActions(w);
+        const link = createLink({
+            url: p.url,
+            WebSocketImpl: function (url) { const s = fakeSocket(); socks[url] = s; return s; },
+            getToken: () => p.token,
+            onCall: (m) => dispatch(m, { grants: P.scoped(p), actions }),
+            setInt: () => 0, clearInt: () => {}, setTmo: () => 0, clearTmo: () => {},
+        });
+        link.start();
+        return { p, link, actions };
+    });
+    const [A, B] = links;
+    const sa = socks[A.p.url]; const sb = socks[B.p.url];
+    sa.open(); sb.open();
+    assert.deepEqual(sa.sent[0], { t: 'hello', token: 'tok-a' });
+    assert.deepEqual(sb.sent[0], { t: 'hello', token: 'tok-b' });
+    sa.recv({ t: 'call', id: '1', verb: 'shot', args: { tab: '7' } });
+    sb.recv({ t: 'call', id: '2', verb: 'shot', args: { tab: '9' } });
+    /* A call from one Clavarium on a tab given to the other: refused, and nothing runs. */
+    sa.recv({ t: 'call', id: '3', verb: 'eval', args: { tab: '9', script: '1' } });
+    await new Promise((r) => setImmediate(r));
+    assert.equal(sa.sent.find((m) => m.id === '1').ok, true);
+    assert.equal(sb.sent.find((m) => m.id === '2').ok, true);
+    const refused = sa.sent.find((m) => m.id === '3');
+    assert.equal(refused.ok, false);
+    assert.match(refused.error, /not granted/);
+    assert.deepEqual(A.actions.calls.map((c) => [c.name, c.tabId]), [['shot', '7']]);
+    assert.deepEqual(B.actions.calls.map((c) => [c.name, c.tabId]), [['shot', '9']]);
+    /* tabs lists each one's own. */
+    const ta = await dispatch({ id: 't', verb: 'tabs' }, { grants: P.scoped(A.p), actions: A.actions });
+    assert.match(ta.text, /^7 /); assert.doesNotMatch(ta.text, /9/);
+});
+
+test('pairings: a tab is given to one Clavarium only; an allowed site does not reach a tab the other holds', () => {
+    const P = two();
+    assert.equal(P.setTab('b', '7', true).ok, false, 'held by a: refused');
+    assert.equal(P.ownerOf('7').id, 'a');
+    P.get('b').grants.allowSite('example.com');
+    assert.equal(P.scoped(P.get('b')).isGranted('7', 'https://example.com/a'), false, 'its site allowed, but a holds it');
+    assert.equal(P.scoped(P.get('b')).isGranted('11', 'https://example.com/c'), true, 'a tab no one holds: the site reaches it');
+    assert.equal(P.setTab('a', '7', false).ok, true, 'taken back first...');
+    assert.equal(P.setTab('b', '7', true).ok, true, '...then given to the other');
+    assert.equal(P.ownerOf('7').id, 'b');
+});
+
+test('pairings: "also the windows it opens" belongs to the Clavarium holding the opener', () => {
+    const P = two();
+    assert.equal(P.setInherit('b', '7', true).ok, false, 'b does not hold 7');
+    assert.equal(P.setInherit('a', '7', true).ok, true);
+    assert.equal(P.adopt('20', '7').id, 'a');
+    assert.equal(P.ownerOf('20').id, 'a');
+    assert.equal(P.adopt('21', '9'), null, '9 has the option off');
+    assert.equal(P.ownerOf('21'), null);
+});
+
+test('popup: each block has its own « Tout donner »; a tab of the other block shows « donné à » and is left alone', () => {
+    const P = two();
+    const hosts = Object.fromEntries(P.list().map((p) => [p.id, p.host]));
+    const tabs = [
+        { id: 7, title: 'A', url: 'https://example.com/a', owner: 'a' },
+        { id: 9, title: 'B', url: 'https://other.example.org/b', owner: 'b' },
+        { id: 11, title: 'C', url: 'https://c.example.org/', owner: null },
+    ];
+    const la = popupRows(blockTabs(tabs, 'a', hosts));
+    assert.deepEqual(la.map((r) => [r.id, r.given, r.heldBy]), [[7, true, null], [9, false, 'two.example.net'], [11, false, null]]);
+    assert.equal(master(la), 'some');
+    assert.deepEqual(masterFlip(la), { on: true, ids: [11] }, 'gives the free tab, never the one b holds');
+    for (const id of masterFlip(la).ids) P.setTab('a', id, true);
+    const after = tabs.map((t) => ({ ...t, owner: P.ownerOf(t.id)?.id ?? null }));
+    const la2 = popupRows(blockTabs(after, 'a', hosts));
+    assert.equal(master(la2), 'all', 'all it can have: on');
+    assert.deepEqual(masterFlip(la2), { on: false, ids: [7, 11] }, 'off takes back its own only');
+    const lb = popupRows(blockTabs(after, 'b', hosts));
+    assert.deepEqual(lb.map((r) => [r.id, r.given, r.heldBy]), [[7, false, 'one.example.com'], [9, true, null], [11, false, 'one.example.com']]);
+    assert.equal(master(lb), 'all');
+    assert.equal(lb.find((r) => r.id === 7).showInherit, false);
+    assert.equal(givenCount(lb), 1);
+});
+
+test('pairings: removing one Clavarium keeps the other, its token and its tabs', () => {
+    const P = two();
+    P.setInherit('b', '9', true);
+    assert.equal(P.remove('a').id, 'a');
+    const saved = createPairings(migrate({ pairings: P.toJSON() }).list);
+    assert.deepEqual(saved.list().map((p) => p.id), ['b']);
+    assert.equal(saved.get('b').token, 'tok-b');
+    assert.equal(saved.get('b').grants.tabOn(9), true);
+    assert.equal(saved.get('b').grants.inherits(9), true);
+    assert.equal(saved.ownerOf('7'), null, 'the removed one\'s tab is free again');
+    assert.equal(saved.setTab('b', '7', true).ok, true);
+});
+
+test('pairings: a pasted line adds a pairing waiting for its key; screenshots go one at a time', async () => {
+    const P = two();
+    const p = P.add({ url: 'wss://three.example.org/c/api/browser', key: 'k'.repeat(24) });
+    assert.equal(p.host, 'three.example.org'); assert.equal(p.token, null); assert.equal(p.pairKey, 'k'.repeat(24));
+    assert.equal(P.list().length, 3);
+    const one = oneAtATime(); const order = [];
+    let open; const first = new Promise((r) => { open = r; });
+    const x = one(async () => { order.push('x in'); await first; order.push('x out'); });
+    const y = one(async () => { order.push('y in'); order.push('y out'); });
+    await new Promise((r) => setImmediate(r));
+    assert.deepEqual(order, ['x in'], 'the second waits');
+    open(); await Promise.all([x, y]);
+    assert.deepEqual(order, ['x in', 'x out', 'y in', 'y out']);
+    const z = one(async () => { throw new Error('boom'); });
+    await assert.rejects(z);
+    assert.equal(await one(async () => 'next'), 'next', 'a failed one does not block the queue');
 });

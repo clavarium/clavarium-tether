@@ -70,5 +70,19 @@
   },
   "statusDown": {
     "message": "déconnectée"
+  },
+  "addOne": {
+    "message": "Ajouter un Clavarium"
+  },
+  "heldBy": {
+    "message": "donné à $N$",
+    "placeholders": {
+      "n": {
+        "content": "$1"
+      }
+    }
+  },
+  "tabsTitle": {
+    "message": "Onglets"
   }
 }
