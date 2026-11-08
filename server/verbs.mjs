@@ -21,6 +21,8 @@ export const TEXT_MAX = 1_000_000;
 export const ATTACH_MAX = 30 * 1024 * 1024;
 export const PATH_MAX = 1000;
 /* A firmware handed over, as base64 (16 MB of image). */
+/* A file set on a page's file input (browser.upload). */
+export const UPLOAD_MAX = 25 * 1024 * 1024;
 export const IMAGE_B64_MAX = Math.ceil(16 * 1024 * 1024 / 3) * 4;
 export const WHY_MAX = 300;
 /* The arguments of an external tool, as JSON: refused whole above this, never cut. */
@@ -56,6 +58,7 @@ export const VERBS = Object.freeze({
     'browser.key': { reads: false, kinds: ['browser'], needs: ['key'] },
     'browser.scroll': { reads: false, kinds: ['browser'], needs: [] },
     'browser.drag': { reads: false, kinds: ['browser'], needs: ['from', 'to'] },
+    'browser.upload': { reads: false, kinds: ['browser'], needs: ['selector', 'file'] },
     /* THE SCREEN OF A MACHINE, A SLOT: these verbs and their rights are settled here,
        but Tether writes no engine for them. A host plugs one in (connectors: { screen }),
        speaking a standard such as VNC/RFB; without one, a screen target says its
@@ -202,6 +205,8 @@ export function check(verb, a = {}) {
         if (bytes > maxBytes) no(`the file is too large (${Math.round(bytes / 1024)} KB; ${Math.round(maxBytes / 1024)} KB at most here) -- nothing was done; never cut its base64 (it would be broken)`);
         out[k] = b64;
     };
+    /* An acting browser verb's pauses, in ms (0-2000): the extension's own, a little random, by default. */
+    const pace = () => { if (a.delay !== undefined && a.delay !== null && a.delay !== '') { const n = Number(a.delay); if (!Number.isFinite(n) || n < 0) no('delay is a number of milliseconds'); out.delay = Math.min(2000, Math.trunc(n)); } };
     const num = (k) => { if (a[k] !== undefined && a[k] !== null && a[k] !== '') { const n = Number(a[k]); if (Number.isFinite(n)) out[k] = Math.trunc(n); } };
     switch (verb) {
         case 'terminal.read': if (a.lines !== undefined) out.lines = Math.max(1, Math.min(2000, Math.trunc(Number(a.lines)) || 0)); break;
@@ -254,14 +259,22 @@ export function check(verb, a = {}) {
         case 'browser.console': tab(); if (a.lines !== undefined) out.lines = Math.max(1, Math.min(1000, Math.trunc(Number(a.lines)) || 0)); break;
         case 'browser.eval': tab(); str('script', COMMAND_MAX, true); break;
         case 'browser.click':
-            tab(); str('selector', PATH_MAX); num('x'); num('y');
+            tab(); pace(); str('selector', PATH_MAX); num('x'); num('y');
             if (a.button) out.button = oneLine(a.button, 10);
             if (out.selector === undefined && (out.x === undefined || out.y === undefined)) no('click needs a selector or x and y');
             break;
-        case 'browser.type': tab(); str('text', COMMAND_MAX, true); str('selector', PATH_MAX); break;
-        case 'browser.key': tab(); str('key', 60); str('selector', PATH_MAX); break;
-        case 'browser.scroll': tab(); num('dx'); num('dy'); str('selector', PATH_MAX); break;
-        case 'browser.drag': tab(); str('from', PATH_MAX); str('to', PATH_MAX); break;
+        case 'browser.type': tab(); pace(); str('text', COMMAND_MAX, true); str('selector', PATH_MAX); if (a.fast === true || a.fast === 'true') out.fast = true; break;
+        case 'browser.key': tab(); pace(); str('key', 60); str('selector', PATH_MAX); break;
+        case 'browser.scroll': tab(); pace(); num('dx'); num('dy'); str('selector', PATH_MAX); break;
+        case 'browser.drag': tab(); pace(); str('from', PATH_MAX); str('to', PATH_MAX); break;
+        /* A file of the agent's, handed over as base64 (MCP: a path, read on its side), set on a file input in the person's tab. */
+        case 'browser.upload': {
+            tab(); str('selector', PATH_MAX); str('name', 200); str('mime', 100);
+            if (a.file === undefined && a.image !== undefined) a = { ...a, file: a.image };
+            file('file', UPLOAD_MAX);
+            if (out.name === undefined) out.name = 'file';
+            break;
+        }
         /* The screen of a machine: coordinates are numbers, a drag's ends are points
            like "12,40", a key is a name or chord. The engine clamps to the screen. */
         case 'screen.shot': break;
@@ -374,6 +387,7 @@ export function detail(verb, a = {}) {
         case 'browser.key': return a.selector ? `${a.selector}: ${a.key}` : a.key;
         case 'browser.scroll': return `${a.dx ?? 0},${a.dy ?? 0}`;
         case 'browser.drag': return `${a.from} → ${a.to}`;
+        case 'browser.upload': return `${a.selector}: ${a.name ?? 'file'} (${Math.floor(String(a.file ?? '').length * 3 / 4)} bytes)`;
         case 'voicebox.volume': return `volume ${a.level}`;
         case 'voicebox.alert': return a.text ?? 'alert';
         case 'voicebox.listen': return a.name ? `${a.name} (${a.url})` : a.url;

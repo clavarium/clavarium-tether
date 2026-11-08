@@ -150,7 +150,13 @@ the **Tether extension** (Chrome and Firefox, one codebase; `extension/`). The
 extension connects OUT to the keeper over a WebSocket — nothing is installed as a
 server, and the browser may sit behind any firewall. The agent gets browser
 verbs scoped to the granted tabs only: `tabs`, `open`, `shot`, `html`,
-`console`, `eval`, `click`, `type`, `key`, `scroll`, `drag`.
+`console`, `eval`, `click`, `type`, `key`, `scroll`, `drag`, `upload`.
+
+On Chrome the extension acts through the debugging protocol; Chrome shows a
+banner while it acts. Clicks, keys and typing are then real input, which apps
+that ignore synthetic events (Colab, Docs...) take as a person's, and `eval`
+works under a strict Content Security Policy. Firefox has no such API: there the
+verbs stay synthetic DOM events.
 
     tether serve --browser --port 8787 --side ./.tether=Assistant
 

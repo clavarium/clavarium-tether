@@ -126,6 +126,7 @@ const MAIL_OPTS = {
     attach: S('a single file to join, as base64 bytes (shorthand for one attachment)'), attachName: S('the file name, with attach'),
 };
 const TAB = { type: 'number', description: 'which granted tab (its id from browser-tabs); your active one by default' };
+const DELAY = { type: 'number', description: 'pause between the steps, in ms (0-2000); short, a little random, by default' };
 const tool = (name, description, properties = {}, required = []) => ({ name, description, inputSchema: { type: 'object', properties, required } });
 /* Tool names use "-" where a verb has ".": terminal-run is terminal.run. */
 export const TOOLS = [
@@ -148,12 +149,13 @@ export const TOOLS = [
     tool('browser-shot', 'A screenshot of a granted tab (returned as a data: image URL).', { target: TARGET, tab: TAB }, ['target']),
     tool('browser-html', 'The HTML of a granted tab, or of one element (selector), or a readable text extract.', { target: TARGET, tab: TAB, selector: S('a CSS selector; the whole page by default'), readable: { type: 'boolean', description: 'a readable text extract instead of HTML' } }, ['target']),
     tool('browser-console', 'Recent console messages captured in a granted tab.', { target: TARGET, tab: TAB, lines: { type: 'number', description: 'how many back' } }, ['target']),
-    tool('browser-eval', 'Run a JavaScript snippet in a granted tab and get its result. A person may approve: say why.', { target: TARGET, tab: TAB, script: S('JavaScript; its last value comes back'), why: WHY }, ['target', 'script']),
-    tool('browser-click', 'Click in a granted tab, by CSS selector or by x,y. A person may approve: say why.', { target: TARGET, tab: TAB, selector: S('a CSS selector'), x: { type: 'number' }, y: { type: 'number' }, button: S('left (default), middle, right'), why: WHY }, ['target']),
-    tool('browser-type', 'Type text in a granted tab (into the focused field, or a selector first). A person may approve: say why.', { target: TARGET, tab: TAB, text: { type: 'string' }, selector: S('a field to focus first'), why: WHY }, ['target', 'text']),
-    tool('browser-key', 'Press a key or chord in a granted tab (Enter, ctrl+a). A person may approve: say why.', { target: TARGET, tab: TAB, key: { type: 'string' }, selector: S('an element to focus first'), why: WHY }, ['target', 'key']),
-    tool('browser-scroll', 'Scroll a granted tab by dx,dy (or an element, by selector). A person may approve: say why.', { target: TARGET, tab: TAB, dx: { type: 'number' }, dy: { type: 'number' }, selector: S('an element to scroll'), why: WHY }, ['target']),
-    tool('browser-drag', 'Drag in a granted tab from one point or element to another ("x,y" or a selector). A person may approve: say why.', { target: TARGET, tab: TAB, from: { type: 'string' }, to: { type: 'string' }, why: WHY }, ['target', 'from', 'to']),
+    tool('browser-eval', 'Run a JavaScript snippet in a granted tab and get its result (on Chrome even under a strict Content Security Policy). A person may approve: say why.', { target: TARGET, tab: TAB, script: S('JavaScript; its last value comes back'), why: WHY }, ['target', 'script']),
+    tool('browser-click', 'Click in a granted tab, by CSS selector or by x,y (on Chrome a real click, the pointer moved there first). A person may approve: say why.', { target: TARGET, tab: TAB, selector: S('a CSS selector'), x: { type: 'number' }, y: { type: 'number' }, button: S('left (default), middle, right'), delay: DELAY, why: WHY }, ['target']),
+    tool('browser-type', 'Type text in a granted tab (into the focused field, or a selector first), key by key on Chrome. A person may approve: say why.', { target: TARGET, tab: TAB, text: { type: 'string' }, selector: S('a field to focus first'), delay: DELAY, fast: { type: 'boolean', description: 'all the text at once, not key by key' }, why: WHY }, ['target', 'text']),
+    tool('browser-key', 'Press a key or chord in a granted tab (Enter, ctrl+a). A person may approve: say why.', { target: TARGET, tab: TAB, key: { type: 'string' }, selector: S('an element to focus first'), delay: DELAY, why: WHY }, ['target', 'key']),
+    tool('browser-scroll', 'Scroll a granted tab by dx,dy (or an element, by selector). A person may approve: say why.', { target: TARGET, tab: TAB, dx: { type: 'number' }, dy: { type: 'number' }, selector: S('an element to scroll'), delay: DELAY, why: WHY }, ['target']),
+    tool('browser-upload', 'Put a file of this machine into a file input of a granted tab (or drop it on a drop zone), as if the person chose it; 25 MB at most. A person may approve: say why.', { target: TARGET, tab: TAB, selector: S('the file input, or a drop zone, as a CSS selector'), path: S('the file, on this machine'), name: S('its name in the page; the file name by default'), mime: S('its type, e.g. text/csv; none by default'), why: WHY }, ['target', 'selector', 'path']),
+    tool('browser-drag', 'Drag in a granted tab from one point or element to another ("x,y" or a selector). A person may approve: say why.', { target: TARGET, tab: TAB, from: { type: 'string' }, to: { type: 'string' }, delay: DELAY, why: WHY }, ['target', 'from', 'to']),
     tool('mail-list', 'Recent messages of a mailbox target: who, subject, when — newest first. By default the last 30 days; give since and/or before (ISO date or date-time) to look at any past window, e.g. a given week or month.', { target: TARGET, mailbox: S('a folder; INBOX by default'), since: S('only messages on or after this date (ISO), optional'), before: S('only messages before this date (ISO), optional') }, ['target']),
     tool('mail-read', 'One message in full (headers and body) by its number (uid). An invitation also shows its date.', { target: TARGET, uid: S('the message id from a list (a number for IMAP, a long id for Microsoft)'), mailbox: S('a folder; INBOX by default') }, ['target', 'uid']),
     tool('mail-source', 'The raw source of a message (every header, both text and HTML bodies, attachments inline) — for when the readable view is not enough.', { target: TARGET, uid: S('the message id from a list'), mailbox: S('a folder; INBOX by default') }, ['target', 'uid']),
@@ -261,7 +263,8 @@ export function serve(dir, { input = process.stdin, output = process.stdout, wai
             const what = asked(name, a);
             if (!what) return reply(m.id, undefined, { code: -32601, message: `no tool ${name}` });
             /* A file handed over (a firmware): copied from the agent's machine into its folder's files/, where the keeper takes it. */
-            if (['device.flash', 'voicebox.update', 'voicebox.play'].includes(what[0]) && what[1].path !== undefined) {
+            if (['device.flash', 'voicebox.update', 'voicebox.play', 'browser.upload'].includes(what[0]) && what[1].path !== undefined) {
+                if (what[0] === 'browser.upload' && what[1].name === undefined) what[1].name = String(what[1].path).split('/').pop();
                 try {
                     const bytes = readFileSync(resolve(String(what[1].path)));
                     const name = `${randomUUID()}.bin`;

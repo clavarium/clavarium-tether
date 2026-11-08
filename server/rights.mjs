@@ -154,7 +154,7 @@ export function ruleFrom(verb, a = {}) {
         case 'screen.move': case 'screen.click': case 'screen.drag': case 'screen.scroll': case 'screen.type': case 'screen.key': return { kind: 'verb', value: verb };
         case 'browser.open': { const h = hostOf(a.url); return h ? { kind: 'site', value: h } : null; }
         /* Acting in a tab: its page's site, when the keeper knows it. */
-        case 'browser.click': case 'browser.type': case 'browser.key': case 'browser.scroll': case 'browser.drag': case 'browser.eval': {
+        case 'browser.click': case 'browser.type': case 'browser.key': case 'browser.scroll': case 'browser.drag': case 'browser.eval': case 'browser.upload': {
             const h = String(a.tabSite ?? '').toLowerCase();
             return h && cleanRule({ kind: 'site', value: h }).kind ? { kind: 'site', value: h } : null;
         }

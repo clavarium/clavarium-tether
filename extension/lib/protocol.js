@@ -24,7 +24,13 @@
  *     key(tabId, args)             -> { text, size }
  *     scroll(tabId, args)          -> { text, size }
  *     drag(tabId, args)            -> { text, size }
+ *     upload(tabId, args)          -> { text, size }         a file set on a file input
  *   }
+ *
+ * GRANTS AND NAVIGATION. A tab turned on (or opened by the agent) is granted by
+ * its id and stays granted wherever it goes. A tab reachable only because its
+ * site is allowed stays so only on that site: `open` that takes it elsewhere
+ * says so, and the next verb on it is refused until it is granted again.
  *   mark(tabId) -> (async) off()   show the "an agent is acting here" badge/border
  */
 const byteLen = (s) => (typeof TextEncoder !== 'undefined' ? new TextEncoder().encode(String(s ?? '')).length : Buffer.byteLength(String(s ?? '')));
@@ -44,6 +50,7 @@ async function act(verb, tabId, args, actions) {
         case 'key': return actions.key(tabId, args);
         case 'scroll': return actions.scroll(tabId, args);
         case 'drag': return actions.drag(tabId, args);
+        case 'upload': return actions.upload(tabId, args);
         default: throw new Error(`no verb browser.${verb}`);
     }
 }
@@ -71,7 +78,12 @@ export async function dispatch(msg, { grants, actions, mark } = {}) {
         if (!grants.isGranted(tabId, info.url)) return fail(id, 'that tab was not granted to the agent');
 
         const off = mark ? await mark(tabId) : null;
-        try { return done(id, await act(verb, tabId, args, actions)); }
+        try {
+            const r = await act(verb, tabId, args, actions);
+            /* A tab granted by its site only, sent to another site, is no longer the agent's. */
+            if (verb === 'open' && !grants.isGranted(tabId, args.url)) return done(id, { text: `${r?.text ?? ''}: the tab left the granted site, so it is no longer granted -- grant it again in the extension, or open a new tab` });
+            return done(id, r);
+        }
         finally { if (off) { try { await off(); } catch { /* best effort */ } } }
     } catch (e) {
         return fail(id, e?.message ?? e);

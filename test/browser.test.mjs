@@ -50,6 +50,7 @@ function fakeExtension(extSide, { token } = {}) {
             case 'key': return { text: `key ${args.key}`, size: 0 };
             case 'scroll': return { text: `scrolled ${args.dx ?? 0},${args.dy ?? 0}`, size: 0 };
             case 'drag': return { text: `dragged ${args.from}->${args.to}`, size: 0 };
+            case 'upload': return { text: `uploaded ${args.name} to ${args.selector}`, size: 0 };
             default: return null;
         }
     };
@@ -212,7 +213,7 @@ test('browser site rules: at frame, an act in a granted tab of an allowed site r
     ext.tabs([{ id: 7, url: 'https://shop.example.com/a', title: 'A', site: 'shop.example.com' }, { id: 9, url: 'https://other.example.org/b', title: 'B', site: 'other.example.org' }]);
     await tick();
     k.store.allow('browser', BOT.id, { kind: 'site', value: '*.example.com' });
-    for (const [verb, extra] of [['browser.click', { selector: '.go' }], ['browser.type', { text: 'hi' }], ['browser.key', { key: 'Enter' }], ['browser.scroll', { dy: 3 }], ['browser.drag', { from: '#a', to: '#b' }], ['browser.eval', { script: '1' }]]) {
+    for (const [verb, extra] of [['browser.click', { selector: '.go' }], ['browser.type', { text: 'hi' }], ['browser.key', { key: 'Enter' }], ['browser.scroll', { dy: 3 }], ['browser.drag', { from: '#a', to: '#b' }], ['browser.eval', { script: '1' }], ['browser.upload', { selector: 'input[type=file]', file: 'aGk=', name: 'hi.txt' }]]) {
         const r = await k.act(verb, { target: 'browser', tab: 7, ...extra }, BOT);
         assert.equal(r.ok, true, verb);
     }

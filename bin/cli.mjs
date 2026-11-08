@@ -33,10 +33,11 @@ export const HELP = `${NAME}: act on the targets you were given (machines, folde
   ${NAME} browser TARGET console [--tab N] [--lines N]
   ${NAME} browser TARGET eval "script" [--tab N]
   ${NAME} browser TARGET click [SELECTOR | --x N --y N] [--tab N]
-  ${NAME} browser TARGET type "text" [--selector S] [--tab N]
+  ${NAME} browser TARGET type "text" [--selector S] [--fast] [--tab N]
   ${NAME} browser TARGET key KEY [--selector S] [--tab N]
   ${NAME} browser TARGET scroll [--dx N] [--dy N] [--selector S] [--tab N]
   ${NAME} browser TARGET drag FROM TO [--tab N]
+  ${NAME} browser TARGET upload SELECTOR FILE [--name N] [--tab N]   a file of yours into a file input
   ${NAME} mail TARGET list [--mailbox NAME] [--since DATE] [--before DATE]   recent messages (default: last 30 days)
   ${NAME} mail TARGET read UID [--mailbox NAME]        one message in full
   ${NAME} mail TARGET source UID [--mailbox NAME]      the raw source (every header, both bodies)
@@ -77,7 +78,7 @@ The folder used is --dir FOLDER, else $${ENV_DIR}, else the nearest ${FOLDER} fo
 ${NAME} ${VERSION}`;
 
 const FILE_VERBS = ['list', 'read', 'search', 'write', 'move', 'delete'];
-const BROWSER_VERBS = ['tabs', 'open', 'shot', 'html', 'console', 'eval', 'click', 'type', 'key', 'scroll', 'drag'];
+const BROWSER_VERBS = ['tabs', 'open', 'shot', 'html', 'console', 'eval', 'click', 'type', 'key', 'scroll', 'drag', 'upload'];
 const MAIL_VERBS = ['list', 'read', 'source', 'open', 'attachment', 'search', 'move', 'flag', 'delete', 'send', 'reply', 'forward'];
 const CAL_VERBS = ['list', 'read', 'freebusy', 'create', 'update', 'attach', 'detach', 'delete', 'respond', 'categories', 'category'];
 const CONTACT_VERBS = ['list', 'search', 'read', 'create', 'update', 'delete', 'attach'];
@@ -92,6 +93,7 @@ export function read(argv) {
         const a = argv[i];
         if (a === '--enter') { flags.enter = true; continue; }
         if (a === '--readable') { flags.readable = true; continue; }
+        if (a === '--fast') { flags.fast = true; continue; }
         if (a === '--share') { flags.share = true; continue; }
         if (a === '--all') { flags.all = true; continue; }
         if (a === '--draft') { flags.draft = true; continue; }
@@ -133,6 +135,7 @@ export function read(argv) {
             if (!target || !BROWSER_VERBS.includes(what)) return { refused: `${NAME} browser TARGET ${BROWSER_VERBS.join('|')} ...` };
             const tab = flags.tab !== undefined ? { tab: Number(flags.tab) } : {};
             const sel = flags.selector !== undefined ? { selector: flags.selector } : {};
+            const pace = flags.delay !== undefined ? { delay: Number(flags.delay) } : {};
             switch (what) {
                 case 'tabs': return ['browser.tabs', { target }];
                 case 'open': return need(p[0], 'browser TARGET open URL') ?? ['browser.open', { target, url: p[0], ...tab, ...why }];
@@ -140,11 +143,17 @@ export function read(argv) {
                 case 'html': return ['browser.html', { target, ...tab, ...sel, ...(flags.readable ? { readable: true } : {}) }];
                 case 'console': return ['browser.console', { target, ...tab, ...(flags.lines !== undefined ? { lines: Number(flags.lines) } : {}) }];
                 case 'eval': return need(p.length, 'browser TARGET eval "script"') ?? ['browser.eval', { target, script: p.join(' '), ...tab, ...why }];
-                case 'click': return ['browser.click', { target, ...tab, ...(p[0] ? { selector: p[0] } : sel), ...(flags.x !== undefined ? { x: Number(flags.x) } : {}), ...(flags.y !== undefined ? { y: Number(flags.y) } : {}), ...(flags.button ? { button: flags.button } : {}), ...why }];
-                case 'type': return need(p.length, 'browser TARGET type "text"') ?? ['browser.type', { target, text: p.join(' '), ...tab, ...sel, ...why }];
-                case 'key': return need(p[0], 'browser TARGET key KEY') ?? ['browser.key', { target, key: p[0], ...tab, ...sel, ...why }];
-                case 'scroll': return ['browser.scroll', { target, ...tab, ...sel, ...(flags.dx !== undefined ? { dx: Number(flags.dx) } : {}), ...(flags.dy !== undefined ? { dy: Number(flags.dy) } : {}), ...why }];
-                default: return need(p.length === 2, 'browser TARGET drag FROM TO') ?? ['browser.drag', { target, from: p[0], to: p[1], ...tab, ...why }];
+                case 'click': return ['browser.click', { target, ...tab, ...(p[0] ? { selector: p[0] } : sel), ...(flags.x !== undefined ? { x: Number(flags.x) } : {}), ...(flags.y !== undefined ? { y: Number(flags.y) } : {}), ...(flags.button ? { button: flags.button } : {}), ...pace, ...why }];
+                case 'type': return need(p.length, 'browser TARGET type "text"') ?? ['browser.type', { target, text: p.join(' '), ...tab, ...sel, ...(flags.fast ? { fast: true } : {}), ...pace, ...why }];
+                case 'key': return need(p[0], 'browser TARGET key KEY') ?? ['browser.key', { target, key: p[0], ...tab, ...sel, ...pace, ...why }];
+                case 'scroll': return ['browser.scroll', { target, ...tab, ...sel, ...(flags.dx !== undefined ? { dx: Number(flags.dx) } : {}), ...(flags.dy !== undefined ? { dy: Number(flags.dy) } : {}), ...pace, ...why }];
+                case 'upload': {
+                    if (p.length !== 2) return need(false, 'browser TARGET upload SELECTOR FILE');
+                    const b64 = readB64(p[1]);
+                    if (b64 === null) return { refused: `cannot read ${p[1]}` };
+                    return ['browser.upload', { target, selector: p[0], file: b64, name: flags.name ?? baseName(p[1]), ...tab, ...why }];
+                }
+                default: return need(p.length === 2, 'browser TARGET drag FROM TO') ?? ['browser.drag', { target, from: p[0], to: p[1], ...tab, ...pace, ...why }];
             }
         }
         case 'mail': {

@@ -150,6 +150,7 @@ browser"):
 | `tether browser TARGET key KEY [--selector S] [--tab N]` | `browser-key` | `browser.key` |
 | `tether browser TARGET scroll [--dx N] [--dy N] [--selector S] [--tab N]` | `browser-scroll` | `browser.scroll` |
 | `tether browser TARGET drag FROM TO [--tab N]` | `browser-drag` | `browser.drag` |
+| `tether browser TARGET upload SELECTOR FILE [--name N] [--tab N]` | `browser-upload` (`path`) | `browser.upload` |
 
 A MAIL REFERENCE, the same for every provider: `mail:TARGET/MESSAGE-ID[?in=FOLDER&uid=N]`
 (the Message-ID without its `<>`, encoded as in an address; `in`/`uid` only hints, where it
@@ -350,9 +351,34 @@ A target of kind `browser` is a set of tabs a person grants to an agent through
 the **Tether extension** (Chrome and Firefox, one codebase built with WXT;
 `extension/`). The keeper does not reach out — the extension connects OUT to the
 keeper over a WebSocket, so nothing is installed as a server, no port is opened
-for the browser to find, and the browser may sit behind any firewall. V1 uses no
-`chrome.debugger`: the verbs use `scripting.executeScript` in the page's own
-world, `tabs.captureVisibleTab` and synthetic DOM events only.
+for the browser to find, and the browser may sit behind any firewall.
+
+**Real input on Chrome** (0.1.0-next.60). On Chrome the extension acts through
+the debugging protocol (the `debugger` permission, Chrome's build only); Chrome
+shows a banner while it acts. `click`, `type`, `key`, `scroll` and `drag` are
+real input (`Input.dispatchMouseEvent`, `Input.dispatchKeyEvent`,
+`Input.insertText`, a `mouseWheel`), which apps that ignore synthetic events
+(Colab, Docs...) take as a person's; a selector is resolved to its element's
+centre (scrolled into view), then clicked there. `eval` goes through
+`Runtime.evaluate`, which the page's Content Security Policy does not govern.
+The tab stays attached while the agent acts and is detached after 30 s idle,
+which takes the banner down. Like a hand: the pointer moves to its target along
+a short curve before a click, a press is held 50-120 ms, text is typed key by
+key 30-120 ms apart; `delay` (ms, 0-2000) on an acting verb fixes those pauses,
+`fast: true` on `type` inserts the text at once (a long text is inserted at once
+anyway, so a call stays quick). A tab the debugger cannot attach to (a Chrome
+page, another debugger) falls back to synthetic events, and the answer says so.
+**Firefox** has no debugger API: the verbs stay `scripting.executeScript` in the
+page's own world and synthetic DOM events, and `eval` on a page whose CSP forbids
+`'unsafe-eval'` is refused plainly (nothing run).
+
+**Upload.** `browser.upload {tab, selector, file, name?, mime?}` sets a file on a
+file input (or drops it on a drop zone) of a granted tab: the agent gives a path
+on its machine (MCP) or the command reads it, the keeper carries the bytes as
+base64 (25 MB at most), and the extension makes a `File` in the page and sets it
+through a `DataTransfer`, then fires `input` and `change`; the same on both
+browsers (CDP's `DOM.setFileInputFiles` takes a path on the person's disk, which
+the agent's file is not). Its rights are those of every acting verb.
 
 **The endpoint.** The keeper serves the WebSocket at `/browser` on its own
 server (`tether serve --browser`, or a host wiring the connector into its serve
@@ -395,6 +421,11 @@ whole site. The extension pushes only the granted tabs; the connector keeps that
 set and **refuses a verb that names a non-granted tab before sending it** — the
 same refusal the extension makes on its side, as a second lock. `browser.open`
 with no tab opens a new tab, which the extension grants as it opens it.
+A tab turned on in the popup (or opened by the agent) is granted by its id and
+stays granted wherever it goes; a tab reachable only because its site is allowed
+is granted on that site only: `browser.open {tab}` that takes it to another site
+answers that the tab left the granted site (grant it again, or open a new tab),
+and the next verb on it is refused.
 `browser.tabs` is answered by the keeper from the pushed list without a round
 trip. `browser.shot` returns a `data:image/png;base64,…` URL.
 

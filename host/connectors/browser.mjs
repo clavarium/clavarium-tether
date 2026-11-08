@@ -202,7 +202,7 @@ export function browser({ tokens = memTokens(), newToken = mintToken, timeout = 
     return {
         name: 'browser',
         siteOf,
-        verbs: ['browser.tabs', 'browser.open', 'browser.shot', 'browser.html', 'browser.console', 'browser.eval', 'browser.click', 'browser.type', 'browser.key', 'browser.scroll', 'browser.drag'],
+        verbs: ['browser.tabs', 'browser.open', 'browser.shot', 'browser.html', 'browser.console', 'browser.eval', 'browser.click', 'browser.type', 'browser.key', 'browser.scroll', 'browser.drag', 'browser.upload'],
         run,
         accept,
         pair,
