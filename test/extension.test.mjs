@@ -281,6 +281,7 @@ test('popup: two tabs with the same title get (2), (3); grants stay by id', () =
     const list = popupRows([tab(10, 'Notebook', 'https://a.example.org/1'), tab(11, 'Notebook', 'https://a.example.org/2', { granted: true }), tab(12, 'Notebook', 'https://a.example.org/3'), tab(13, 'Other', 'https://b.example.org/')], SELF);
     assert.deepEqual(list.map((r) => r.label), ['Notebook', 'Notebook (2)', 'Notebook (3)', 'Other']);
     assert.deepEqual(list.map((r) => [r.id, r.given]), [[10, false], [11, true], [12, false], [13, false]]);
+    assert.deepEqual(list.map((r) => r.num), ['', ' (2)', ' (3)', '']);
 });
 
 test('popup: a child granted through its opener says which (deduped) tab opened it', () => {

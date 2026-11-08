@@ -29,9 +29,10 @@ export function rows(tabs, selfBase = '') {
         const base = (t.title || '').trim() || siteOf(t.url) || t.url || `#${t.id}`;
         const n = (seen.get(base) ?? 0) + 1;
         seen.set(base, n);
-        const label = n === 1 ? base : `${base} (${n})`;
+        const num = n === 1 ? '' : ` (${n})`;
+        const label = base + num;
         labelOf.set(String(t.id), label);
-        return { id: t.id, label, site: siteOf(t.url), url: t.url ?? '', given: !!t.granted, inherit: !!t.inherit, showInherit: !!t.granted, parent: t.parent ?? null, openedBy: t.openedBy ?? null };
+        return { id: t.id, label, base, num, site: siteOf(t.url), url: t.url ?? '', given: !!t.granted, inherit: !!t.inherit, showInherit: !!t.granted, parent: t.parent ?? null, openedBy: t.openedBy ?? null };
     });
     for (const r of out) {
         if (r.parent !== null && labelOf.has(String(r.parent))) r.openedBy = labelOf.get(String(r.parent));

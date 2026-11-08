@@ -69,8 +69,12 @@ async function render() {
     for (const r of list) {
         const row = document.createElement('div');
         row.className = 'tab';
-        row.append(line('t', r.label, r.url), sw(r.given, async (on) => { await ask('toggleTab', { id: r.id, on }); render(); }, r.label),
-            line('s', r.openedBy ? `${r.site} · ${say('openedBy', [r.openedBy])}` : r.site, r.url));
+        /* The title is cut, never its « (2) »: that is what tells two same-titled tabs apart. */
+        const name = document.createElement('span');
+        name.className = 'name'; name.title = r.url;
+        name.append(line('t', r.base), ...(r.num ? [line('n', r.num.trim())] : []));
+        row.append(name, sw(r.given, async (on) => { await ask('toggleTab', { id: r.id, on }); render(); }, r.label), line('s', r.site, r.url));
+        if (r.openedBy) row.append(line('s', say('openedBy', [r.openedBy])));
         /* A given tab may also give the tabs and windows it opens (one level; unticking takes nothing back). */
         if (r.showInherit) {
             const opt = document.createElement('label');
