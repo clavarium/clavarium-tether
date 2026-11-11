@@ -56,3 +56,27 @@ test('read parses pending and withdraw', () => {
     assert.deepEqual(read(['withdraw', 'req-123', 'sent', 'by', 'mistake'])[1], { id: 'req-123', reason: 'sent by mistake' });
     assert.ok(read(['withdraw']).refused, 'withdraw needs an id');
 });
+
+/* AN EXTERNAL MCP SERVER, BY COMMAND (11-11): for an agent without MCP tools of its own. */
+test('mcp: its tools listed from the folder, one called as the same mcp.call; bad arguments refused', async () => {
+    assert.deepEqual(read(['mcp', 'crm']), ['mcp.tools', { target: 'crm' }]);
+    assert.deepEqual(read(['mcp', 'crm', 'search', '{"q": "Ann"}', '--why', 'find her']), ['mcp.call', { target: 'crm', tool: 'search', arguments: { q: 'Ann' }, why: 'find her' }]);
+    assert.deepEqual(read(['mcp', 'crm', 'list']), ['mcp.call', { target: 'crm', tool: 'list', arguments: {} }]);
+    assert.match(read(['mcp']).refused, /mcp TARGET/);
+    assert.match(read(['mcp', 'crm', 'search', 'not json']).refused, /one JSON object/);
+    assert.match(read(['mcp', 'crm', 'search', '[1]']).refused, /one JSON object/);
+    /* Listed from the folder the keeper writes, nothing asked. */
+    const { mkdirSync, writeFileSync } = await import('node:fs');
+    const dir = mkdtempSync(join(tmpdir(), 'tether-mcp-'));
+    mkdirSync(join(dir, '.tether'));
+    writeFileSync(join(dir, '.tether', 'tools.json'), JSON.stringify({ tools: [
+        { name: 'crm-search', target: 'crm', tool: 'search', description: 'Find a contact', inputSchema: { type: 'object', properties: { q: { type: 'string' }, why: { type: 'string' } }, required: ['q'] } },
+        { name: 'other-x', target: 'other', tool: 'x', description: 'X' }] }));
+    const r = await run(['mcp', 'crm'], { cwd: dir, env: {} });
+    assert.equal(r.code, 0, r.err);
+    assert.match(r.out, /1 tools of crm/);
+    assert.match(r.out, /search: Find a contact\n {6}args: q\* \(string\)/);
+    assert.doesNotMatch(r.out, /other|why \(/);
+    const none = await run(['mcp', 'nope'], { cwd: dir, env: {} });
+    assert.equal(none.code, 1); assert.match(none.err, /No tools of nope here/);
+});

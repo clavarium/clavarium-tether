@@ -117,7 +117,7 @@ export function offered(targets, agent, { reserved = [], stopped = false } = {})
             /* A one-line why for the person, when the tool has no argument of that name itself. */
             const why = !Object.hasOwn(schema.properties, 'why');
             if (why) schema.properties.why = { type: 'string', description: 'one short line for the person: why you do this (not sent to the server)' };
-            out.push({ name, target: t.id, tool: tool.name, class: tool.class, open: tool.open, go: d.go, ...(why ? { why: true } : {}),
+            out.push({ name, target: t.id, tool: tool.name, class: tool.class, open: tool.open, go: d.go, ...(why ? { why: true } : {}), ...(tool.title ? { title: tool.title } : {}), ...(tool.annotations && Object.keys(tool.annotations).length ? { annotations: tool.annotations } : {}),
                 description: `${head} ${tool.title ? `${tool.title}. ` : ''}${tool.description}`.trim().slice(0, DESCRIPTION_MAX + 200), inputSchema: schema });
         }
     }

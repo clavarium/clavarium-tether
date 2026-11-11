@@ -7,7 +7,7 @@
 import { realpathSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ask, findFolder, notices, sayNotices, failed } from '../server/mcp.mjs';
+import { ask, findFolder, notices, sayNotices, failed, externalTools } from '../server/mcp.mjs';
 import { NAME, VERSION, FOLDER, ENV_DIR } from '../server/name.mjs';
 
 export const HELP = `${NAME}: act on the targets you were given (machines, folders, browsers, mailboxes, calendars, address books).
@@ -26,6 +26,8 @@ export const HELP = `${NAME}: act on the targets you were given (machines, folde
   ${NAME} files TARGET write PATH --text "..." | --from LOCAL_FILE
   ${NAME} files TARGET move FROM TO
   ${NAME} files TARGET delete PATH
+  ${NAME} mcp TARGET                       the tools of an MCP server you were given
+  ${NAME} mcp TARGET TOOL ['{"arg": 1}']   call one, its arguments as JSON (asked of a person when your right says so)
   ${NAME} browser TARGET tabs               the tabs a person granted you
   ${NAME} browser TARGET open URL [--tab N]  open a URL (a granted tab, or a new one)
   ${NAME} browser TARGET shot [--tab N]      a screenshot of a granted tab
@@ -116,6 +118,17 @@ export function read(argv) {
         case 'open': return need(target, 'open TARGET') ?? ['terminal.open', { target, ...why }];
         case 'read': return need(target, 'read TARGET') ?? ['terminal.read', { target, ...(flags.lines !== undefined ? { lines: Number(flags.lines) } : {}) }];
         case 'type': return need(target && rest.length, 'type TARGET "keys"') ?? ['terminal.type', { target, text: rest.join(' '), enter: !!flags.enter, ...why }];
+        /* AN EXTERNAL MCP SERVER, BY COMMAND (11-11): for an agent without MCP tools of its own (OpenCode...):
+           its tools listed (from the folder, as the MCP server reads them), or one called -- the same mcp.call,
+           checked by the keeper against the same rights. */
+        case 'mcp': {
+            if (!target) return { refused: `${NAME} mcp TARGET [TOOL ['{"arg": 1}']]` };
+            if (!rest.length) return ['mcp.tools', { target }];
+            let args = {};
+            if (rest[1] !== undefined) { try { args = JSON.parse(rest.slice(1).join(' ')); } catch { return { refused: `${NAME} mcp ${target} ${rest[0]}: its arguments are one JSON object, '{"name": "value"}'` }; } }
+            if (!args || typeof args !== 'object' || Array.isArray(args)) return { refused: `${NAME} mcp ${target} ${rest[0]}: its arguments are one JSON object` };
+            return ['mcp.call', { target, tool: rest[0], arguments: args, ...why }];
+        }
         case 'files': {
             const [what, ...p] = rest;
             if (!target || !FILE_VERBS.includes(what)) return { refused: `${NAME} files TARGET ${FILE_VERBS.join('|')} ...` };
@@ -259,6 +272,17 @@ export async function run(argv, { env = process.env, cwd = process.cwd(), wait, 
     if (!folder) return { code: 2, out: '', err: `No ${FOLDER} folder here or above. Run it from your work folder, or give --dir FOLDER.\n` };
     /* What happened later: read in the folder, no keeper asked. */
     if (what[0] === 'notices') { const list = notices(folder, { all: what[1].all === true }); return { code: 0, out: `${list.length ? sayNotices(list) : 'Nothing new happened since.'}\n`, err: '' }; }
+    /* The tools of an MCP server: read in the folder, no keeper asked. */
+    if (what[0] === 'mcp.tools') {
+        const tools = externalTools(folder).filter((t) => t.target === what[1].target);
+        if (!tools.length) return { code: 1, out: '', err: `No tools of ${what[1].target} here: is it an MCP server you were given? (${NAME} targets)\n` };
+        const line = (t) => {
+            const props = t.inputSchema?.properties ?? {}; const need = new Set(t.inputSchema?.required ?? []);
+            const args = Object.entries(props).filter(([k]) => k !== 'why').map(([k, v]) => `${k}${need.has(k) ? '*' : ''}${v?.type ? ` (${v.type})` : ''}`);
+            return `  ${t.tool}: ${String(t.description ?? '').replace(/\s+/g, ' ').slice(0, 300)}${args.length ? `\n      args: ${args.join(', ')}` : ''}`;
+        };
+        return { code: 0, out: `${tools.length} tools of ${what[1].target} (* required). Call one: ${NAME} mcp ${what[1].target} TOOL '{"arg": "value"}' --why "..."\n${tools.map(line).join('\n')}\n`, err: '' };
+    }
     const r = await ask(folder, what[0], what[1], { ...(wait ? { wait } : {}), onHeld });
     /* mail attachment --out DIR: write the file here (the client's side), rather than
        printing its base64. The connector hands back "name (type, size)\n\n<base64>". */

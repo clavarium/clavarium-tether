@@ -23,6 +23,7 @@ import { randomUUID } from 'node:crypto';
 import { createInterface } from 'node:readline';
 import { NAME, VERSION, FOLDER, ENV_DIR } from './name.mjs';
 import { TOOLS_FILE } from './external.mjs';
+import { reads } from './verbs.mjs';
 
 export { VERSION, FOLDER };
 /* How long an ask waits for the keeper's answer. Most verbs answer in a second or
@@ -127,7 +128,11 @@ const MAIL_OPTS = {
 };
 const TAB = { type: 'number', description: 'which granted tab (its id from browser-tabs); your active one by default' };
 const DELAY = { type: 'number', description: 'pause between the steps, in ms (0-2000); short, a little random, by default' };
-const tool = (name, description, properties = {}, required = []) => ({ name, description, inputSchema: { type: 'object', properties, required } });
+/* Each with its MCP annotations (11-11, MCP review): a tool that only reads says so (readOnlyHint), the others
+   that they may change things and reach outside -- the spec's defaults, said plainly. The keeper still decides. */
+const annotationsOf = (name) => (name === 'withdraw' ? { readOnlyHint: false, destructiveHint: false, openWorldHint: false } : name === 'targets' || name === 'pending' || name === 'notices' || reads(name.replace('-', '.'))
+    ? { readOnlyHint: true, openWorldHint: false } : { readOnlyHint: false, destructiveHint: !/^(mail-send|mail-reply|mail-forward|calendar-create|contacts-create|files-write|terminal-open|terminal-type|browser-open|browser-click|browser-type|browser-key|browser-scroll|browser-drag|voicebox-)/.test(name), openWorldHint: true });
+const tool = (name, description, properties = {}, required = []) => ({ name, description, inputSchema: { type: 'object', properties, required }, annotations: annotationsOf(name) });
 /* Tool names use "-" where a verb has ".": terminal-run is terminal.run. */
 export const TOOLS = [
     tool('targets', 'What you were given: each target, its kind, your level on it and its allow rules.'),
@@ -211,7 +216,7 @@ export function externalTools(dir) {
             && typeof t.target === 'string' && typeof t.tool === 'string').slice(0, 1000);
     } catch { return []; }
 }
-const shownTool = (t) => ({ name: t.name, description: String(t.description ?? ''), inputSchema: t.inputSchema && typeof t.inputSchema === 'object' ? t.inputSchema : { type: 'object', properties: {} } });
+const shownTool = (t) => ({ name: t.name, ...(typeof t.title === 'string' && t.title ? { title: t.title } : {}), description: String(t.description ?? ''), inputSchema: t.inputSchema && typeof t.inputSchema === 'object' ? t.inputSchema : { type: 'object', properties: {} }, ...(t.annotations && typeof t.annotations === 'object' && Object.keys(t.annotations).length ? { annotations: t.annotations } : {}) });
 /* How often the agent's MCP server looks whether its external tools changed. */
 export const TOOLS_EVERY_MS = 1000;
 /* A tool's arguments as the keeper reads them: [verb, args], or null. */
@@ -221,6 +226,8 @@ export function asked(name, a = {}) {
     const keys = Object.keys(TOOLS.find((t) => t.name === name).inputSchema.properties);
     return [verb, Object.fromEntries(keys.filter((k) => a[k] !== undefined).map((k) => [k, a[k]]))];
 }
+/* The protocol versions it speaks (the newest first): one asked for is answered with it, any other with the newest (MCP spec, lifecycle). */
+export const KNOWN_VERSIONS = ['2025-06-18', '2025-03-26', '2024-11-05'];
 export function serve(dir, { input = process.stdin, output = process.stdout, wait, every = TOOLS_EVERY_MS } = {}) {
     const reply = (id, result, error) => output.write(`${JSON.stringify({ jsonrpc: '2.0', id, ...(error ? { error } : { result }) })}\n`);
     const rl = createInterface({ input });
@@ -239,7 +246,7 @@ export function serve(dir, { input = process.stdin, output = process.stdout, wai
         const m = parsed(line);
         if (m?.method === 'notifications/initialized') { ready = true; return undefined; }
         if (!m || m.id === undefined) return;
-        if (m.method === 'initialize') return reply(m.id, { protocolVersion: m.params?.protocolVersion ?? '2024-11-05', capabilities: { tools: { listChanged: true } }, serverInfo: { name: NAME, version: VERSION } });
+        if (m.method === 'initialize') return reply(m.id, { protocolVersion: KNOWN_VERSIONS.includes(m.params?.protocolVersion) ? m.params.protocolVersion : KNOWN_VERSIONS[0], capabilities: { tools: { listChanged: true } }, serverInfo: { name: NAME, version: VERSION } });
         if (m.method === 'tools/list') { const ext = externalTools(dir); said = JSON.stringify(ext.map(shownTool)); return reply(m.id, { tools: [...TOOLS, ...ext.map(shownTool)] }); }
         if (m.method === 'ping') return reply(m.id, {});
         if (m.method === 'tools/call') {

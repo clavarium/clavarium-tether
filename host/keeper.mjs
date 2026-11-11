@@ -40,6 +40,7 @@ import { lines, notices as noticesOf, sayNotices, TOOLS } from '../server/mcp.mj
 import { offered, catalogOf, freshened, catalogDiff, argsProblem, resultText, TOOLS_FILE } from '../server/external.mjs';
 import { mcp as mcpConnector } from './connectors/mcp.mjs';
 import { openJournal, hide } from './journal.mjs';
+import { NAME } from '../server/name.mjs';
 import { approvals as openApprovals, TIMEOUT_MS } from './approvals.mjs';
 import { cardOf } from '../server/cards.mjs';
 import { local as localConnector } from './connectors/local.mjs';
@@ -77,7 +78,7 @@ export function sayTargets(list) {
     const out = ['Your targets:'];
     for (const t of list) {
         if (t.kind === 'mcp') {
-            out.push(`  ${t.id} (mcp) "${t.title}": an external MCP server: ${MCP_MEANS[t.level]}; they are among your tools, named ${t.id}-...${t.tools !== undefined ? ` (${t.tools} now)` : ''}`);
+            out.push(`  ${t.id} (mcp) "${t.title}": an external MCP server: ${MCP_MEANS[t.level]}; its tools are named ${t.id}-... among your MCP tools${t.tools !== undefined ? ` (${t.tools} now)` : ''}; by command: ${NAME} mcp ${t.id}`);
             continue;
         }
         out.push(`  ${t.id} (${t.kind}) "${t.title}": ${t.level}: ${MEANS[t.level]}`);
