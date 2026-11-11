@@ -14,7 +14,7 @@ import { keeper } from '../host/keeper.mjs';
 import { mcp } from '../host/connectors/mcp.mjs';
 import { serve, externalTools } from '../server/mcp.mjs';
 import { classOf, toolDecide } from '../server/rights.mjs';
-import { exposedName, catalogOf, argsProblem, resultText, offered, freshened, RESULT_MAX } from '../server/external.mjs';
+import { exposedName, catalogOf, argsProblem, resultText, splitMedia, offered, freshened, RESULT_MAX } from '../server/external.mjs';
 import { cardOf } from '../server/cards.mjs';
 import { TOOL_ARGS_MAX } from '../server/verbs.mjs';
 
@@ -437,7 +437,15 @@ test('the pure pieces: arguments against a schema, a result framed, a card for a
     assert.match(argsProblem({ properties: { n: { type: 'string', enum: ['a', 'b'] } } }, { n: 'c' }), /one of/);
     assert.match(argsProblem({ properties: {}, additionalProperties: false }, { x: 1 }), /not an argument/);
     const r = resultText('CRM', 'search', { content: [{ type: 'image', data: 'AAAA', mimeType: 'image/png' }] });
-    assert.match(r.text, /\[image, 0 KB, image\/png: not passed on\]/);
+    /* A picture passed on (11-11): named in the text, carried after it, taken back out on the agent's side. */
+    assert.match(r.text, /\[image, 0 KB, image\/png: passed on\]/);
+    assert.deepEqual(splitMedia(r.text).media, [{ type: 'image', mimeType: 'image/png', data: 'AAAA' }]);
+    assert.doesNotMatch(splitMedia(r.text).text, /\[\[media/);
+    /* Too large, or not plain base64, or no type: named only. */
+    const big = resultText('CRM', 'search', { content: [{ type: 'image', data: 'A'.repeat(3 * 1024 * 1024), mimeType: 'image/png' }] });
+    assert.match(big.text, /not passed on \(too large\)/); assert.equal(splitMedia(big.text).media.length, 0);
+    assert.match(resultText('CRM', 's', { content: [{ type: 'audio', data: 'AA AA', mimeType: 'audio/wav' }] }).text, /not passed on/);
+    assert.match(resultText('CRM', 's', { content: [{ type: 'image', data: 'AAAA' }] }).text, /no type: not passed on/);
     assert.equal(r.toolError, false);
     const card = cardOf('mcp.call', { tool: 'delete_contact', arguments: { id: 'c1', options: { hard: true } } }, { title: 'CRM' }, { name: 'delete_contact', class: 'destructive', open: false });
     assert.deepEqual(card, { kind: 'mcp', action: 'call', server: 'CRM', tool: 'delete_contact', class: 'destructive', args: [{ name: 'id', value: 'c1' }, { name: 'options', value: '{\n  "hard": true\n}' }] });

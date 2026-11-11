@@ -22,7 +22,7 @@ import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { createInterface } from 'node:readline';
 import { NAME, VERSION, FOLDER, ENV_DIR } from './name.mjs';
-import { TOOLS_FILE } from './external.mjs';
+import { TOOLS_FILE, splitMedia } from './external.mjs';
 import { reads } from './verbs.mjs';
 
 export { VERSION, FOLDER };
@@ -265,7 +265,9 @@ export function serve(dir, { input = process.stdin, output = process.stdout, wai
                 const r = await ask(dir, 'mcp.call', { target: ext.target, tool: ext.tool, arguments: args, ...(!own && why !== undefined ? { why } : {}) }, wait ? { wait } : {});
                 const fresh = notices(dir);
                 const since = fresh.length ? `Since your last call:\n${sayNotices(fresh)}\n\n` : '';
-                return reply(m.id, { content: [{ type: 'text', text: `${since}${r.ok ? r.text : failed(r.text)}` }], ...(r.ok ? {} : { isError: true }) });
+                /* Its pictures and sounds, as MCP content (11-11). */
+                const { text, media } = r.ok ? splitMedia(r.text) : { text: r.text, media: [] };
+                return reply(m.id, { content: [{ type: 'text', text: `${since}${r.ok ? text : failed(text)}` }, ...media.map((x) => ({ type: x.type, data: x.data, mimeType: x.mimeType }))], ...(r.ok ? {} : { isError: true }) });
             }
             const what = asked(name, a);
             if (!what) return reply(m.id, undefined, { code: -32601, message: `no tool ${name}` });

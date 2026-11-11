@@ -8,6 +8,8 @@ import { realpathSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ask, findFolder, notices, sayNotices, failed, externalTools } from '../server/mcp.mjs';
+import { splitMedia } from '../server/external.mjs';
+import { randomUUID } from 'node:crypto';
 import { NAME, VERSION, FOLDER, ENV_DIR } from '../server/name.mjs';
 
 export const HELP = `${NAME}: act on the targets you were given (machines, folders, browsers, mailboxes, calendars, address books).
@@ -297,6 +299,17 @@ export async function run(argv, { env = process.env, cwd = process.cwd(), wait, 
             writeFileSync(path, Buffer.from(b64, 'base64'));
             return { code: 0, out: `Saved ${header} to ${path}\n`, err: '' };
         } catch (e) { return { code: 1, out: '', err: `cannot write to ${what[1].out}: ${e.code ?? e.message}\n` }; }
+    }
+    /* An MCP server's pictures and sounds: saved in the folder's files/, their paths said (11-11). */
+    if (r.ok && what[0] === 'mcp.call') {
+        const { text, media } = splitMedia(r.text);
+        const saved = [];
+        for (const m of media) {
+            const ext = (m.mimeType.split('/')[1] ?? 'bin').replace(/[^a-z0-9]/gi, '').slice(0, 8) || 'bin';
+            const path = join(folder, 'files', `mcp-${randomUUID()}.${ext}`);
+            try { mkdirSync(join(folder, 'files'), { recursive: true }); writeFileSync(path, Buffer.from(m.data, 'base64')); saved.push(`Saved (${m.type}, ${m.mimeType}): ${path}`); } catch (e) { saved.push(`Not saved (${m.type}): ${e.code ?? e.message}`); }
+        }
+        return { code: 0, out: `${text}${saved.length ? `\n${saved.join('\n')}` : ''}\n`, err: '' };
     }
     if (r.ok) return { code: 0, out: `${r.text}\n`, err: '' };
     return { code: r.nokeeper ? 3 : r.late ? 4 : 1, out: '', err: `${failed(r.text)}\n` };
