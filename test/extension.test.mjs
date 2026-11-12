@@ -397,6 +397,15 @@ test('pairings: "also the windows it opens" belongs to the Clavarium holding the
     assert.equal(P.ownerOf('20').id, 'a');
     assert.equal(P.adopt('21', '9'), null, '9 has the option off');
     assert.equal(P.ownerOf('21'), null);
+    /* A tab reached only through an allowed site (given before 0.1.64): ticking the option gives it by id, and it sticks (#353). */
+    P.get('b').grants.allowSite('colab.example.com');
+    assert.equal(P.get('b').grants.tabOn('30'), false);
+    assert.equal(P.setInherit('b', '30', true).ok, true, 'reached by its site: the option is taken');
+    assert.equal(P.get('b').grants.tabOn('30'), true, 'and the tab is now given by its id');
+    assert.equal(P.get('b').grants.inherits('30'), true);
+    assert.equal(P.adopt('31', '30').id, 'b', 'its popup follows it');
+    assert.equal(P.setInherit('b', '30', false).ok, true);
+    assert.equal(P.get('b').grants.inherits('30'), false, 'unticked: off again');
 });
 
 test('popup: each block has its own « Tout donner »; a tab of the other block shows « donné à » and is left alone', () => {

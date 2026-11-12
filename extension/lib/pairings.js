@@ -60,10 +60,17 @@ export function createPairings(list = [], { id = newId } = {}) {
             p.grants.setTab(tabId, on);
             return { ok: true };
         },
-        /* The option belongs to the pairing that holds the tab. */
+        /* The option belongs to the pairing that holds the tab. A tab it reaches only through an allowed site (the
+           way tabs were given before 0.1.64) is shown as given, with the option: ticking it gives that tab by its
+           id first -- refused only when another pairing holds it. Without this the box was refused, and the next
+           redraw unticked it: it "blinked" and never stayed ticked (#353). */
         setInherit(pid, tabId, on) {
             const p = get(pid);
-            if (!p || (on && !p.grants.tabOn(tabId))) return { ok: false };
+            if (!p) return { ok: false };
+            if (on && !p.grants.tabOn(tabId)) {
+                if (heldByOther(p, tabId)) return { ok: false, error: `given to ${ownerOf(tabId).host}`, heldBy: ownerOf(tabId).id };
+                p.grants.grantTab(tabId);
+            }
             p.grants.setInherit(tabId, on);
             return { ok: true };
         },
