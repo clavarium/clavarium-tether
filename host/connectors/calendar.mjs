@@ -27,6 +27,8 @@ import { join } from 'node:path';
 import { refreshAccess, thunderbird, PROVIDERS } from '../oauth.mjs';
 import { discover, responses, props, prop, setProps, eventOf, newEvent, newUid, escapeText, unescapeText, timeLine, stamp, localToUtc, TZ as DAV_TZ } from '../dav.mjs';
 
+/* An invitation's text, at most, in a list's data (200 events). */
+const NOTES_MAX = 2000;
 const LIST_MAX = 200;           /* events a list returns at most, then it says so (a year holds many) */
 const TZ = 'Europe/Paris';      /* the person's timezone: events are shown and created in it, not UTC */
 /* A Graph/ISO datetime, shown short and local: "2026-11-10 16:00". */
@@ -75,7 +77,7 @@ const API = {
         /* calendarView, not /events: /events orders over the WHOLE calendar, so it
            returns the oldest events, not the next ones. calendarView takes a window
            (from now on) and expands recurrences, so "list" means what is coming. */
-        list: (n, { from, to } = {}) => `https://graph.microsoft.com/v1.0/me/calendarView?startDateTime=${encodeURIComponent(from)}&endDateTime=${encodeURIComponent(to)}&$top=${n}&$orderby=start/dateTime&$select=id,subject,start,end,isAllDay,location,categories,organizer,onlineMeeting,onlineMeetingUrl,attendees,showAs`,
+        list: (n, { from, to } = {}) => `https://graph.microsoft.com/v1.0/me/calendarView?startDateTime=${encodeURIComponent(from)}&endDateTime=${encodeURIComponent(to)}&$top=${n}&$orderby=start/dateTime&$select=id,subject,start,end,isAllDay,location,categories,organizer,onlineMeeting,onlineMeetingUrl,attendees,showAs,body`,
         event: (id) => `https://graph.microsoft.com/v1.0/me/events/${encodeURIComponent(id)}`,
         create: 'https://graph.microsoft.com/v1.0/me/events',
         items: (j) => j.value ?? [],
@@ -499,12 +501,26 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
         },
     };
 
+    /* AN INVITATION'S TEXT, as plain text (16-11: its Teams link often lives there alone): scripts, styles and tags
+       dropped, a few entities read, kept short. Never HTML: the page shows it as text. */
+    const textOfBody = (b) => {
+        let t = String(b?.content ?? '');
+        if (String(b?.contentType ?? '').toLowerCase() === 'html') {
+            t = t.replace(/<(script|style|head)[^>]*>[\s\S]*?<\/\1>/gi, ' ')
+                .replace(/<a\b[^>]*href\s*=\s*["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi, (m, href, inner) => { const label = inner.replace(/<[^>]+>/g, '').trim(); return /^https:\/\//i.test(href) && !label.includes(href) ? `${label} ${href}` : label; })
+                .replace(/<(br|\/p|\/div|\/tr|\/li|\/h\d)\b[^>]*>/gi, '\n').replace(/<[^>]+>/g, '')
+                .replace(/&nbsp;/g, ' ').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, '&');
+        }
+        return t.replace(/[\u0000-\u0008\u000b-\u001f]/g, '').replace(/[ \t]+/g, ' ').replace(/ *\n */g, '\n').replace(/\n{3,}/g, '\n\n').trim().slice(0, NOTES_MAX);
+    };
+    /* A meeting's join link found in its text when the event says none: Teams, Zoom, Meet, Webex. */
+    const JOIN = /https:\/\/(?:teams\.microsoft\.com\/l\/meetup-join|teams\.live\.com\/meet|[\w.-]*zoom\.us\/j|meet\.google\.com|[\w.-]*webex\.com\/(?:meet|join))[^\s<>"')\]]*/i;
     /* ONE GRAPH EVENT AS DATA: wall-clock times as Graph gives them (the zone asked in its Prefer header), the page's fields. */
     const graphEvent = (e) => ({
         id: e.id, title: e.subject ?? '', start: e.isAllDay ? String(e.start?.dateTime ?? '').slice(0, 10) : e.start?.dateTime ?? null,
         end: e.isAllDay ? String(e.end?.dateTime ?? '').slice(0, 10) : e.end?.dateTime ?? null, allDay: e.isAllDay === true,
         location: e.location?.displayName ?? '', organizer: e.organizer?.emailAddress?.name || e.organizer?.emailAddress?.address || '',
-        online: e.onlineMeeting?.joinUrl || e.onlineMeetingUrl || null, attendees: Array.isArray(e.attendees) ? e.attendees.length : null, show: e.showAs ?? null,
+        notes: textOfBody(e.body), online: e.onlineMeeting?.joinUrl || e.onlineMeetingUrl || JOIN.exec(textOfBody(e.body))?.[0] || null, attendees: Array.isArray(e.attendees) ? e.attendees.length : null, show: e.showAs ?? null,
     });
 
     const verbs = {

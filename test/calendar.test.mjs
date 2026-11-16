@@ -599,3 +599,17 @@ test('calendar.list (Microsoft) also hands its events as data, for a person\'s o
     assert.deepEqual([a.title, a.end.slice(0, 16), a.organizer, a.online, a.attendees, a.show], ['Review', '2030-01-02T11:00', 'Ann', 'https://teams.example.com/j/1', 2, 'busy']);
     assert.deepEqual([b.allDay, b.start, b.end, b.show], [true, '2030-01-03', '2030-01-04', 'oof']);
 });
+
+test('an invitation\'s text comes as plain text (no script, no tag), and its Teams link is found there when the event gives none', async () => {
+    const html = '<html><head><style>p{}</style></head><body><p>Agenda&nbsp;: point &amp; suite</p><script>alert(1)</script><div>________________</div><a href="https://teams.microsoft.com/l/meetup-join/19%3ameeting_x/0?context=1">Rejoindre la réunion</a></body></html>';
+    const fetch = async (url) => {
+        if (url.includes('login.microsoftonline.com')) return json({ access_token: 'T', expires_in: 3600 });
+        return json({ value: [{ id: 'm1', subject: 'Point', start: { dateTime: '2030-01-02T10:00:00' }, end: { dateTime: '2030-01-02T10:30:00' }, body: { contentType: 'html', content: html } }] });
+    };
+    const r = await calendar({ fetch }).run('calendar.list', M, {}, ctx());
+    const [e] = r.data.events;
+    assert.match(e.notes, /Agenda : point & suite/);
+    assert.equal(/<|alert\(1\)|p\{\}/.test(e.notes), false, 'no tag, no script, no style');
+    assert.match(e.notes, /Rejoindre la réunion https:\/\/teams\.microsoft\.com\/l\/meetup-join\//);
+    assert.match(e.online, /^https:\/\/teams\.microsoft\.com\/l\/meetup-join\/19%3ameeting_x\/0\?context=1$/);
+});
