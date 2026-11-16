@@ -110,7 +110,9 @@ export function openStore(dir, { now = () => Date.now() } = {}) {
         setCatalog(target, catalog) {
             const t = targetOf(target);
             if (t.kind !== 'mcp') no(`${t.title} is not an MCP server`);
-            t.catalog = { at: new Date(now()).toISOString(), tools: Array.isArray(catalog?.tools) ? catalog.tools : (t.catalog?.tools ?? []), ...(catalog?.error ? { error: oneLine(catalog.error, 500) } : {}) };
+            /* `needs` (16-11): 'signin' or 'reconnect', a server that waits for its owner; gone with the next good listing. */
+            const needs = ['signin', 'reconnect'].includes(catalog?.needs) ? catalog.needs : null;
+            t.catalog = { at: new Date(now()).toISOString(), tools: Array.isArray(catalog?.tools) ? catalog.tools : (t.catalog?.tools ?? []), ...(catalog?.error ? { error: oneLine(catalog.error, 500) } : {}), ...(needs ? { needs } : {}) };
             save({ op: 'catalog', target: t.id });
             return structuredClone(t.catalog);
         },

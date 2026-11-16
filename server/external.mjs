@@ -12,7 +12,7 @@
  */
 import { createHash } from 'node:crypto';
 import { oneLine } from './verbs.mjs';
-import { classOf, toolDecide } from './rights.mjs';
+import { classOf, toolDecide, readGuess } from './rights.mjs';
 
 /* In the agent's folder: the external tools offered to it. */
 export const TOOLS_FILE = 'tools.json';
@@ -42,7 +42,10 @@ export function cleanTool(raw) {
     const ann = raw.annotations && typeof raw.annotations === 'object' && !Array.isArray(raw.annotations) ? raw.annotations : {};
     const annotations = Object.fromEntries(['readOnlyHint', 'destructiveHint', 'idempotentHint', 'openWorldHint'].filter((k) => typeof ann[k] === 'boolean').map((k) => [k, ann[k]]));
     const title = oneLine(raw.title ?? ann.title ?? '', 200);
-    return { name, ...(title ? { title } : {}), description: multiline(raw.description, DESCRIPTION_MAX), inputSchema: structuredClone(inputSchema), annotations, ...classOf(annotations) };
+    const description = multiline(raw.description, DESCRIPTION_MAX);
+    /* Declares nothing, seems to only read (rights.mjs, readGuess): still destructive, offered at Read, each call asked. */
+    const guess = readGuess(name, description, annotations);
+    return { name, ...(title ? { title } : {}), description, inputSchema: structuredClone(inputSchema), annotations, ...classOf(annotations), ...(guess ? { guess } : {}) };
 }
 
 /* A server's list as a catalog: its tools, each once, with its class. */
@@ -94,6 +97,7 @@ export function exposedName(prefix, tool, taken = new Set()) {
 const CLASS_SAID = { read: 'read only', write: 'writes', destructive: 'deletes or overwrites' };
 const GO_SAID = { yes: '', ask: ' · a person approves each call' };
 const FRESH_SAID = ' · new or changed on its server: a person approves it first';
+const GUESS_SAID = ' · seems to only read, not declared: a person approves each call';
 
 /* THE TOOLS ONE AGENT IS OFFERED: [{ name, target, tool, class, open, go, description, inputSchema }].
  * `targets`: the store's targets (kind mcp, each with its catalog and grants); `reserved`: names
@@ -111,7 +115,7 @@ export function offered(targets, agent, { reserved = [], stopped = false } = {})
             if (d.go === 'no') continue;
             const name = exposedName(t.id, tool.name, taken);
             taken.add(name);
-            const head = `[External server "${oneLine(t.title, 60)}" · ${CLASS_SAID[tool.class] ?? tool.class}${tool.open && tool.class !== 'read' ? ', reaches outside' : ''}${d.because === 'fresh' ? FRESH_SAID : (GO_SAID[d.go] ?? '')}]`;
+            const head = `[External server "${oneLine(t.title, 60)}" · ${CLASS_SAID[tool.class] ?? tool.class}${tool.open && tool.class !== 'read' ? ', reaches outside' : ''}${d.because === 'fresh' ? FRESH_SAID : d.because === 'guess' ? GUESS_SAID : (GO_SAID[d.go] ?? '')}]`;
             const schema = structuredClone(tool.inputSchema ?? plainSchema());
             schema.properties = schema.properties && typeof schema.properties === 'object' ? schema.properties : {};
             /* A one-line why for the person, when the tool has no argument of that name itself. */

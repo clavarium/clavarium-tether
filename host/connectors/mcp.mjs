@@ -25,6 +25,13 @@
  * A call that went out and was not answered in time "may have been done": never said "not done".
  *
  * Server requests (elicitation, sampling) are not taken up in this first step: declined.
+ *
+ * SIGNED IN WITH OAUTH (16-11): the application keeps the tokens and hands one as the key. Refused with it (401),
+ * the connector asks the application ONCE for a fresh one (ctx.secret(key, { fresh: true }): refreshed there) and
+ * tries again, once; a request refused with 401 never ran, so trying again does nothing twice. Still refused, or
+ * the application saying it cannot refresh (an error with `reconnect`): a Refused with `needs: 'reconnect'` --
+ * the keeper shows the server as to reconnect and tells its agents "<service> needs its owner to reconnect". No
+ * key at all and a 401: `needs: 'signin'`. A plain API key refused stays "refused the key".
  */
 import { Refused, no, oneLine } from '../../server/verbs.mjs';
 import { VERSION, PACKAGE } from '../../server/name.mjs';
@@ -102,10 +109,12 @@ export function mcp({ fetch: f = globalThis.fetch, now = () => Date.now(), liste
         if (u.username || u.password) no(`${t.title}: no user or password in the address: the key is a secret of the vault`);
         return u.href;
     }
-    async function headers(t, ctx, session, extra = {}) {
+    async function headers(t, ctx, session, extra = {}, { fresh = false, got } = {}) {
         const h = { accept: 'application/json, text/event-stream', 'mcp-protocol-version': session?.version ?? PROTOCOL, ...extra };
         if (t.secrets?.token) {
-            const key = await ctx.secret('token');
+            let key;
+            try { key = await ctx.secret('token', ...(fresh ? [{ fresh: true }] : [])); } catch (e) { if (e?.reconnect) throw needs(t, 'reconnect'); throw e; }
+            if (got) got.key = key;
             if (typeof key !== 'string' || !key) no(`${t.title}: its key is empty in the vault`);
             if (/[\r\n]/.test(key)) no(`${t.title}: its key holds a line break`);
             const name = String(t.config?.header || 'Authorization');
@@ -116,16 +125,36 @@ export function mcp({ fetch: f = globalThis.fetch, now = () => Date.now(), liste
         return h;
     }
     const statusSaid = (t, status) => (status === 401 || status === 403 ? `${t.title} refused the key (HTTP ${status}): check the secret it names` : `${t.title} answered HTTP ${status}`);
+    /* A server that wants its owner: to sign in (no key yet), or to reconnect (signed out at the provider). Nothing was done. */
+    const needs = (t, what) => Object.assign(new Refused(what === 'signin' ? `${t.title} needs its owner to sign in (Assets > Access) -- nothing was done` : `${t.title} needs its owner to reconnect (Assets > Access) -- nothing was done`), { needs: what });
+    /* The 401's challenge says OAuth (RFC 6750 / RFC 9728): a token, not a plain key. */
+    const oauthSaid = (res) => /resource_metadata|invalid_token|error\s*=/i.test(String(res.headers.get('www-authenticate') ?? ''));
+
+    /* One exchange, tried again once with a fresh token when the server refused the one it had (above). */
+    async function rpc(t, ctx, method, params, opts = {}) {
+        const first = {};
+        try { return await rpcOnce(t, ctx, method, params, { ...opts, got: first }); } catch (e) {
+            if (!e?.unauthorized) throw e;
+            if (!t.secrets?.token) throw needs(t, 'signin');
+            const again = {};
+            try { return await rpcOnce(t, ctx, method, params, { ...opts, fresh: true, got: again }); } catch (e2) {
+                if (!e2?.unauthorized) throw e2;
+                /* The same key again and no OAuth said: a plain key, wrong. */
+                if (again.key === first.key && !e2.oauth && !e.oauth) throw new Refused(statusSaid(t, 401));
+                throw needs(t, 'reconnect');
+            }
+        }
+    }
 
     /* One JSON-RPC exchange: the result, or a Refused. `sent()` says the request left (a late answer may then mean it was done). */
-    async function rpc(t, ctx, method, params, { ms = listMs, session = sessions.get(t.id), notification = false } = {}) {
+    async function rpcOnce(t, ctx, method, params, { ms = listMs, session = sessions.get(t.id), notification = false, fresh = false, got } = {}) {
         const url = endpoint(t);
         const id = notification ? undefined : `t${++seq}`;
         const abort = new AbortController();
         const timer = setTimeout(() => abort.abort(new Late('late')), ms); timer.unref?.();
         let res; let sent = false;
         try {
-            const h = await headers(t, ctx, session, { 'content-type': 'application/json' });
+            const h = await headers(t, ctx, session, { 'content-type': 'application/json' }, { fresh, got });
             const body = JSON.stringify({ jsonrpc: '2.0', ...(id ? { id } : {}), method, ...(params !== undefined ? { params } : {}) });
             try { res = await f(url, { method: 'POST', headers: h, body, redirect: 'manual', signal: abort.signal }); sent = true; }
             catch (e) {
@@ -134,6 +163,7 @@ export function mcp({ fetch: f = globalThis.fetch, now = () => Date.now(), liste
             }
             if (res.status >= 300 && res.status < 400) no(`${t.title} answered with a redirect (HTTP ${res.status}): not followed -- its address is kept as given`);
             if (res.status === 404 && session?.id) throw Object.assign(new Refused(`${t.title}: the session ended`), { expired: true });
+            if (res.status === 401) { const oauth = oauthSaid(res); await res.body?.cancel?.().catch?.(() => {}); throw Object.assign(new Refused(statusSaid(t, 401)), { unauthorized: true, oauth }); }
             if (notification) { await res.body?.cancel?.().catch?.(() => {}); if (res.status >= 400) no(statusSaid(t, res.status)); return { res }; }
             if (res.status >= 400) { await res.body?.cancel?.().catch?.(() => {}); no(statusSaid(t, res.status)); }
             const type = String(res.headers.get('content-type') ?? '');

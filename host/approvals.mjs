@@ -45,11 +45,12 @@ export function approvals({ now = () => Date.now(), timeout = TIMEOUT_MS, onChan
         },
         /* A person's decision. A request no longer waiting is refused: decided
            twice, or too late, the first word stands. */
-        decide(id, decision, by = null, word = '') {
+        /* `extra.args`: the arguments as the person edited them (the keeper checked them), handed with the decision. */
+        decide(id, decision, by = null, word = '', extra = undefined) {
             if (!DECISIONS.includes(decision)) no(`a decision is one of: ${DECISIONS.join(', ')}`);
             if (!pending.has(id)) no('this request is no longer waiting');
             const w = oneLine(word, WORD_MAX);
-            return end(id, { decision, ...(by ? { by } : {}), ...(w ? { word: w } : {}) });
+            return end(id, { decision, ...(by ? { by } : {}), ...(w ? { word: w } : {}), ...(extra?.args && typeof extra.args === 'object' ? { args: extra.args } : {}) });
         },
         /* The agent takes back its own waiting request: it ends as "withdrawn",
            and can no longer be approved. Scoped -- an agent withdraws only its own

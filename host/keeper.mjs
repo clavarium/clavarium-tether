@@ -13,7 +13,7 @@
  *   });
  *   k.pump();                     take what the agents asked since (every half second or so)
  *   k.approvals();                the calls waiting for a person
- *   k.decide(id, 'yes' | 'no' | 'always', by, word)
+ *   k.decide(id, 'yes' | 'no' | 'always', by, word, args)   args: an MCP call's text arguments as the person edited them (yes only)
  *   k.stop(agent?, by)            every target of an agent cut ("*" or none: everybody)
  *   k.journal({ agent, target, since, limit })
  *   k.act(op, args, who)          a person's change from the page, or an agent's call: Promise<{ ok, text, data }>
@@ -65,7 +65,7 @@ const MEANS = {
 };
 /* An MCP server's tools, by level (rights.mjs, CLASS_PRESETS). */
 const MCP_MEANS = {
-    watch: 'its read-only tools',
+    watch: 'its read-only tools (one that seems to read but does not say so: each call approved)',
     propose: 'its tools; a person approves each one that writes or deletes',
     frame: 'its tools, as set class by class',
     free: 'its tools; a person approves each one that deletes or overwrites',
@@ -79,6 +79,7 @@ export function sayTargets(list) {
     for (const t of list) {
         if (t.kind === 'mcp') {
             out.push(`  ${t.id} (mcp) "${t.title}": an external MCP server: ${MCP_MEANS[t.level]}; its tools are named ${t.id}-... among your MCP tools${t.tools !== undefined ? ` (${t.tools} now)` : ''}; by command: ${NAME} mcp ${t.id}`);
+            if (t.needs) out.push(`      ${t.title} needs its owner to ${t.needs === 'signin' ? 'sign in' : 'reconnect'}: its tools wait until then`);
             continue;
         }
         out.push(`  ${t.id} (${t.kind}) "${t.title}": ${t.level}: ${MEANS[t.level]}`);
@@ -88,6 +89,8 @@ export function sayTargets(list) {
     return out.join('\n');
 }
 
+/* An MCP call's text argument a person may edit on its card: one its card shows whole (cards.mjs, ARG_MAX). */
+const EDIT_MAX = 2000;
 /* How long a connector may take to say what a request is about, before it is asked anyway. */
 const DESCRIBE_MS = 6000;
 
@@ -140,10 +143,11 @@ export function keeper(dir, { sides = () => [], ask, notify, secrets = async () 
        name the target gives them (the host keeps the values). */
     const ctxOf = (t, agent) => ({
         agent,
-        secret: async (key) => {
+        /* `opts.fresh` (an MCP server refused the token it had, 16-11): the host refreshes it first. */
+        secret: async (key, opts) => {
             const name = t.secrets?.[key];
             if (!name) no(`${t.title} names no secret "${key}"`);
-            const value = await secrets(name);
+            const value = await (opts?.fresh === true ? secrets(name, { fresh: true }) : secrets(name));
             if (typeof value === 'string' && value) known.add(value);
             return value;
         },
@@ -189,12 +193,12 @@ export function keeper(dir, { sides = () => [], ask, notify, secrets = async () 
             journal.append({ agent: me, verb, decision: 'stopped' });
             no('a person stopped everything for you: nothing was done');
         }
-        const a = check(verb, given);
+        let a = check(verb, given);
         if (verb === 'targets') {
             const all = store.targets();
             const mine = all.filter((t) => t.kind === 'mcp').length ? offered(all, who.id, { reserved: RESERVED }) : [];
             const list = all.filter((t) => t.grants[who.id]).map((t) => ({ id: t.id, title: t.title, kind: t.kind, level: t.grants[who.id].level, rules: t.grants[who.id].rules,
-                ...(t.kind === 'mcp' ? { tools: mine.filter((x) => x.target === t.id).length } : {}) }));
+                ...(t.kind === 'mcp' ? { tools: mine.filter((x) => x.target === t.id).length, ...(t.catalog?.needs ? { needs: t.catalog.needs } : {}) } : {}) }));
             return { text: sayTargets(list), data: list };
         }
         /* Its own requests still waiting for a person, and taking one back. Scoped to
@@ -244,7 +248,7 @@ export function keeper(dir, { sides = () => [], ask, notify, secrets = async () 
             if (problem) no(`${tool.name}: ${problem} -- nothing was done`);
             try { conn.admit?.(t, who.id); } catch (e) { journal.append({ ...base, decision: 'refused', because: 'rate' }); throw e; }
         }
-        let outcome = { decision: 'auto' }; let asked = null;
+        let outcome = { decision: 'auto' }; let asked = null; let edited = [];
         if (d.go === 'ask') {
             /* "Always" on an external tool: yes for that tool, for this agent -- never for a destructive one (only the page sets that). */
             const rule = tool ? (tool.class !== 'destructive' ? { kind: 'tool', value: tool.name } : null) : ruleFrom(verb, seen);
@@ -257,8 +261,12 @@ export function keeper(dir, { sides = () => [], ask, notify, secrets = async () 
                     if (about && typeof about === 'object') card.about = about;
                 } catch { /* the card says less, the request still goes */ }
             }
-            const { request, decision } = queue.open({ ...base, card, level: g.level, ...(rule ? { rule } : {}) });
+            /* EDITABLE (16-11): an MCP call's text arguments shown whole on its card (a reply's text...): the person may
+               change them before approving (decide's args). The arguments themselves stay here, never in a page's list. */
+            const editable = tool ? Object.entries(a.arguments ?? {}).filter(([k, v]) => typeof v === 'string' && v.length <= EDIT_MAX && k !== 'why').map(([k]) => k).slice(0, 40) : [];
+            const { request, decision } = queue.open({ ...base, card, level: g.level, ...(rule ? { rule } : {}), ...(editable.length ? { editable } : {}) });
             asked = request.id;
+            if (editable.length) editing.set(request.id, { args: a.arguments, schema: tool.inputSchema, editable });
             try { held?.(request); } catch { /* the folder's */ }
             if (ask) {
                 Promise.resolve().then(() => ask(request)).then((v) => {
@@ -267,7 +275,13 @@ export function keeper(dir, { sides = () => [], ask, notify, secrets = async () 
                     try { queue.decide(request.id, o.decision, byRef(o.by ?? PERSON), o.word); } catch { /* decided already */ }
                 }, () => {});
             }
-            outcome = await decision;
+            try { outcome = await decision; } finally { editing.delete(request.id); }
+            /* Approved as the person edited it: those arguments go, said in the journal and to the agent. */
+            if (outcome.args && (outcome.decision === 'yes' || outcome.decision === 'always')) {
+                edited = Object.keys(outcome.args).filter((k) => outcome.args[k] !== a.arguments?.[k]);
+                a = { ...a, arguments: { ...a.arguments, ...outcome.args } };
+                base.detail = detailOf(verb, a);
+            }
             if (outcome.decision === 'always' && rule && tool) {
                 try {
                     store.toolRights(t.id, who.id, { tools: { [tool.name]: 'yes' } });
@@ -307,13 +321,15 @@ export function keeper(dir, { sides = () => [], ask, notify, secrets = async () 
         let res; let ok = true; let error;
         try { res = await conn.run(verb, t, a, ctx); } catch (e) {
             ok = false; error = e instanceof Refused ? e.message : `failed: ${e?.message ?? e}`;
+            if (t.kind === 'mcp' && e?.needs) wants(t.id, e.needs, error);
         }
         /* An external server's answer: marked as data from that server, never instructions, and cut to size. */
         if (ok && tool) res = resultText(t.title, tool.name, res);
         /* What happened is told even if the journal cannot keep it (a full disk): a done act is never answered "not done" (loop 18). */
         let unjournaled = false;
-        try { journal.append({ ...base, decision: outcome.decision, because: d.go === 'yes' ? d.because : undefined, by: outcome.by, ok: ok && !res?.toolError, error: error ?? (res?.toolError ? 'the tool reported an error' : undefined), size: res?.size, exit: res?.exit, ms: now() - started, request: asked }); } catch { unjournaled = true; }
+        try { journal.append({ ...base, decision: outcome.decision, because: d.go === 'yes' ? d.because : undefined, by: outcome.by, ...(edited.length ? { edited: edited.join(', ') } : {}), ok: ok && !res?.toolError, error: error ?? (res?.toolError ? 'the tool reported an error' : undefined), size: res?.size, exit: res?.exit, ms: now() - started, request: asked }); } catch { unjournaled = true; }
         if (ok && unjournaled) res = { ...res, text: `${res.text}\n(The journal could not record this act.)` };
+        if (ok && edited.length) res = { ...res, text: `${res.text}\n(${outcome.by?.name ?? 'A person'} edited ${edited.join(', ')} before approving: what was sent is their text, not yours.)` };
         if (!ok) no(hide(error, known));
         return { text: hide(res.text, known), data: { ...(res.exit !== undefined ? { exit: res.exit } : {}), size: res.size ?? 0 } };
     }
@@ -331,7 +347,7 @@ export function keeper(dir, { sides = () => [], ask, notify, secrets = async () 
             case 'jobs': return conns.device?.jobs?.() ?? [];
             case 'job-file': { if (!conns.device) no('no device connector'); return conns.device.file(a.id); }
             case 'job-done': { if (!conns.device) no('no device connector'); const r = conns.device.finish(a.id, a.ok, a.text); changed({ jobs: a.id }); return r; }
-            case 'decide': return api.decide(a.id, a.decision, by, a.word);
+            case 'decide': return api.decide(a.id, a.decision, by, a.word, a.args);
             case 'stop': return api.stop(a.agent, by);
             case 'resume': return api.resume(a.agent, by);
             case 'level': {
@@ -448,6 +464,27 @@ export function keeper(dir, { sides = () => [], ask, notify, secrets = async () 
         return n;
     }
 
+    /* ---- a waiting MCP call, edited by its person (16-11) ----
+       Only its editable text arguments, each still text, the whole checked against the tool's schema again; a refusal
+       leaves the request waiting, as it was. -> the arguments to send. */
+    const editing = new Map();
+    function editedArgs(id, decision, args) {
+        const e = editing.get(id);
+        if (!e) no('this request has nothing to edit (or is no longer waiting)');
+        if (decision !== 'yes') no('an edited request is approved once (yes), never always');
+        if (!args || typeof args !== 'object' || Array.isArray(args)) no('the edited arguments are an object of texts');
+        const changed = {};
+        for (const [k, v] of Object.entries(args)) {
+            if (!e.editable.includes(k)) no(`${oneLine(k, 40)} cannot be edited here`);
+            if (typeof v !== 'string') no(`${oneLine(k, 40)} stays a text`);
+            if (v.length > EDIT_MAX) no(`${oneLine(k, 40)}: ${EDIT_MAX} characters at most`);
+            changed[k] = v;
+        }
+        const problem = argsProblem(e.schema, { ...e.args, ...changed });
+        if (problem) no(`as edited: ${problem}`);
+        return changed;
+    }
+
     /* ---- external MCP servers ---- */
     const RESERVED = TOOLS.map((x) => x.name);
     const SECRET_REF = /^[A-Za-z0-9_][A-Za-z0-9_.:-]{0,99}$/;
@@ -532,9 +569,23 @@ export function keeper(dir, { sides = () => [], ask, notify, secrets = async () 
             return c;
         } catch (e) {
             const msg = hide(e instanceof Refused ? e.message : `failed: ${e?.message ?? e}`, known);
-            try { store.setCatalog(t.id, { error: msg }); } catch { /* removed meanwhile */ }
+            if (e?.needs) wants(t.id, e.needs, msg);
+            else { try { store.setCatalog(t.id, { error: msg }); } catch { /* removed meanwhile */ } }
             journal.append({ op: 'catalog', target, ok: false, error: msg });
-            throw new Refused(msg);
+            throw Object.assign(new Refused(msg), e?.needs ? { needs: e.needs } : {});
+        }
+    }
+    /* A SERVER THAT WANTS ITS OWNER (16-11): to sign in, or to reconnect. Kept with its catalog (the page shows it,
+       one Reconnect button); its agents told once, when it starts to want it -- in plain words, nothing to do but
+       wait. Listed again fine (after the owner reconnected), it no longer wants anything. */
+    function wants(id, what, msg) {
+        const t = store.target(id);
+        if (!t) return;
+        const before = t.catalog?.needs;
+        try { store.setCatalog(id, { error: msg, needs: what }); } catch { return; }
+        if (before === what || what !== 'reconnect') return;
+        for (const agent of Object.keys(t.grants ?? {})) {
+            try { notice({ agent, target: { id: t.id, title: t.title }, kind: 'mcp.reconnect', text: `${t.title} needs its owner to reconnect: its tools wait until then` }); } catch { /* told on its next call */ }
         }
     }
     /* Each agent's external tools, in its folder (tools.json): written when they change. The agent's
@@ -577,7 +628,7 @@ export function keeper(dir, { sides = () => [], ask, notify, secrets = async () 
         approvals: (agent) => queue.list(agent),
         /* Approved calls that wait for a person's browser (a device to flash). */
         jobs: () => conns.device?.jobs?.() ?? [],
-        decide: (id, decision, by = PERSON, word = '') => queue.decide(oneLine(id, 100), decision, byRef(by), word),
+        decide: (id, decision, by = PERSON, word = '', args = undefined) => queue.decide(oneLine(id, 100), decision, byRef(by), word, args === undefined ? undefined : { args: editedArgs(oneLine(id, 100), decision, args) }),
         async stop(agent, by = PERSON) {
             const who = oneLine(agent, 100) || '*';
             store.stop(who);

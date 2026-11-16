@@ -37,13 +37,14 @@ const TOOLS = [
 ];
 
 /* The fake server. `calls`: every tools/call it ran. `push(m)`: a message on its own stream. */
-async function fakeServer({ key = KEY, tools = TOOLS.map((t) => structuredClone(t)), redirect = false } = {}) {
+async function fakeServer({ key = KEY, tools = TOOLS.map((t) => structuredClone(t)), redirect = false, challenge = '' } = {}) {
     const calls = []; const streams = new Set(); const seen = { sessions: [], auth: [], init: 0 };
     const SESSION = 'sess-1';
     const srv = createServer((req, res) => {
         seen.auth.push(req.headers.authorization ?? '');
         if (redirect) { res.writeHead(307, { location: 'https://elsewhere.example.com/mcp' }); return res.end(); }
-        if (req.headers.authorization !== `Bearer ${key}`) { res.writeHead(401); return res.end(); }
+        /* `key`: one value, or a function (a token that changes: OAuth, 16-11); `challenge`: its 401's WWW-Authenticate. */
+        if (req.headers.authorization !== `Bearer ${typeof key === 'function' ? key() : key}`) { res.writeHead(401, challenge ? { 'www-authenticate': challenge } : {}); return res.end(); }
         if (req.method === 'GET') {
             res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store' });
             res.write(': open\n\n'); streams.add(res); req.on('close', () => streams.delete(res));
@@ -473,4 +474,120 @@ test('fresh tools: none on a first listing; new or relabelled ones asked, even s
     assert.deepEqual(toolDecide({ level: 'free', tools: { b: 'yes' } }, tool), { go: 'ask', because: 'fresh' });
     assert.equal(toolDecide({ level: 'free', tools: { b: 'no' } }, tool).go, 'no', 'a tool set to no stays no');
     assert.equal(toolDecide({ level: 'off' }, tool).go, 'no');
+});
+
+/* SIGNED IN WITH OAUTH (16-11): the host hands a token as the key. Refused with it, one fresh token asked (the host
+   refreshes it), the call tried again once and done once; the host unable to refresh, or the server still refusing:
+   the server is "to reconnect" -- in its catalog (the page's Reconnect), in the agent's words and a notice to each
+   agent given it, never "refused the key" -- until a good listing after the owner reconnected. */
+test('a token refused: one fresh token, tried again once; signed out: to reconnect, said plainly, until listed again fine', async () => {
+    let good = 'tok-1'; let handed = 'tok-1'; let canRefresh = true; const asked = [];
+    const s = await fakeServer({ key: () => good, challenge: 'Bearer error="invalid_token", resource_metadata="https://mcp.example.com/.well-known/oauth-protected-resource"' });
+    const dir = tmp();
+    const k = keeper(tmp(), {
+        sides: () => [{ dir, who: BOT }],
+        secrets: async (name, opts) => {
+            asked.push(opts?.fresh === true);
+            if (opts?.fresh) { if (!canRefresh) throw Object.assign(new Error('signed out of this server'), { reconnect: true }); handed = good; }
+            return handed;
+        },
+        connectors: { mcp: mcp({ callMs: 300, listen: false }), ssh: null },
+    });
+    try {
+        const added = await k.act('mcp-add', { name: 'Chat', url: s.url, secret: 'CHAT_TOK', allowHttp: true }, ME);
+        assert.equal(added.ok, true, added.text);
+        await k.act('level', { target: 'chat', agent: BOT.id, level: 'free' }, ME);
+        /* Revoked at the provider before its end: the server takes only a new one. */
+        good = 'tok-2';
+        asked.length = 0;
+        const r = await k.act('mcp.call', { target: 'chat', tool: 'search', arguments: { query: 'x' } }, BOT);
+        assert.equal(r.ok, true, r.text);
+        assert.deepEqual(asked.filter(Boolean), [true], 'one fresh token asked');
+        assert.equal(s.calls.filter((c) => c.name === 'search').length, 1, 'done once');
+        /* Signed out for good: the host cannot refresh. */
+        good = 'tok-3'; canRefresh = false;
+        const out = await k.act('mcp.call', { target: 'chat', tool: 'search', arguments: { query: 'y' } }, BOT);
+        assert.equal(out.ok, false);
+        assert.match(out.text, /Chat needs its owner to reconnect/);
+        assert.doesNotMatch(out.text, /refused the key/);
+        assert.equal(s.calls.filter((c) => c.name === 'search').length, 1, 'nothing done');
+        assert.equal(k.store.target('chat').catalog.needs, 'reconnect', 'the page sees it');
+        assert.equal(k.store.target('chat').catalog.tools.length, TOOLS.length, 'its tools kept');
+        const told = readFileSync(join(dir, 'notices.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+        assert.deepEqual(told.map((n) => n.kind), ['mcp.reconnect'], 'told once');
+        await k.act('mcp.call', { target: 'chat', tool: 'search', arguments: { query: 'z' } }, BOT);
+        assert.equal(readFileSync(join(dir, 'notices.jsonl'), 'utf8').trim().split('\n').length, 1, 'not told again');
+        assert.match((await k.act('targets', {}, BOT)).text, /Chat needs its owner to reconnect/);
+        /* The owner reconnected: listed again fine, nothing wanted. */
+        canRefresh = true;
+        await k.refresh('chat');
+        assert.equal(k.store.target('chat').catalog.needs, undefined);
+        assert.equal(k.store.target('chat').catalog.error, undefined);
+    } finally { await k.close(); await s.close(); }
+});
+
+test('no key and a 401: to sign in; a plain key refused stays "refused the key"', async () => {
+    const s = await fakeServer();
+    const k = keeper(tmp(), { sides: () => [], secrets: async () => 'wrong-key', connectors: { mcp: mcp({ listen: false }), ssh: null } });
+    try {
+        const none = await k.act('mcp-add', { name: 'Bare', url: s.url, allowHttp: true }, ME);
+        assert.match(none.data.error, /Bare needs its owner to sign in/);
+        assert.equal(k.store.target('bare').catalog.needs, 'signin');
+        const keyed = await k.act('mcp-add', { name: 'Keyed', url: s.url, secret: 'K', allowHttp: true }, ME);
+        assert.match(keyed.data.error, /refused the key \(HTTP 401\)/);
+        assert.equal(k.store.target('keyed').catalog.needs, undefined);
+    } finally { await k.close(); await s.close(); }
+});
+
+/* A READ GUESS (16-11): a tool that declares nothing, whose words say it only reads, is still destructive; at Read it is
+   offered and each call asked, instead of hidden; any acting word in its name or description and it is not guessed. */
+test('a read guess: offered at Read and asked; at propose asked as before; an acting word, no guess', async () => {
+    const { readGuess } = await import('../server/rights.mjs');
+    assert.equal(readGuess('slack_search_public', 'Search messages in public channels', {}), 'read');
+    assert.equal(readGuess('slack_read_thread', 'Read a thread', {}), 'read');
+    assert.equal(readGuess('getHistory', '', {}), 'read', 'camelCase too');
+    assert.equal(readGuess('slack_send_message', 'Send a message', {}), '');
+    assert.equal(readGuess('get_and_set', '', {}), '', 'an acting word in its name');
+    assert.equal(readGuess('list_files', 'Lists files, then deletes the old ones', {}), '', 'an acting word in its description');
+    assert.equal(readGuess('list', '', { readOnlyHint: false }), '', 'declared: never guessed');
+    assert.equal(readGuess('mystery', 'Says nothing of itself.', {}), '', 'no reading verb');
+    const cat = catalogOf([{ name: 'read_channel', description: 'Read the messages of a channel.' }, { name: 'send', description: 'Send a message.' }]);
+    assert.equal(cat[0].class, 'destructive', 'still destructive');
+    assert.equal(cat[0].guess, 'read');
+    assert.equal(cat[1].guess, undefined);
+    assert.deepEqual(toolDecide({ level: 'watch' }, cat[0]), { go: 'ask', because: 'guess' });
+    assert.equal(toolDecide({ level: 'watch' }, cat[1]).go, 'no');
+    assert.equal(toolDecide({ level: 'propose' }, cat[0]).go, 'ask');
+    assert.equal(toolDecide({ level: 'free' }, cat[0]).go, 'ask', 'never run alone');
+    assert.equal(toolDecide({ level: 'watch', tools: { read_channel: 'no' } }, cat[0]).go, 'no', 'its own setting wins');
+    const t = [{ id: 'chat', title: 'Chat', kind: 'mcp', grants: { [BOT.id]: { level: 'watch' } }, catalog: { tools: cat } }];
+    const seen = offered(t, BOT.id);
+    assert.deepEqual(seen.map((x) => x.tool), ['read_channel'], 'at Read: only the guessed read');
+    assert.match(seen[0].description, /seems to only read, not declared: a person approves each call/);
+    const all = offered([{ ...t[0], grants: { [BOT.id]: { level: 'propose' } } }], BOT.id);
+    assert.deepEqual(all.map((x) => [x.tool, x.go]), [['read_channel', 'ask'], ['send', 'ask']], 'at propose: every tool, each asked');
+});
+
+/* EDITED BEFORE APPROVED (16-11): a waiting call's text arguments, changed by its person, are what is sent; checked
+   again against the tool's schema; only those shown whole; the agent told; never "always" with an edit. */
+test('a waiting call edited by its person: their text is sent, checked again, the agent told', async () => {
+    const env = await setup({ level: 'propose' });
+    const { k, s, done } = env;
+    try {
+        const going = call(k, 'create_note', { contact: 'c1', text: 'Yes, tomorrow.' }, { why: 'answer Anne' });
+        const q = await until(() => k.approvals(BOT.id)[0]);
+        assert.deepEqual(q.editable, ['contact', 'text']);
+        assert.throws(() => k.decide(q.id, 'always', ME, '', { text: 'x' }), /never always/);
+        assert.throws(() => k.decide(q.id, 'yes', ME, '', { other: 'x' }), /cannot be edited/);
+        assert.throws(() => k.decide(q.id, 'yes', ME, '', { text: 3 }), /stays a text/);
+        assert.ok(k.approvals(BOT.id)[0], 'still waiting after a refused edit');
+        const decided = await k.act('decide', { id: q.id, decision: 'yes', args: { text: 'Yes, tomorrow at ten.' } }, ME);
+        assert.equal(decided.ok, true, decided.text);
+        const r = await going;
+        assert.equal(r.ok, true, r.text);
+        assert.deepEqual(s.calls.at(-1), { name: 'create_note', arguments: { contact: 'c1', text: 'Yes, tomorrow at ten.' } });
+        assert.match(r.text, /edited text before approving: what was sent is their text/);
+        const line = k.journal({ limit: 5 }).find((l) => l.tool === 'create_note');
+        assert.equal(line.edited, 'text', 'the journal says what the person changed');
+    } finally { await done(); }
 });

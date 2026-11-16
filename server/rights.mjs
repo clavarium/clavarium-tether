@@ -181,6 +181,14 @@ const parentOf = (p) => {
  * A tool that declares nothing is destructive and open: the strictest, as the
  * protocol's own defaults say.
  *
+ * A READ GUESS (16-11): many servers declare nothing (Slack's...), so at Read an agent
+ * would see none of their tools. A tool that says neither readOnlyHint nor
+ * destructiveHint, whose name holds a reading verb (READ_VERBS) and whose name and
+ * description hold no acting word (ACT_WORDS), is marked `guess: 'read'`. It stays
+ * destructive (never run without a person): at Read (watch) it is OFFERED, and each
+ * call asked, instead of hidden. At every other level it goes by its class, as before.
+ * Conservative on purpose: a word missed hides a tool (as before), never runs one.
+ *
  * The LEVEL of the grant says, class by class, yes / ask / no:
  *
  *   (no grant)  Off             no tool at all: the agent does not even see them
@@ -201,6 +209,28 @@ export const CLASS_PRESETS = Object.freeze({
     propose: Object.freeze({ read: 'yes', write: 'ask', destructive: 'ask' }),
     free: Object.freeze({ read: 'yes', write: 'yes', destructive: 'ask' }),
 });
+
+/* The words of a read guess, whole words of a name (snake, kebab, dots, camelCase) or a description. */
+export const READ_VERBS = Object.freeze(['read', 'list', 'search', 'get', 'find', 'view', 'history', 'lookup', 'fetch']);
+export const ACT_WORDS = Object.freeze(['send', 'post', 'write', 'create', 'update', 'delete', 'remove', 'edit', 'add', 'put', 'patch', 'publish',
+    'reply', 'respond', 'react', 'invite', 'archive', 'move', 'rename', 'upload', 'schedule', 'mark', 'join', 'leave', 'kick', 'submit', 'approve',
+    'cancel', 'exec', 'execute', 'merge', 'push', 'share', 'pin', 'unpin', 'star', 'assign', 'forward', 'draft', 'save', 'clear',
+    'reset', 'purge', 'drop', 'insert', 'modify', 'change', 'revoke', 'grant', 'transfer', 'pay', 'buy', 'trigger', 'deploy', 'install',
+    'kill', 'restore', 'import', 'export', 'sync', 'notify', 'invoke', 'enable', 'disable', 'ban']);
+/* In a name only (short, precise), words a description uses for other things too (« in order », « a set of »). */
+const NAME_ACTS = ['set', 'run', 'start', 'stop', 'call', 'close', 'open', 'lock', 'unlock', 'block', 'apply', 'message', 'order', 'book'];
+/* A word or one of its plain forms (sends, deleted, posting, updates). */
+const acts = (w, list) => [w, w.replace(/s$/, ''), w.replace(/es$/, ''), w.replace(/ed$/, ''), w.replace(/d$/, ''), w.replace(/ing$/, ''), w.replace(/ing$/, 'e')].some((x) => x && list.includes(x));
+const wordsOf = (text) => String(text ?? '').replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+/* 'read' when a tool that declares nothing of its kind seems by its words to only read; else ''. */
+export function readGuess(name, description, annotations) {
+    const a = annotations && typeof annotations === 'object' && !Array.isArray(annotations) ? annotations : {};
+    if (typeof a.readOnlyHint === 'boolean' || typeof a.destructiveHint === 'boolean') return '';
+    const own = wordsOf(name);
+    if (!own.some((w) => READ_VERBS.includes(w))) return '';
+    if (own.some((w) => acts(w, ACT_WORDS) || acts(w, NAME_ACTS)) || wordsOf(description).some((w) => acts(w, ACT_WORDS))) return '';
+    return 'read';
+}
 
 /* A tool's class from its annotations: { class, open, idempotent }. */
 export function classOf(annotations) {
@@ -231,5 +261,7 @@ export function toolDecide(grant, tool) {
     let go = classesOf(grant)[CLASSES.includes(tool.class) ? tool.class : 'destructive'] ?? 'no';
     if (go === 'yes' && grant.level === 'frame' && grant.askOpen === true && tool.open && tool.class !== 'read') go = 'ask';
     if (go === 'yes' && tool.fresh === true) return { go: 'ask', because: 'fresh' };
+    /* Seems to read, says nothing (above): offered at Read, each call asked. */
+    if (go === 'no' && grant.level === 'watch' && tool.guess === 'read' && tool.class === 'destructive') return { go: 'ask', because: 'guess' };
     return { go, because: 'class' };
 }
