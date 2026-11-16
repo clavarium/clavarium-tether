@@ -75,7 +75,7 @@ const API = {
         /* calendarView, not /events: /events orders over the WHOLE calendar, so it
            returns the oldest events, not the next ones. calendarView takes a window
            (from now on) and expands recurrences, so "list" means what is coming. */
-        list: (n, { from, to } = {}) => `https://graph.microsoft.com/v1.0/me/calendarView?startDateTime=${encodeURIComponent(from)}&endDateTime=${encodeURIComponent(to)}&$top=${n}&$orderby=start/dateTime&$select=id,subject,start,end,location,categories`,
+        list: (n, { from, to } = {}) => `https://graph.microsoft.com/v1.0/me/calendarView?startDateTime=${encodeURIComponent(from)}&endDateTime=${encodeURIComponent(to)}&$top=${n}&$orderby=start/dateTime&$select=id,subject,start,end,isAllDay,location,categories,organizer,onlineMeeting,onlineMeetingUrl,attendees,showAs`,
         event: (id) => `https://graph.microsoft.com/v1.0/me/events/${encodeURIComponent(id)}`,
         create: 'https://graph.microsoft.com/v1.0/me/events',
         items: (j) => j.value ?? [],
@@ -499,6 +499,14 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
         },
     };
 
+    /* ONE GRAPH EVENT AS DATA: wall-clock times as Graph gives them (the zone asked in its Prefer header), the page's fields. */
+    const graphEvent = (e) => ({
+        id: e.id, title: e.subject ?? '', start: e.isAllDay ? String(e.start?.dateTime ?? '').slice(0, 10) : e.start?.dateTime ?? null,
+        end: e.isAllDay ? String(e.end?.dateTime ?? '').slice(0, 10) : e.end?.dateTime ?? null, allDay: e.isAllDay === true,
+        location: e.location?.displayName ?? '', organizer: e.organizer?.emailAddress?.name || e.organizer?.emailAddress?.address || '',
+        online: e.onlineMeeting?.joinUrl || e.onlineMeetingUrl || null, attendees: Array.isArray(e.attendees) ? e.attendees.length : null, show: e.showAs ?? null,
+    });
+
     const verbs = {
         /* Events in a window, soonest first. By default from now on (the next
            events); `from`/`to` (ISO dates or datetimes) move it into the past or
@@ -510,12 +518,14 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
             const to = when(a.to) ?? new Date(new Date(from).getTime() + 365 * 86_400_000).toISOString();
             /* A cap keeps the reply readable; when it bites, say so and why -- never a
                silent truncation. `more` is true when events were left out. */
-            const pack = (briefs, more) => {
-                if (!briefs.length) return { text: 'No event in that range.', size: 18 };
+            /* `events`: the same events as data, for a person's own view (Clavarium's agenda, 16-11): the text stays what an agent reads. */
+            const pack = (briefs, more, events) => {
+                const data = events ? { events: events.slice(0, LIST_MAX), more: Boolean(more || events.length > LIST_MAX) } : undefined;
+                if (!briefs.length) return { text: 'No event in that range.', size: 18, ...(data ? { data } : {}) };
                 const shown = briefs.slice(0, LIST_MAX);
                 const note = (more || briefs.length > LIST_MAX) ? `\n\n(Showing the first ${LIST_MAX} events in this window, to keep the reply readable — narrow it with from/to to see the rest.)` : '';
                 const text = shown.join('\n') + note;
-                return { text, size: Buffer.byteLength(text) };
+                return { text, size: Buffer.byteLength(text), ...(data ? { data } : {}) };
             };
             /* Google over CalDAV (the REST API its client cannot use); Microsoft over Graph. */
             if (provider !== 'microsoft') return davVerbs.list(target, a, ctx, { from, to }, pack);
@@ -526,7 +536,7 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
             let items = api.items(json);
             /* Only one category's events, matched by name without case: all this month's travel, say. */
             if (a.category) { const want = String(a.category).toLowerCase(); items = items.filter((e) => (e.categories ?? []).some((c) => String(c).toLowerCase() === want)); }
-            return pack(items.map(api.brief), Boolean(json['@odata.nextLink']));
+            return pack(items.map(api.brief), Boolean(json['@odata.nextLink']), items.map(graphEvent));
         },
         /* One event in full, by its id. */
         async 'calendar.read'(target, a, ctx) {
