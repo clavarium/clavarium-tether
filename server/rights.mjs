@@ -5,7 +5,9 @@
  *   watch     reads only; anything else is refused
  *   propose   reads; each acting verb is asked of a person
  *   frame     reads, and acting verbs an allow rule covers; the rest is asked
- *   free      everything (the journal still says it all)
+ *             (a terminal line the strict read-only parser accepts passes too: commands.mjs)
+ *   free      everything (the journal still says it all) -- but a DESTRUCTIVE terminal line
+ *             (rm -r, mkfs, dd, reboot...: commands.mjs) is asked at every level
  *
  * An ALLOW RULE is { kind, value }:
  *
@@ -23,6 +25,7 @@
  * Pure functions: no clock, no file, no connector. The keeper applies them.
  */
 import { reads, oneLine } from './verbs.mjs';
+import { readOnly, destructive, lineOf } from './commands.mjs';
 
 export const LEVELS = Object.freeze(['watch', 'propose', 'frame', 'free']);
 export const RULE_KINDS = Object.freeze(['command', 'path', 'verb', 'site']);
@@ -105,15 +108,23 @@ export function covers(rule, verb, a = {}) {
     }
 }
 
-/* THE DECISION for one call: { go: 'yes' | 'ask' | 'no', because, rule? }.
+/* THE DECISION for one call: { go: 'yes' | 'ask' | 'no', because, rule?, risk? }.
  *   because: 'read' (a read verb), 'free', 'rule' (an allow rule covers it),
- *   'level' (asked, or refused, by the level). */
+ *   'safe' (a terminal line the read-only parser accepts, at frame: commands.mjs),
+ *   'destructive' (a terminal line that erases, wipes a disk, powers off...: asked at EVERY level,
+ *   free included; `risk` says what), 'level' (asked, or refused, by the level). */
+const TERMINAL_ACTS = ['terminal.type', 'terminal.run'];
 export function decide(level, verb, a = {}, rules = []) {
     if (!isLevel(level)) return { go: 'no', because: 'level' };
     if (reads(verb)) return { go: 'yes', because: 'read' };
-    if (level === 'free') return { go: 'yes', because: 'free' };
     if (level === 'watch') return { go: 'no', because: 'level' };
+    if (TERMINAL_ACTS.includes(verb)) {
+        const risk = destructive(lineOf(verb, a));
+        if (risk) return { go: 'ask', because: 'destructive', risk };
+    }
+    if (level === 'free') return { go: 'yes', because: 'free' };
     if (level === 'frame') {
+        if (TERMINAL_ACTS.includes(verb) && readOnly(lineOf(verb, a)).ok) return { go: 'yes', because: 'safe' };
         const rule = rules.find((r) => covers(r, verb, a));
         if (rule) return { go: 'yes', because: 'rule', rule };
     }

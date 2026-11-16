@@ -18,20 +18,25 @@
  * logged: the keeper also masks any secret it handed out, as a second lock.
  *
  * ONE CONNECTION PER TARGET, reused across calls (and across agents that share
- * the target); it reconnects on demand if it dropped. terminal.* run over one
- * SSH channel each, files.* over SFTP. close(agent) takes an agent's shells and
- * running commands down; shutdown() ends every connection.
+ * the target); it reconnects on demand if it dropped. files.* run over SFTP.
+ *
+ * ONE SHARED CONSOLE PER TARGET (console.mjs): a single shell that the person
+ * (console(), from their page, through the keeper) and every agent given the
+ * machine (terminal.open/read/type) look at together. terminal.run runs apart,
+ * as a command of its own; while the console is open, it is shown there as if
+ * typed, with its output. close(agent) takes an agent off the console (the
+ * person keeps it) and ends its running commands; shutdown() ends everything.
  */
 import { createHash } from 'node:crypto';
 import { posix } from 'node:path';
 import { no, Refused } from '../../server/verbs.mjs';
 import { normalPath } from '../../server/rights.mjs';
+import { sharedConsole } from '../console.mjs';
 
 export const OUTPUT_MAX = 64 * 1024;
 export const READ_MAX = 512 * 1024;
 export const RUN_TIMEOUT_S = 60;
 export const READY_TIMEOUT_MS = 20_000;
-const SHELL_SCREEN_MAX = 256 * 1024;
 const LIST_MAX = 500;
 const HITS_MAX = 100;
 const WALK_MAX = 5000;
@@ -56,14 +61,13 @@ function pinMatches(pin, keyBuf) {
     return false;
 }
 
-const ANSI = /[\u001b\u009b][[\]()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g;
 const isBinary = (buf) => buf.includes(0);
 const keep = (agent, map, item) => { if (!map.has(agent)) map.set(agent, new Set()); map.get(agent).add(item); };
 
-export function ssh({ Client } = {}) {
+export function ssh({ Client, typeMs, settleMs } = {}) {
     /* target.id -> { state } ; a state is { client, ready: Promise<client>, alive, sftp }. */
     const links = new Map();
-    const shells = new Map();   // `${target.id}\n${agent}` -> shell channel
+    const consoles = new Map(); // target.id -> the shared console (console.mjs)
     const running = new Map();  // agent -> Set of exec streams, so a stop ends them
 
     const newClient = async () => new (Client ?? (await defaultClient()))();
@@ -173,66 +177,76 @@ export function ssh({ Client } = {}) {
         return at.startsWith(`${root}/`) ? `~/${at.slice(root.length + 1)}` : at;
     };
 
-    /* ---- terminal ---- */
-    const shellKey = (target, agent) => `${target.id}\n${agent}`;
-    async function openShell(target, ctx) {
-        const key = shellKey(target, ctx.agent);
-        const had = shells.get(key);
-        if (had && !had.destroyed) return had;
-        const client = await link(target, ctx);
-        const stream = await new Promise((ok, fail) => client.shell({ term: 'xterm-256color', rows: 40, cols: 120 }, (err, s) => (err ? fail(new Refused(`no shell on ${target.title}: ${err.message}`)) : ok(s))));
-        stream.screen = '';
-        const take = (b) => { stream.screen = (stream.screen + b.toString('utf8')).slice(-SHELL_SCREEN_MAX); };
-        stream.on('data', take);
-        if (stream.stderr) stream.stderr.on('data', take);
-        stream.on('close', () => { if (shells.get(key) === stream) shells.delete(key); });
-        shells.set(key, stream);
-        return stream;
+    /* ---- terminal: the shared console of the target ---- */
+    function consoleOf(target, ctx) {
+        let c = consoles.get(target.id);
+        if (c) return c;
+        c = sharedConsole({
+            title: target.title,
+            ...(typeMs !== undefined ? { typeMs } : {}),
+            ...(settleMs !== undefined ? { settleMs } : {}),
+            open: async () => {
+                const client = await link(target, ctx);
+                return new Promise((ok, fail) => client.shell({ term: 'xterm-256color', rows: 40, cols: 120 }, (err, s) => (err ? fail(new Refused(`no shell on ${target.title}: ${err.message}`)) : ok(s))));
+            },
+        });
+        consoles.set(target.id, c);
+        return c;
     }
 
     const verbs = {
         async 'terminal.open'(target, a, ctx) {
-            await openShell(target, ctx);
-            return { text: `A terminal is open on ${target.title}.`, size: 0 };
+            const c = consoleOf(target, ctx);
+            const shared = c.state().persons > 0;
+            await c.join(ctx.agent, ctx.name);
+            return { text: `A terminal is open on ${target.title}: one console shared with the person${shared ? ', who is looking at it now' : ' when they look'}. You read it from now on; what you type, they see, and their keys always win.`, size: 0 };
         },
         async 'terminal.read'(target, a, ctx) {
-            const stream = shells.get(shellKey(target, ctx.agent));
-            if (!stream || stream.destroyed) no(`no terminal open on ${target.title}: open one first`);
-            const lines = Math.max(1, Math.min(2000, a.lines ?? 40));
-            const text = stream.screen.replace(ANSI, '').replace(/\r/g, '').replace(/\n+$/, '').split('\n').slice(-lines).join('\n');
+            const c = consoles.get(target.id);
+            if (!c || !c.joined(ctx.agent) || !c.alive) no(`no terminal open on ${target.title}: open one first`);
+            const text = c.read(ctx.agent, a.lines ?? 40);
             return { text: text || '(the screen is empty)', size: Buffer.byteLength(text) };
         },
         async 'terminal.type'(target, a, ctx) {
-            const stream = shells.get(shellKey(target, ctx.agent));
-            if (!stream || stream.destroyed) no(`no terminal open on ${target.title}: open one first`);
-            if (a.text) stream.write(a.text);
-            if (a.enter) stream.write('\n');
-            return { text: 'Typed.', size: 0 };
+            const c = consoles.get(target.id);
+            if (!c || !c.joined(ctx.agent) || !c.alive) no(`no terminal open on ${target.title}: open one first`);
+            const text = await c.type(ctx.agent, a.text ?? '', a.enter === true);
+            return { text, size: 0 };
         },
         async 'terminal.run'(target, a, ctx) {
-            const client = await link(target, ctx);
-            const limit = Math.min(600, a.timeout ?? RUN_TIMEOUT_S) * 1000;
-            const stream = await new Promise((ok, fail) => client.exec(a.command, (err, s) => (err ? fail(new Refused(`could not run on ${target.title}: ${err.message}`)) : ok(s))));
-            keep(ctx.agent, running, stream);
-            return await new Promise((ok) => {
-                let out = Buffer.alloc(0); let total = 0; let late = false; let done = false;
-                const take = (b) => { total += b.length; out = Buffer.concat([out, b]); if (out.length > OUTPUT_MAX) out = out.subarray(out.length - OUTPUT_MAX); };
-                stream.on('data', take);
-                if (stream.stderr) stream.stderr.on('data', take);
-                const timer = setTimeout(() => { late = true; try { stream.signal('KILL'); } catch { /* server may refuse signals */ } try { stream.close(); } catch { /* already closing */ } try { stream.destroy(); } catch { /* idem */ } }, limit);
-                const finish = (code, signal) => {
-                    if (done) return; done = true;
-                    clearTimeout(timer); running.get(ctx.agent)?.delete(stream);
-                    const text = out.toString('utf8').replace(/\n+$/, '');
-                    const head = total > out.length ? `(the first ${total - out.length} bytes are left out)\n` : '';
-                    const exit = typeof code === 'number' ? code : 128;
-                    const tail = late ? `\n[stopped after ${limit / 1000} s]` : signal ? `\n[ended by ${signal}]` : '';
-                    ok({ text: `${head}${text}${tail}\n[exit ${exit}]`.replace(/^\n/, ''), size: total, exit });
-                };
-                stream.on('close', finish);
-                stream.on('error', (e) => finish(128, e?.message));
-            });
+            const res = await runApart(target, a, ctx);
+            /* While the console is open, the person sees it there, as if typed. */
+            const c = consoles.get(target.id);
+            if (c?.alive) c.showRun(ctx.agent, a.command, res.shown, res.exit);
+            const { shown: _shown, ...out } = res;
+            return out;
         },
+    };
+    async function runApart(target, a, ctx) {
+        const client = await link(target, ctx);
+        const limit = Math.min(600, a.timeout ?? RUN_TIMEOUT_S) * 1000;
+        const stream = await new Promise((ok, fail) => client.exec(a.command, (err, s) => (err ? fail(new Refused(`could not run on ${target.title}: ${err.message}`)) : ok(s))));
+        keep(ctx.agent, running, stream);
+        return await new Promise((ok) => {
+            let out = Buffer.alloc(0); let total = 0; let late = false; let done = false;
+            const take = (b) => { total += b.length; out = Buffer.concat([out, b]); if (out.length > OUTPUT_MAX) out = out.subarray(out.length - OUTPUT_MAX); };
+            stream.on('data', take);
+            if (stream.stderr) stream.stderr.on('data', take);
+            const timer = setTimeout(() => { late = true; try { stream.signal('KILL'); } catch { /* server may refuse signals */ } try { stream.close(); } catch { /* already closing */ } try { stream.destroy(); } catch { /* idem */ } }, limit);
+            const finish = (code, signal) => {
+                if (done) return; done = true;
+                clearTimeout(timer); running.get(ctx.agent)?.delete(stream);
+                const text = out.toString('utf8').replace(/\n+$/, '');
+                const head = total > out.length ? `(the first ${total - out.length} bytes are left out)\n` : '';
+                const exit = typeof code === 'number' ? code : 128;
+                const tail = late ? `\n[stopped after ${limit / 1000} s]` : signal ? `\n[ended by ${signal}]` : '';
+                ok({ text: `${head}${text}${tail}\n[exit ${exit}]`.replace(/^\n/, ''), size: total, exit, shown: `${head}${text}${tail}` });
+            };
+            stream.on('close', finish);
+            stream.on('error', (e) => finish(128, e?.message));
+        });
+    }
+    Object.assign(verbs, {
         async 'files.list'(target, a, ctx) {
             const sftp = await sftpOf(target, ctx);
             const at = await place(sftp, target, a.path);
@@ -318,7 +332,7 @@ export function ssh({ Client } = {}) {
             else await new Promise((ok, fail) => sftp.unlink(at, (err) => (err ? fail(new Refused(err.message)) : ok())));
             return { text: `Deleted: ${shown(target, at)}.`, size: 0 };
         },
-    };
+    });
 
     return {
         name: 'ssh',
@@ -327,13 +341,17 @@ export function ssh({ Client } = {}) {
             if (!verbs[verb]) no(`${verb} is not done by this connector`);
             return verbs[verb](target, a, ctx);
         },
-        /* An agent's shells and running commands taken down ("*": everybody's).
-         * With "*", the connections go too. */
+        /* THE SHARED CONSOLE of a target, for the person's page (the keeper's console()). */
+        console(target, ctx) { return consoleOf(target, ctx); },
+        /* An agent taken off the consoles, its running commands ended ("*": everybody, the consoles
+         * and the connections too). The person keeps a console they look at. */
         async close(agent = '*') {
             for (const [who, set] of running) if (agent === '*' || who === agent) { for (const s of set) { try { s.close?.(); } catch { /* gone */ } try { s.destroy?.(); } catch { /* gone */ } } set.clear(); }
-            for (const [key, stream] of shells) { const who = key.slice(key.indexOf('\n') + 1); if (agent === '*' || who === agent) { try { stream.end?.(); } catch { /* gone */ } try { stream.close?.(); } catch { /* gone */ } shells.delete(key); } }
+            for (const [id, c] of consoles) { if (agent === '*') { c.close(); consoles.delete(id); } else c.leave(agent); }
             if (agent === '*') for (const [id, state] of links) { try { state.client.end(); } catch { /* gone */ } links.delete(id); }
         },
+        /* A target removed: its console ends. */
+        forget(id) { const c = consoles.get(id); if (c) { c.close(); consoles.delete(id); } },
         async shutdown() { await this.close('*'); },
     };
 }

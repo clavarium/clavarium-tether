@@ -35,7 +35,9 @@ export const VERBS = Object.freeze({
     /* What happened later to what the agent did (a mail returned...): read in its own folder. */
     notices: { reads: true, kinds: null, needs: [] },
     withdraw: { reads: true, kinds: null, needs: ['id'] },
-    'terminal.open': { reads: false, kinds: SHELLS, needs: [] },
+    /* Opening a terminal changes nothing: on a machine it joins its one shared console (console.mjs), which an
+       agent at watch reads too. Typing in it acts. */
+    'terminal.open': { reads: true, kinds: SHELLS, needs: [] },
     'terminal.read': { reads: true, kinds: SHELLS, needs: [] },
     'terminal.type': { reads: false, kinds: SHELLS, needs: ['text'] },
     'terminal.run': { reads: false, kinds: SHELLS, needs: ['command'] },

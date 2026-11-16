@@ -19,6 +19,9 @@
  *   k.act(op, args, who)          a person's change from the page, or an agent's call: Promise<{ ok, text, data }>
  *   k.read(verb, args, by)        a person's read from the page (mail.open): never asked, journaled as theirs;
  *                                 Promise<{ ok, text, data: { raw, folder, ref, cut... } | code }>
+ *   k.console(target, by)         a person attaches to the SHARED CONSOLE of a machine (ssh): Promise<handle>
+ *                                 { replay, state(), write(keys), resize(cols, rows), hidden(on), hideFromAi(on),
+ *                                   takeBack(), interrupt(), detach() }; `onEvent` gets { type: 'data' | 'state' | 'closed' }
  *   k.onChange(fn)                something a page shows changed
  *   k.notice({ agent, target, kind, text, ref })   something that happened LATER (a mail returned,
  *                                 a scheduled send that failed): told to the agent and to the person
@@ -143,6 +146,7 @@ export function keeper(dir, { sides = () => [], ask, notify, secrets = async () 
        name the target gives them (the host keeps the values). */
     const ctxOf = (t, agent) => ({
         agent,
+        name: nameOf(agent),
         /* `opts.fresh` (an MCP server refused the token it had, 16-11): the host refreshes it first. */
         secret: async (key, opts) => {
             const name = t.secrets?.[key];
@@ -238,6 +242,8 @@ export function keeper(dir, { sides = () => [], ask, notify, secrets = async () 
             try { const site = conn.siteOf(t, a); if (site) seen = { ...a, tabSite: String(site) }; } catch { /* no site: asked */ }
         }
         const d = tool ? toolDecide(g, tool) : rightsOf(g.level, verb, seen, g.rules);
+        /* A destructive terminal line: said so in the journal, whatever comes of it. */
+        if (d.because === 'destructive' && d.risk) base.risk = d.risk.kind;
         if (d.go === 'no') {
             journal.append({ ...base, decision: 'refused', because: d.because, level: g.level });
             if (tool) no(`${t.title}: the tool ${tool.name} (${tool.class}) is not allowed to you -- nothing was done`);
@@ -251,10 +257,12 @@ export function keeper(dir, { sides = () => [], ask, notify, secrets = async () 
         let outcome = { decision: 'auto' }; let asked = null; let edited = [];
         if (d.go === 'ask') {
             /* "Always" on an external tool: yes for that tool, for this agent -- never for a destructive one (only the page sets that). */
-            const rule = tool ? (tool.class !== 'destructive' ? { kind: 'tool', value: tool.name } : null) : ruleFrom(verb, seen);
+            /* A destructive terminal line: asked each time, never "always". */
+            const rule = tool ? (tool.class !== 'destructive' ? { kind: 'tool', value: tool.name } : null) : d.because === 'destructive' ? null : ruleFrom(verb, seen);
             /* What a person approves, as facts for a card; and what it is about (the mail
                answered, the invitation), when the connector can tell -- a read, briefly. */
             const card = cardOf(verb, a, t, tool);
+            if (d.because === 'destructive' && d.risk) card.destructive = d.risk.kind;
             if (typeof conn.describe === 'function') {
                 try {
                     const about = await Promise.race([conn.describe(verb, t, a, ctxOf(t, who.id)), new Promise((r) => { setTimeout(() => r(null), DESCRIBE_MS).unref?.(); })]);
@@ -263,10 +271,13 @@ export function keeper(dir, { sides = () => [], ask, notify, secrets = async () 
             }
             /* EDITABLE (16-11): an MCP call's text arguments shown whole on its card (a reply's text...): the person may
                change them before approving (decide's args). The arguments themselves stay here, never in a page's list. */
-            const editable = tool ? Object.entries(a.arguments ?? {}).filter(([k, v]) => typeof v === 'string' && v.length <= EDIT_MAX && k !== 'why').map(([k]) => k).slice(0, 40) : [];
-            const { request, decision } = queue.open({ ...base, card, level: g.level, ...(rule ? { rule } : {}), ...(editable.length ? { editable } : {}) });
+            /* A terminal line (terminal.type's text, terminal.run's command) may be edited too: the person sends their own. */
+            const termKey = verb === 'terminal.type' ? 'text' : verb === 'terminal.run' ? 'command' : '';
+            const editable = tool ? Object.entries(a.arguments ?? {}).filter(([k, v]) => typeof v === 'string' && v.length <= EDIT_MAX && k !== 'why').map(([k]) => k).slice(0, 40)
+                : termKey && String(a[termKey] ?? '').length <= EDIT_MAX ? [termKey] : [];
+            const { request, decision } = queue.open({ ...base, card, level: g.level, ...(rule ? { rule } : {}), ...(editable.length ? { editable } : {}), ...(d.because === 'destructive' ? { destructive: d.risk?.kind ?? 'other' } : {}) });
             asked = request.id;
-            if (editable.length) editing.set(request.id, { args: a.arguments, schema: tool.inputSchema, editable });
+            if (editable.length) editing.set(request.id, tool ? { args: a.arguments, schema: tool.inputSchema, editable } : { verb, args: a, editable });
             try { held?.(request); } catch { /* the folder's */ }
             if (ask) {
                 Promise.resolve().then(() => ask(request)).then((v) => {
@@ -278,8 +289,13 @@ export function keeper(dir, { sides = () => [], ask, notify, secrets = async () 
             try { outcome = await decision; } finally { editing.delete(request.id); }
             /* Approved as the person edited it: those arguments go, said in the journal and to the agent. */
             if (outcome.args && (outcome.decision === 'yes' || outcome.decision === 'always')) {
-                edited = Object.keys(outcome.args).filter((k) => outcome.args[k] !== a.arguments?.[k]);
-                a = { ...a, arguments: { ...a.arguments, ...outcome.args } };
+                if (tool) {
+                    edited = Object.keys(outcome.args).filter((k) => outcome.args[k] !== a.arguments?.[k]);
+                    a = { ...a, arguments: { ...a.arguments, ...outcome.args } };
+                } else {
+                    edited = Object.keys(outcome.args).filter((k) => outcome.args[k] !== a[k]);
+                    a = { ...a, ...outcome.args };
+                }
                 base.detail = detailOf(verb, a);
             }
             if (outcome.decision === 'always' && rule && tool) {
@@ -473,6 +489,15 @@ export function keeper(dir, { sides = () => [], ask, notify, secrets = async () 
         if (!e) no('this request has nothing to edit (or is no longer waiting)');
         if (decision !== 'yes') no('an edited request is approved once (yes), never always');
         if (!args || typeof args !== 'object' || Array.isArray(args)) no('the edited arguments are an object of texts');
+        /* A terminal line, as the person wrote it: checked as the verb's own argument. */
+        if (e.verb) {
+            const [k] = e.editable;
+            if (Object.keys(args).some((x) => x !== k)) no(`only ${k} can be edited here`);
+            if (typeof args[k] !== 'string') no(`${k} stays a text`);
+            const cleaned = check(e.verb, { ...e.args, [k]: args[k] });
+            if (!String(cleaned[k] ?? '').trim()) no(`${k} is empty`);
+            return { [k]: cleaned[k] };
+        }
         const changed = {};
         for (const [k, v] of Object.entries(args)) {
             if (!e.editable.includes(k)) no(`${oneLine(k, 40)} cannot be edited here`);
@@ -618,8 +643,32 @@ export function keeper(dir, { sides = () => [], ask, notify, secrets = async () 
     /* Listed once at the start: their streams of changes listened to again. */
     for (const t of store.targets()) if (t.kind === 'mcp') void refresh(t.id).catch(() => { /* said in its catalog */ });
 
+    /* ---- THE SHARED CONSOLE of a machine, for a person's page ----
+       The application has checked this person may use the machine (Tether does not know its people). Their keys go
+       to the shell as they are: never kept, never journaled. What is journaled: the console's events (control taken
+       back from an agent, input hidden, hidden from the AI), as theirs, without content. Hidden from the AI, the
+       agents' inputs still waiting for a person on this machine end (stopped). */
+    const wired = new WeakSet();
+    async function shared(id, by, onEvent = () => {}) {
+        const who = byRef(by ?? PERSON);
+        const t = store.target(oneLine(id, 100));
+        if (!t) no(`no target ${oneLine(id, 100)}`);
+        if (!VERBS['terminal.open'].kinds.includes(t.kind)) no(`${t.title} has no console`);
+        const conn = conns[t.connector];
+        if (typeof conn?.console !== 'function') no(`${t.title} has no shared console here`);
+        const c = conn.console(t, ctxOf(t, who.id));
+        if (!wired.has(c)) {
+            wired.add(c);
+            const target = { id: t.id, title: t.title };
+            c.hooks.note = (detail, b) => { try { journal.append({ op: 'console', target, detail, by: b ? byRef(b) : undefined }); } catch { /* the console goes on */ } };
+            c.hooks.hideAi = (on, b) => { if (on) queue.stopWhere((r) => r.target?.id === t.id && String(r.verb).startsWith('terminal.'), byRef(b ?? PERSON), 'hidden from the AI'); };
+        }
+        try { return await c.attach(who, onEvent); } catch (e) { if (e instanceof Refused) throw e; throw new Refused(`cannot open the console of ${t.title}: ${e?.message ?? e}`); }
+    }
+
     const api = {
         store,
+        console: (target, by, onEvent) => shared(target, by, onEvent),
         /* An MCP server listed again now: Promise<catalog>. */
         refresh,
         act,

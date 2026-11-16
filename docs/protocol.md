@@ -27,10 +27,19 @@ that holds the targets and their secrets, and a screen for people.
 |---|---|---|
 | `watch` | read verbs only | everything else refused |
 | `propose` | read verbs | each acting verb is asked of a person |
-| `frame` | read verbs, and acting verbs an allow rule covers | the rest is asked |
-| `free` | everything | (journal only) |
+| `frame` | read verbs, acting verbs an allow rule covers, and a terminal line of the read-only list | the rest is asked |
+| `free` | everything but a destructive terminal line | (journal only) |
 
-Read verbs: `terminal.read`, `files.list`, `files.read`, `files.search`,
+A **destructive** terminal line (`terminal.type`'s text, `terminal.run`'s command: `rm -r`, `mkfs`, `dd of=`,
+`shutdown`/`reboot`, `chmod -R` on `/`, a write to `/dev/sd*`, `DROP TABLE`...; every part of the line, behind
+`;`, `&&`, `|`, `$( )` and `sudo`) is asked at every level, `free` included, never "always"; its request
+carries `destructive: erase | disk | power | rights | other`. The **read-only list** (`frame`): one simple
+command among `ls df du uptime free ps top -bn1 journalctl systemctl status cat head tail less wc stat file
+uname whoami id date hostname ip ss docker ps/logs/images...`, with reading arguments only (`tail -f`,
+`journalctl --vacuum-*`, `date -s`, `ip addr add`... refused), optionally piped into `head`, `tail` or
+`grep`; no other shell control (`server/commands.mjs`).
+
+Read verbs: `terminal.open`, `terminal.read`, `files.list`, `files.read`, `files.search`,
 `browser.tabs`, `browser.shot`, `browser.html`, `browser.console`.
 
 An **allow rule** is `{kind, value}`:
@@ -50,11 +59,13 @@ never covered by a rule. Paths are `~/...` from the target's folder, or
 
 A call that needs a person becomes a request, held by the keeper:
 
-    { id, agent: {id, name}, target: {id, title}, verb, detail, why, level, rule?, at, until }
+    { id, agent: {id, name}, target: {id, title}, verb, detail, why, level, rule?, editable?, destructive?, at, until }
 
 `detail` is the exact thing done (the command, the path; a file's size, never
 its content). `rule` is what **Always** would add, when one fits (none for
-typing in a terminal). The request ends once, with the first of:
+typing in a terminal, none for a destructive line). `editable`: the arguments a
+person may change before approving (an MCP call's texts; a terminal line's
+`text` or `command`): `decide(id, 'yes', by, word, { text })`. The request ends once, with the first of:
 
 | Decision | What happens |
 |---|---|
@@ -284,6 +295,34 @@ refused before anything runs. With no `pin`, the server's identity is not
 checked. With a `root`, every `files.*` path resolves inside it (symlinks that
 point out are refused, as with `local`); `~` is that folder. With no `root`,
 paths resolve from the login home on the far machine.
+
+### One shared console per machine
+
+The connector keeps **one shell per target**, shared by the person and every
+agent given it (`host/console.mjs`). `terminal.open` joins it (an agent reads
+it from that moment on); `terminal.type` types in it character by character;
+`terminal.run` runs apart and, while the console is open, is shown in it as if
+typed, with its output.
+
+The person attaches from the application's page: `keeper.console(target, by,
+onEvent)` -> `{ replay, state(), write(keys), resize(cols, rows), hidden(on),
+hideFromAi(on), takeBack(), interrupt(), detach() }`; `onEvent` receives
+`{type: 'data', data}`, `{type: 'state', state: {open, typing, hidden, hideAi,
+agents, persons}}` and `{type: 'closed'}`. The application checks the person may
+use the machine; Tether does not know its people.
+
+- **The person's key wins**: a key of theirs while an agent types stops it; the
+  agent's partial line is erased (Ctrl-U), nothing of it is sent.
+- **Hidden input**: a password prompt on screen (`[sudo] password for`,
+  `Password:`, `passphrase`, a few languages) or the person's switch hides the
+  screen from the agents until the person's Enter has come back; they read
+  `[hidden input]`. An agent typing is stopped, and may not type meanwhile.
+- **Hidden from the AI**: the person's switch; `terminal.read` gives a notice,
+  typing is refused, the agents' waiting terminal inputs on the target end
+  (`stopped`), and nothing shown meanwhile is ever read later.
+- The person's keys are never kept nor journaled; the console's events (control
+  taken back, input hidden, hidden from the AI) are journaled as `op: console`,
+  without content.
 
 The `ssh` connector is wired into the keeper by default (it holds nothing until
 a target asks it to connect, and loads `ssh2` lazily); a host that does not want

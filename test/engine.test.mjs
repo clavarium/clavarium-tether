@@ -42,8 +42,8 @@ test('levels: watch reads, propose asks, frame asks what no rule covers, free do
     assert.equal(decide('frame', 'files.write', { path: '~/Projects/../secret' }, rules).go, 'ask');
     assert.equal(decide('free', 'files.delete', { path: '/etc/x' }).go, 'yes');
     assert.equal(decide('nonsense', 'files.read', {}).go, 'no');
-    for (const v of ['terminal.read', 'files.list', 'files.read', 'files.search', 'browser.tabs', 'browser.shot', 'browser.html', 'browser.console']) assert.ok(reads(v), v);
-    for (const v of ['terminal.open', 'terminal.type', 'terminal.run', 'files.write', 'files.move', 'files.delete', 'browser.eval']) assert.ok(!reads(v), v);
+    for (const v of ['terminal.open', 'terminal.read', 'files.list', 'files.read', 'files.search', 'browser.tabs', 'browser.shot', 'browser.html', 'browser.console']) assert.ok(reads(v), v);
+    for (const v of ['terminal.type', 'terminal.run', 'files.write', 'files.move', 'files.delete', 'browser.eval']) assert.ok(!reads(v), v);
 });
 
 test('a command with shell control is never covered by a rule, nor made into one', () => {

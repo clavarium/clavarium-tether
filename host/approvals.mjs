@@ -76,6 +76,13 @@ export function approvals({ now = () => Date.now(), timeout = TIMEOUT_MS, onChan
             for (const [id, p] of [...pending]) if (agent === '*' || p.request.agent?.id === agent) { end(id, { decision: 'stopped', ...(by ? { by } : {}) }); n++; }
             return n;
         },
+        /* Those a test picks (a console hidden from the AI: its waiting inputs), ended as "stopped" by a person. */
+        stopWhere(pick, by = null, word = '') {
+            let n = 0;
+            const w = oneLine(word, WORD_MAX);
+            for (const [id, p] of [...pending]) if (pick(p.request)) { end(id, { decision: 'stopped', ...(by ? { by } : {}), ...(w ? { word: w } : {}) }); n++; }
+            return n;
+        },
         list(agent) { return [...pending.values()].map((p) => p.request).filter((r) => !agent || r.agent?.id === agent); },
         get(id) { return pending.get(id)?.request ?? null; },
     };
