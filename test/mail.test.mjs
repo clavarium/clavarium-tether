@@ -56,10 +56,10 @@ function imapServer(store) {
                 const wanted = store.filter((x) => set.includes(x.uid));
                 const picked = wanted.length ? wanted : [store[0]];
                 if (cmd.includes('HEADER.FIELDS')) {
-                    reply = picked.map((m, i) => { const hdr = HEADERS(m.from, m.subject); return `* ${i + 1} FETCH (UID ${m.uid} INTERNALDATE "01-Jan-2030 09:00:00 +0000" BODY[HEADER.FIELDS (FROM SUBJECT DATE)] {${Buffer.byteLength(hdr)}}\r\n${hdr})\r\n`; }).join('') + `${tag} OK\r\n`;
+                    reply = picked.map((m, i) => { const hdr = HEADERS(m.from, m.subject).replace(/\r\n\r\n$/, m.ctype ? `\r\nContent-Type: ${m.ctype}\r\n\r\n` : '\r\n\r\n'); return `* ${i + 1} FETCH (UID ${m.uid}${m.flags !== undefined ? ` FLAGS (${m.flags})` : ''} INTERNALDATE "01-Jan-2030 09:00:00 +0000" BODY[HEADER.FIELDS (FROM SUBJECT DATE)] {${Buffer.byteLength(hdr)}}\r\n${hdr})\r\n`; }).join('') + `${tag} OK\r\n`;
                 } else {
                     const m = picked[0];
-                    const body = `${HEADERS(m.from, m.subject)}${m.body}`;
+                    const body = `${HEADERS(m.from, m.subject).replace(/\r\n\r\n$/, m.ctype ? `\r\nContent-Type: ${m.ctype}\r\n\r\n` : '\r\n\r\n')}${m.body}`;
                     reply = `* 1 FETCH (UID ${m.uid} BODY[] {${Buffer.byteLength(body)}}\r\n${body})\r\n${tag} OK\r\n`;
                 }
             } else reply = `${tag} OK\r\n`;
@@ -438,4 +438,26 @@ test('loop 8: an IMAP move tells the number the message has in its new folder', 
     const s = trashServer('', 'IMAP4rev1 MOVE');
     const r = await mail({ fetch: okToken, connect: s.connect }).run('mail.move', TARGET, { uid: '6', mailbox: 'Archive' }, ctx());
     assert.match(r.text, /there it has another number: list Archive to act on it/);
+});
+
+test('16-11: mail.list and mail.read also hand the mail as data (unread from FLAGS, files from multipart/mixed, words as text)', async () => {
+    const raw = ['--b', 'Content-Type: text/html', '', '<p>Bonjour</p><img src="https://example.com/t.png" onerror="bad()">', '--b', 'Content-Type: application/pdf; name="devis.pdf"', 'Content-Disposition: attachment; filename="devis.pdf"', 'Content-Transfer-Encoding: base64', '', 'QUJD', '--b--', ''].join('\r\n');
+    const store = [
+        { uid: 5, from: 'Alice <alice@example.com>', subject: 'Lunch?', body: 'x\r\n', flags: '\\Seen' },
+        { uid: 6, from: 'Bob <bob@example.com>', subject: 'Devis', body: raw, flags: '', ctype: 'multipart/mixed; boundary="b"' },
+    ];
+    const s = imapServer(store);
+    const m = mail({ fetch: okToken, connect: s.connect });
+    const l = await m.run('mail.list', TARGET, {}, ctx());
+    assert.ok(s.commands.some((x) => /UID FETCH .*FLAGS/.test(x)), 'flags fetched, with PEEK headers');
+    const [bob, alice] = l.data.messages;
+    assert.equal(bob.id, '6'); assert.equal(bob.unread, true); assert.equal(bob.attachments, true); assert.equal(bob.date, '2030-01-01T09:00:00.000Z');
+    assert.equal(alice.unread, false); assert.equal(alice.attachments, false);
+    assert.equal(l.data.more, false);
+    const r = await m.run('mail.read', TARGET, { uid: '6' }, ctx());
+    const msg = r.data.message;
+    assert.equal(msg.subject, 'Devis'); assert.match(msg.from, /bob@example\.com/);
+    assert.equal(msg.text, 'Bonjour'); assert.doesNotMatch(msg.text, /img|onerror/);
+    assert.equal(msg.attachments.length, 1); assert.equal(msg.attachments[0].name, 'devis.pdf'); assert.equal(msg.attachments[0].type, 'application/pdf');
+    assert.ok(!s.commands.some((x) => /STORE|\bBODY\[\]/.test(x)), 'never marked read');
 });

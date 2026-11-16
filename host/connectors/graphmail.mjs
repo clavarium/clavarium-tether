@@ -80,6 +80,10 @@ export function graphMail({ fetch: fetchImpl = globalThis.fetch, token }) {
     /* Each with its reference (mail:TARGET/MESSAGE-ID: Graph's id changes when a mail is moved, its Message-ID does not). */
     const refOf = (target, m) => (target?.id ? mailRef(target.id, m?.internetMessageId, { uid: m?.id }) : '');
     const brief = (m, target) => { const ref = refOf(target, m); return `#${m.id}\n  ${m.receivedDateTime ?? ''}\n  From: ${addrsOf([m.from])}\n  Subject: ${m.subject ?? ''}${ref ? `\n  ref: ${ref}` : ''}`; };
+    /* The same message as data, for a person's own view (Clavarium's mailbox asset, 16-11): the text stays what an agent reads. */
+    const item = (m, target) => ({ id: m.id, ref: refOf(target, m) || null, date: m.receivedDateTime ?? null, from: addrsOf([m.from]), subject: m.subject ?? '',
+        unread: typeof m.isRead === 'boolean' ? !m.isRead : null, attachments: typeof m.hasAttachments === 'boolean' ? m.hasAttachments : null });
+    const LIST_SELECT = 'id,receivedDateTime,from,subject,internetMessageId,isRead,hasAttachments';
 
     return {
         async list(target, a, ctx) {
@@ -92,12 +96,12 @@ export function graphMail({ fetch: fetchImpl = globalThis.fetch, token }) {
             if (since) span.push(`receivedDateTime ge ${since.toISOString()}`);
             if (before) span.push(`receivedDateTime lt ${before.toISOString()}`);
             const filter = span.length ? `&$filter=${encodeURIComponent(span.join(' and '))}` : '';
-            const data = await call(target, ctx, 'GET', `/me/mailFolders/${encodeURIComponent(await folderId(target, ctx, folder))}/messages?$top=${LIST_MAX}&$select=id,receivedDateTime,from,subject,internetMessageId&$orderby=receivedDateTime%20desc${filter}`);
+            const data = await call(target, ctx, 'GET', `/me/mailFolders/${encodeURIComponent(await folderId(target, ctx, folder))}/messages?$top=${LIST_MAX}&$select=${LIST_SELECT}&$orderby=receivedDateTime%20desc${filter}`);
             const items = (data?.value ?? []).map((m) => brief(m, target));
             /* Never cap in silence: Graph hands back a nextLink when more remain. */
             const more = data?.['@odata.nextLink'] ? `\n\n(Showing the first ${LIST_MAX} most recent — use since/before to move the window.)` : '';
             const text = items.length ? items.join('\n') + more : (since || before ? 'No message in that range.' : 'No message.');
-            return { text, size: Buffer.byteLength(text) };
+            return { text, size: Buffer.byteLength(text), data: { messages: (data?.value ?? []).map((m) => item(m, target)), more: Boolean(data?.['@odata.nextLink']) } };
         },
         async read(target, a, ctx) {
             const id = String(a.uid ?? '').trim();
@@ -105,9 +109,11 @@ export function graphMail({ fetch: fetchImpl = globalThis.fetch, token }) {
             const m = await call(target, ctx, 'GET', `/me/messages/${encodeURIComponent(id)}?$select=id,receivedDateTime,from,toRecipients,ccRecipients,subject,body,hasAttachments,internetMessageId`);
             const bodyText = m?.body?.contentType === 'html' ? stripHtml(m.body.content) : (m?.body?.content ?? '');
             let att = '';
+            let files = [];
             if (m?.hasAttachments) {
                 const at = await call(target, ctx, 'GET', `/me/messages/${encodeURIComponent(id)}/attachments?$select=name,contentType,size`);
-                att = (at?.value ?? []).map((x) => `  - ${x.name} (${x.contentType}, ${Math.round((x.size || 0) / 1024)} KB)`).join('\n');
+                files = (at?.value ?? []).map((x) => ({ name: String(x.name ?? ''), type: x.contentType ?? null, size: Number(x.size) || 0 }));
+                att = files.map((x) => `  - ${x.name} (${x.type}, ${Math.round(x.size / 1024)} KB)`).join('\n');
             }
             /* A meeting invitation's body is only the join link; the WHEN lives on the
                associated event. Best-effort: cast to eventMessage and read its event.
@@ -125,15 +131,18 @@ export function graphMail({ fetch: fetchImpl = globalThis.fetch, token }) {
             const ref = refOf(target, m);
             const full = `${ref ? `ref: ${ref}\n` : ''}${head}\n\n${bodyText}${invite}${att ? `\n\nAttachments:\n${att}` : ''}`;
             const text = full.length > READ_MAX ? `${full.slice(0, READ_MAX)}\n\n(Large message — showing the first ${Math.round(READ_MAX / 1024)} KB.)` : full;
-            return { text, size: Buffer.byteLength(text) };
+            const words = `${bodyText}${invite}`;
+            const message = { id: m.id, ref: ref || null, from: addrsOf([m.from]), to: addrsOf(m.toRecipients), cc: addrsOf(m.ccRecipients), date: m.receivedDateTime ?? null,
+                subject: m.subject ?? '', text: words.slice(0, READ_MAX), cut: words.length > READ_MAX, attachments: files };
+            return { text, size: Buffer.byteLength(text), data: { message } };
         },
         async search(target, a, ctx) {
             const q = String(a.text ?? '').trim();
             if (!q) no('search needs some text');
-            const data = await call(target, ctx, 'GET', `/me/messages?$search=${encodeURIComponent(`"${q}"`)}&$top=${LIST_MAX}&$select=id,receivedDateTime,from,subject,internetMessageId`);
+            const data = await call(target, ctx, 'GET', `/me/messages?$search=${encodeURIComponent(`"${q}"`)}&$top=${LIST_MAX}&$select=${LIST_SELECT}`);
             const items = (data?.value ?? []).map((m) => brief(m, target));
             const text = items.length ? items.join('\n') : 'Nothing found.';
-            return { text, size: Buffer.byteLength(text) };
+            return { text, size: Buffer.byteLength(text), data: { messages: (data?.value ?? []).map((m) => item(m, target)), more: Boolean(data?.['@odata.nextLink']) } };
         },
         /* The raw MIME source ($value is not JSON, so it is fetched directly). */
         async source(target, a, ctx) {

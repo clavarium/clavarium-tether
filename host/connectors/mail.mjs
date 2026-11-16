@@ -108,17 +108,23 @@ function walk(part, out, depth = 0) {
     } else if (type.startsWith('text/plain') && !out.text) out.text = decodeBody(headers, body);
     else if (type.startsWith('text/html') && !out.html) out.html = decodeBody(headers, body);
 }
+/* A raw message's parts, read: its head, its words (an invitation after them), its attachments. */
+export function readMessage(raw) {
+    const out = { text: '', html: '', attachments: [] };
+    walk(raw, out);
+    const head = Object.fromEntries(['From', 'To', 'Cc', 'Date', 'Subject'].map((h) => [h.toLowerCase(), headerOf(raw, h)]));
+    let body = out.text || (out.html ? stripHtml(out.html) : '');
+    if (!body.trim()) body = splitHead(raw)[1];
+    const inv = out.invite ? readInvite(out.invite) : null;
+    const invite = inv ? `\n\n--- Invitation ---\n  ${inv.summary || '(no title)'}\n  ${inv.start}${inv.end ? ` — ${inv.end}` : ''}${inv.location ? `\n  @ ${inv.location}` : ''}` : '';
+    return { ...head, words: `${body.trim()}${invite}`, attachments: out.attachments };
+}
 export function renderMessage(raw) {
     try {
-        const out = { text: '', html: '', attachments: [] };
-        walk(raw, out);
-        const head = ['From', 'To', 'Cc', 'Date', 'Subject'].map((h) => { const v = headerOf(raw, h); return v ? `${h}: ${v}` : null; }).filter(Boolean).join('\n');
-        let body = out.text || (out.html ? stripHtml(out.html) : '');
-        if (!body.trim()) body = splitHead(raw)[1];
-        const inv = out.invite ? readInvite(out.invite) : null;
-        const invite = inv ? `\n\n--- Invitation ---\n  ${inv.summary || '(no title)'}\n  ${inv.start}${inv.end ? ` — ${inv.end}` : ''}${inv.location ? `\n  @ ${inv.location}` : ''}` : '';
-        const attach = out.attachments.length ? `\n\n--- Attachments (${out.attachments.length}) ---\n${out.attachments.map((a) => `  ${a.name} (${a.type}, ~${a.kb} KB)`).join('\n')}` : '';
-        return `${head}\n\n${body.trim()}${invite}${attach}`.trim();
+        const m = readMessage(raw);
+        const head = ['From', 'To', 'Cc', 'Date', 'Subject'].map((h) => { const v = m[h.toLowerCase()]; return v ? `${h}: ${v}` : null; }).filter(Boolean).join('\n');
+        const attach = m.attachments.length ? `\n\n--- Attachments (${m.attachments.length}) ---\n${m.attachments.map((a) => `  ${a.name} (${a.type}, ~${a.kb} KB)`).join('\n')}` : '';
+        return `${head}\n\n${m.words}${attach}`.trim();
     } catch { return raw; }
 }
 
@@ -329,9 +335,10 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
        them one by one made a list of 30 take minutes. The blocks come back in the
        server's order, so they are mapped by uid and returned in the caller's. */
     /* Each with its reference (mail:TARGET/MESSAGE-ID), for the agent to cite as it is. */
-    async function brief(imap, uids, target, box) {
-        if (!uids.length) return [];
-        const lines = await imap.command(`UID FETCH ${uids.join(',')} (UID INTERNALDATE BODY.PEEK[HEADER.FIELDS (FROM SUBJECT DATE MESSAGE-ID)])`, 'the messages could not be read');
+    /* Each listed message, as text for an agent and as data for a person's own view (Clavarium's mailbox asset, 16-11). */
+    async function briefs(imap, uids, target, box) {
+        if (!uids.length) return { items: [], messages: [] };
+        const lines = await imap.command(`UID FETCH ${uids.join(',')} (UID FLAGS INTERNALDATE BODY.PEEK[HEADER.FIELDS (FROM SUBJECT DATE MESSAGE-ID CONTENT-TYPE)])`, 'the messages could not be read');
         const byUid = new Map();
         for (const l of lines) {
             if (!/^\* \d+ FETCH/i.test(l)) continue;
@@ -341,9 +348,19 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
             const block = cut >= 0 ? l.slice(cut + 1) : '';
             const when = /INTERNALDATE "([^"]+)"/i.exec(l)?.[1] ?? headerOf(block, 'Date');
             const ref = target ? mailRef(target.id, headerOf(block, 'Message-ID'), { folder: box, uid }) : '';
-            byUid.set(uid, `#${uid}  ${when}\n  From: ${headerOf(block, 'From')}\n  Subject: ${headerOf(block, 'Subject')}${ref ? `\n  ref: ${ref}` : ''}`);
+            const flags = /FLAGS \(([^)]*)\)/i.exec(l.slice(0, cut >= 0 ? cut : undefined));
+            const type = headerOf(block, 'Content-Type').toLowerCase();
+            const at = new Date(when);
+            byUid.set(uid, {
+                item: `#${uid}  ${when}\n  From: ${headerOf(block, 'From')}\n  Subject: ${headerOf(block, 'Subject')}${ref ? `\n  ref: ${ref}` : ''}`,
+                message: { id: String(uid), ref: ref || null, date: Number.isNaN(at.getTime()) ? null : at.toISOString(), from: headerOf(block, 'From'), subject: headerOf(block, 'Subject'),
+                    unread: flags ? !/\\Seen\b/i.test(flags[1]) : null,
+                    /* multipart/mixed is what carries files; a related or alternative one carries pictures or two bodies; none is plain text. */
+                    attachments: type.startsWith('multipart/mixed') },
+            });
         }
-        return uids.map((u) => byUid.get(u)).filter(Boolean);
+        const got = uids.map((u) => byUid.get(u)).filter(Boolean);
+        return { items: got.map((x) => x.item), messages: got.map((x) => x.message) };
     }
 
     const langOf = (target) => String(target.config?.lang ?? 'fr');
@@ -713,12 +730,12 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
                 const found = await imap.command(`UID SEARCH ${span.join(' ')}`, 'the mailbox could not be searched');
                 const all = searchUids(found);
                 const uids = all.slice(-LIST_MAX).reverse();
-                const items = await brief(imap, uids, target, boxOf(target, a.mailbox));
+                const { items, messages } = await briefs(imap, uids, target, boxOf(target, a.mailbox));
                 const empty = since || before ? 'No message in that range.' : 'No message in the last 30 days.';
                 /* Never cap in silence: if the window held more, say so and how to move it. */
                 const more = all.length > LIST_MAX ? `\n\n(Showing the ${LIST_MAX} most recent of ${all.length} in this window — use since/before to move it.)` : '';
                 const text = items.length ? items.join('\n') + more : empty;
-                return { text, size: Buffer.byteLength(text) };
+                return { text, size: Buffer.byteLength(text), data: { messages, more: all.length > LIST_MAX } };
             });
         },
         /* One message in full (headers and body), by its uid. */
@@ -738,7 +755,13 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
                 const text = `${ref ? `ref: ${ref}\n` : ''}${renderMessage(raw)}`;
                 /* The fetch is bounded; if it filled, say the message was longer. */
                 const cut2 = Buffer.byteLength(raw) >= READ_MAX ? `\n\n(Large message — showing the first ${Math.round(READ_MAX / 1024)} KB.)` : '';
-                return { text: text + cut2, size: Buffer.byteLength(text + cut2) };
+                let data;
+                try {
+                    const m = readMessage(raw);
+                    data = { message: { id: String(uid), ref: ref || null, from: m.from, to: m.to, cc: m.cc, date: m.date, subject: m.subject, text: m.words, cut: Boolean(cut2),
+                        attachments: m.attachments.map((x) => ({ name: x.name, type: x.type, size: x.kb * 1024 })) } };
+                } catch { /* a message that cannot be read in parts: its text only */ }
+                return { text: text + cut2, size: Buffer.byteLength(text + cut2), ...(data ? { data } : {}) };
             });
         },
         /* The raw source of a message: every header, both bodies (text and HTML),
@@ -843,9 +866,10 @@ export function mail({ fetch: fetchImpl = globalThis.fetch, connect = tlsConnect
                 await imap.command(`EXAMINE ${quoted(boxOf(target, a.mailbox))}`, 'that mailbox could not be opened');
                 const found = await imap.command(`UID SEARCH TEXT ${quoted(a.text)}`, 'the mailbox could not be searched');
                 const uids = searchUids(found).slice(-LIST_MAX).reverse();
-                const items = await brief(imap, uids, target, boxOf(target, a.mailbox));
+                const all = searchUids(found);
+                const { items, messages } = await briefs(imap, uids, target, boxOf(target, a.mailbox));
                 const text = items.length ? items.join('\n') : 'Nothing found.';
-                return { text, size: Buffer.byteLength(text) };
+                return { text, size: Buffer.byteLength(text), data: { messages, more: all.length > LIST_MAX } };
             });
         },
         /* Move a message to another folder. An act: the mailbox is opened read-write. */

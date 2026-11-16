@@ -249,3 +249,24 @@ test('loop 45: a phone on Microsoft names the mobile it replaces on the card; a 
     const T2 = { id: 'b', title: 'Book', config: { carddav: 'https://dav.example.com/book/', user: 'me@example.com' }, secrets: { password: 'p' } };
     await assert.rejects(contacts({ fetch: ro }).run('contacts.update', T2, { id: 'https://dav.example.com/book/x.vcf', name: 'B' }, { secret: async () => 'PW' }), /does not allow this here \(403/);
 });
+
+test('16-11: list, search and read also hand the contacts as data (each phone its own, the company), on both providers', async () => {
+    const s = server();
+    const c = contacts({ fetch: s.fetch });
+    const gl = await c.run('contacts.list', G, {}, ctx());
+    assert.deepEqual(gl.data.contacts[0], { id: '/carddav/v1/principals/me/lists/default/alice.vcf', name: 'Alice Smith', emails: ['alice@example.com'], phones: ['+1 555 0001'], company: null });
+    assert.equal(gl.data.contacts.length, 2); assert.equal(gl.data.more, false);
+    const gs = await c.run('contacts.search', G, { text: 'bob' }, ctx());
+    assert.deepEqual(gs.data.contacts.map((x) => x.name), ['Bob Jones']);
+    const gr = await c.run('contacts.read', G, { id: '/carddav/v1/principals/me/lists/default/alice.vcf' }, ctx());
+    assert.equal(gr.data.contact.name, 'Alice Smith'); assert.deepEqual(gr.data.contact.emails, ['alice@example.com']);
+    const ml = await c.run('contacts.list', M, {}, ctx());
+    assert.deepEqual(ml.data.contacts[0], { id: 'm1', name: 'Carol', emails: ['carol@example.com'], phones: ['+1 555 9'], company: null });
+    assert.ok(s.calls.some((x) => x.url.includes('companyName')), 'the company asked of Graph');
+    const ms = await c.run('contacts.search', M, { text: 'car' }, ctx());
+    assert.equal(ms.data.contacts[0].id, 'm1');
+    const fetch = async (url) => (url.includes('login.microsoftonline.com') ? json({ access_token: 'T', expires_in: 3600 })
+        : json({ id: 'm1', displayName: 'Carol Martin', emailAddresses: [{ address: 'carol@example.com' }], mobilePhone: '+33 6', businessPhones: ['+33 1'], companyName: 'ACME', jobTitle: 'CEO', personalNotes: 'met in Lyon', businessAddress: { street: '1 rue X', city: 'Paris', postalCode: '75001' } }));
+    const mr = await contacts({ fetch }).run('contacts.read', M, { id: 'm1' }, ctx());
+    assert.deepEqual(mr.data.contact, { id: 'm1', name: 'Carol Martin', emails: ['carol@example.com'], phones: ['+33 6', '+33 1'], company: 'ACME', title: 'CEO', birthday: null, addresses: ['1 rue X, 75001 Paris'], notes: 'met in Lyon' });
+});

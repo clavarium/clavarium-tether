@@ -327,3 +327,28 @@ test('loop 51: a Microsoft reply to one\'s own message goes to whom it was sent 
     const { check } = await import('../server/verbs.mjs');
     assert.throws(() => check('mail.send', { target: 'm', to: 'x@example.com', subject: 's', body: 'b', attachments: { name: 'a', bytes: 'QQ==' } }), /attachments is a list/);
 });
+
+test('16-11: list, search and read also hand the mail as data (unread, files, the words as text), for a person\'s own view', async () => {
+    const msg = { id: 'AAA', receivedDateTime: '2026-10-27T10:00:00Z', from: { emailAddress: { address: 'x@example.com' } }, subject: 'Hi', isRead: false, hasAttachments: true, internetMessageId: '<m1@example.com>' };
+    const { fetch, calls } = fakeGraph({
+        'GET /me/mailFolders/inbox/messages': { value: [msg], '@odata.nextLink': 'next' },
+        'GET /me/messages': { value: [{ ...msg, isRead: true, hasAttachments: false }] },
+        'GET /me/messages/AAA': { ...msg, toRecipients: [{ emailAddress: { address: 'me@example.com' } }], ccRecipients: [], body: { contentType: 'html', content: '<p>Bonjour</p><img src="https://example.com/t.png" onerror="bad()">' } },
+        'GET /me/messages/AAA/attachments': { value: [{ name: 'devis.pdf', contentType: 'application/pdf', size: 4096 }] },
+    });
+    const g = graphMail({ fetch, token: mint });
+    const l = await g.list({ ...target, id: 'box' }, {}, ctx);
+    assert.match(decodeURIComponent(calls[0].path), /isRead,hasAttachments/);
+    assert.deepEqual(l.data.messages[0], { id: 'AAA', ref: l.data.messages[0].ref, date: '2026-10-27T10:00:00Z', from: 'x@example.com', subject: 'Hi', unread: true, attachments: true });
+    assert.match(l.data.messages[0].ref, /^mail:box\//);
+    assert.equal(l.data.more, true);
+    const s = await g.search(target, { text: 'Hi' }, ctx);
+    assert.equal(s.data.messages[0].unread, false); assert.equal(s.data.messages[0].attachments, false); assert.equal(s.data.more, false);
+    const r = await g.read(target, { uid: 'AAA' }, ctx);
+    const m = r.data.message;
+    assert.equal(m.from, 'x@example.com'); assert.equal(m.to, 'me@example.com'); assert.equal(m.cc, ''); assert.equal(m.subject, 'Hi');
+    assert.equal(m.text, 'Bonjour'); assert.doesNotMatch(m.text, /img|onerror/);
+    assert.deepEqual(m.attachments, [{ name: 'devis.pdf', type: 'application/pdf', size: 4096 }]);
+    assert.equal(m.cut, false);
+    assert.doesNotMatch(r.text, /"message"/);
+});

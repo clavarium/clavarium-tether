@@ -19,6 +19,7 @@ import { refreshAccess, thunderbird, PROVIDERS } from '../oauth.mjs';
 import { discover, cardOf, newCard, editCard, newUid, typeOf } from '../dav.mjs';
 
 const LIST_MAX = 50;
+const MS_SELECT = 'id,displayName,givenName,surname,emailAddresses,mobilePhone,businessPhones,homePhones,companyName';
 const SCAN_MAX = 1000;          /* contacts looked at when searching by name (then it says so) */
 const TIMEOUT_MS = 60_000;
 /* A photo's type by its first bytes (a file name may lie or be absent). */
@@ -29,13 +30,15 @@ function fromVcard(text) {
     const v = String(text).replace(/\r?\n[ \t]/g, '');
     const one = (re) => { const m = re.exec(v); return m ? m[1].trim() : ''; };
     const many = (re) => [...v.matchAll(re)].map((m) => m[1].trim()).filter(Boolean);
-    return { name: one(/^FN[^:\r\n]*:(.+)$/im), emails: many(/^EMAIL[^:\r\n]*:(.+)$/gim), tels: many(/^TEL[^:\r\n]*:(.+)$/gim) };
+    return { name: one(/^FN[^:\r\n]*:(.+)$/im), emails: many(/^EMAIL[^:\r\n]*:(.+)$/gim), tels: many(/^TEL[^:\r\n]*:(.+)$/gim), company: one(/^ORG[^:\r\n]*:(.+)$/im).split(';').filter(Boolean).join(', ') };
 }
+/* A contact as data, for a person's own view (Clavarium's contacts asset, 16-11): the text stays what an agent reads. */
+const itemOf = (id, c) => ({ id, name: c.name || '', emails: c.emails, phones: c.tels, company: c.company || null });
 const brief = (id, c) => `${id}\n  ${c.name || '(no name)'}${c.emails.length ? `  <${c.emails.join(', ')}>` : ''}${c.tels.length ? `  tel ${c.tels.join(' ')}` : ''}`;
 const decodeXml = (s) => s.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, '&');
 
 /* Microsoft returns JSON: normalise one contact to the same shape. */
-const fromMs = (c) => ({ name: c.displayName || [c.givenName, c.surname].filter(Boolean).join(' '), emails: (c.emailAddresses ?? []).map((e) => e.address).filter(Boolean), tels: [c.mobilePhone, ...(c.businessPhones ?? []), ...(c.homePhones ?? [])].filter(Boolean) });
+const fromMs = (c) => ({ name: c.displayName || [c.givenName, c.surname].filter(Boolean).join(' '), emails: (c.emailAddresses ?? []).map((e) => e.address).filter(Boolean), tels: [c.mobilePhone, ...(c.businessPhones ?? []), ...(c.homePhones ?? [])].filter(Boolean), company: c.companyName || '' });
 /* A Microsoft contact body from the simple fields an agent gives (only those set). */
 const msBody = (a) => {
     const b = {};
@@ -119,13 +122,15 @@ export function contacts({ fetch: fetchImpl = globalThis.fetch } = {}) {
     const hrefsIn = (xml) => [...xml.matchAll(/<[^>]*?:?href[^>]*>([\s\S]*?)<\/[^>]*?:?href>/gi)].map((m) => decodeXml(m[1].trim()));
 
     async function davList(target, ctx, { match } = {}) {
-        const out = []; const meta = { total: 0, looked: 0 };
-        await davScan(target, ctx, { match }, out, meta);
+        const found = []; const meta = { total: 0, looked: 0 };
+        await davScan(target, ctx, { match }, found, meta);
+        const out = found.map(({ id, card }) => brief(id, card));
+        const cards = found.map(({ id, card }) => itemOf(id, card));
         /* Never capped in silence (05-11): the list says how many there are; a search, how many it looked at. */
         if (!match && meta.total > out.length && out.length >= LIST_MAX) out.push(`\n(Showing ${out.length} of ${meta.total} contacts — use contacts-search to find one.)`);
         if (match && out.length >= LIST_MAX) out.push(`\n(Showing the first ${LIST_MAX} matches — give more of the name to narrow it.)`);
         else if (match && meta.looked < meta.total) out.push(`\n(Looked at the first ${meta.looked} of ${meta.total} contacts.)`);
-        return out;
+        return Object.assign(out, { cards, more: out.length > found.length });
     }
     async function davScan(target, ctx, { match } = {}, out, meta) {
         const base = await folderOf(target, ctx);
@@ -160,7 +165,7 @@ export function contacts({ fetch: fetchImpl = globalThis.fetch } = {}) {
             const card = fromVcard(decodeXml(data));
             const has = card.name || card.emails.length;
             const hit = !match || `${card.name} ${card.emails.join(' ')}`.toLowerCase().includes(match);
-            if (has && hit) out.push(brief(href || '(no id)', card));
+            if (has && hit) out.push({ id: href || '(no id)', card });
             if (out.length >= LIST_MAX) break;
         }
     }
@@ -169,14 +174,15 @@ export function contacts({ fetch: fetchImpl = globalThis.fetch } = {}) {
         /* The address book, briefly: name, emails, phones. */
         async 'contacts.list'(target, a, ctx) {
             const provider = providerOf(target);
-            if (provider !== 'microsoft') { const items = await davList(target, ctx); const text = items.length ? items.join('\n') : 'No contact.'; return { text, size: Buffer.byteLength(text) }; }
-            const res = await req(target, ctx, 'GET', `https://graph.microsoft.com/v1.0/me/contacts?$top=${LIST_MAX}&$count=true&$select=id,displayName,givenName,surname,emailAddresses,mobilePhone,businessPhones,homePhones`);
+            if (provider !== 'microsoft') { const items = await davList(target, ctx); const text = items.length ? items.join('\n') : 'No contact.'; return { text, size: Buffer.byteLength(text), data: { contacts: items.cards, more: items.more } }; }
+            const res = await req(target, ctx, 'GET', `https://graph.microsoft.com/v1.0/me/contacts?$top=${LIST_MAX}&$count=true&$select=${MS_SELECT}`);
             if (!res.ok) no(`${target.title}: the address book could not be read (${res.status})`);
             const j = await res.json();
             const items = (j.value ?? []).map((c) => brief(c.id, fromMs(c)));
+            const data = { contacts: (j.value ?? []).map((c) => itemOf(c.id, fromMs(c))), more: Boolean(j['@odata.nextLink']) };
             if (j['@odata.nextLink']) items.push(`\n(Showing the first ${items.length}${Number.isFinite(j['@odata.count']) ? ` of ${j['@odata.count']}` : ''} contacts — use contacts-search to find one.)`);
             const text = items.length ? items.join('\n') : 'No contact.';
-            return { text, size: Buffer.byteLength(text) };
+            return { text, size: Buffer.byteLength(text), data };
         },
         /* The contacts whose name or email matches a word, briefly. Both providers
            are filtered host-side over the first SCAN_MAX entries -- a plain, provider-
@@ -185,10 +191,10 @@ export function contacts({ fetch: fetchImpl = globalThis.fetch } = {}) {
             const provider = providerOf(target);
             const q = String(a.text ?? '').trim().toLowerCase();
             if (!q) no('search needs a name to look for');
-            let items;
-            if (provider !== 'microsoft') items = await davList(target, ctx, { match: q });
+            let items; let data;
+            if (provider !== 'microsoft') { items = await davList(target, ctx, { match: q }); data = { contacts: items.cards, more: items.more }; }
             else {
-                let url = `https://graph.microsoft.com/v1.0/me/contacts?$top=200&$select=id,displayName,givenName,surname,emailAddresses,mobilePhone,businessPhones,homePhones`;
+                let url = `https://graph.microsoft.com/v1.0/me/contacts?$top=200&$select=${MS_SELECT}`;
                 const all = []; let more = false;
                 while (url) {
                     const res = await req(target, ctx, 'GET', url);
@@ -198,15 +204,16 @@ export function contacts({ fetch: fetchImpl = globalThis.fetch } = {}) {
                     url = j['@odata.nextLink'] && all.length < SCAN_MAX ? j['@odata.nextLink'] : null;
                     more = Boolean(j['@odata.nextLink']) && !url;
                 }
-                items = all
+                const hits = all
                     .map((c) => ({ id: c.id, card: fromMs(c) }))
-                    .filter(({ card }) => `${card.name} ${card.emails.join(' ')}`.toLowerCase().includes(q))
-                    .map(({ id, card }) => brief(id, card));
+                    .filter(({ card }) => `${card.name} ${card.emails.join(' ')}`.toLowerCase().includes(q));
+                items = hits.map(({ id, card }) => brief(id, card));
+                data = { contacts: hits.slice(0, LIST_MAX).map(({ id, card }) => itemOf(id, card)), more: more || hits.length > LIST_MAX };
                 if (items.length > LIST_MAX) { items = items.slice(0, LIST_MAX); items.push(`\n(Showing the first ${LIST_MAX} matches — give more of the name to narrow it.)`); }
                 else if (more) items.push(`\n(Looked at the first ${all.length} contacts.)`);
             }
             const text = items.some((x) => !x.startsWith('\n')) ? items.join('\n') : ['No contact matches.', ...items].join('\n');
-            return { text, size: Buffer.byteLength(text) };
+            return { text, size: Buffer.byteLength(text), data };
         },
         /* One contact in full, by its id (the Microsoft id, or the Google CardDAV href). */
         async 'contacts.read'(target, a, ctx) {
@@ -216,8 +223,13 @@ export function contacts({ fetch: fetchImpl = globalThis.fetch } = {}) {
             if (provider !== 'microsoft') {
                 const { text: raw } = await cardGet(target, ctx, id);
                 const c = cardOf(raw);
+                const card = fromVcard(raw);
+                const one = (re) => { const m = re.exec(String(raw).replace(/\r?\n[ \t]/g, '')); return m ? m[1].trim().replace(/\\n/gi, '\n').replace(/\\([,;\\])/g, '$1') : ''; };
+                const contact = { id, name: c.name || '', emails: c.emails, phones: c.tels, company: card.company || null, title: one(/^TITLE[^:\r\n]*:(.+)$/im) || null,
+                    birthday: one(/^BDAY[^:\r\n]*:(.+)$/im) || null, addresses: [...String(raw).replace(/\r?\n[ \t]/g, '').matchAll(/^ADR[^:\r\n]*:(.+)$/gim)].map((m) => m[1].split(';').map((x) => x.trim()).filter(Boolean).join(', ')).filter(Boolean),
+                    notes: one(/^NOTE[^:\r\n]*:(.+)$/im) || null };
                 const text = [c.name || '(no name)', ...c.emails.map((e) => `  email: ${e}`), ...c.tels.map((t) => `  tel: ${t}`), c.photo ? '  (has a photo)' : '', '', raw.slice(0, 64 * 1024)].filter((x, i, all) => x !== '' || i === all.length - 2).join('\n');
-                return { text, size: Buffer.byteLength(text) };
+                return { text, size: Buffer.byteLength(text), data: { contact } };
             }
             const res = await req(target, ctx, 'GET', `https://graph.microsoft.com/v1.0/me/contacts/${encodeURIComponent(id)}`);
             if (res.status === 404) no('no such contact');
@@ -233,7 +245,10 @@ export function contacts({ fetch: fetchImpl = globalThis.fetch } = {}) {
                 ...(c.birthday ? [`  birthday: ${String(c.birthday).slice(0, 10)}`] : []),
                 ...(c.personalNotes ? ['', String(c.personalNotes)] : []), '', `id: ${c.id ?? id}`];
             const text = lines.join('\n').slice(0, 64 * 1024);
-            return { text, size: Buffer.byteLength(text) };
+            const contact = { id: c.id ?? id, name: fromMs(c).name, emails: (c.emailAddresses ?? []).map((e) => e?.address).filter(Boolean),
+                phones: [c.mobilePhone, ...(c.businessPhones ?? []), ...(c.homePhones ?? [])].filter(Boolean), company: c.companyName || null, title: c.jobTitle || null,
+                birthday: c.birthday ? String(c.birthday).slice(0, 10) : null, addresses: [c.businessAddress, c.homeAddress].map(addr).filter(Boolean), notes: c.personalNotes ? String(c.personalNotes) : null };
+            return { text, size: Buffer.byteLength(text), data: { contact } };
         },
         /* Create a contact (Microsoft). Google means writing a vCard over CardDAV --
            on the parity card. */
