@@ -103,3 +103,4 @@
 .tether-tools ul { list-style: none; padding: 0; margin: .4em 0; display: grid; gap: .45em; }
 .tether-tools li { overflow-wrap: anywhere; }
 .tether-addserver { margin: .6em 0; }
+.tether-accept.tether-sure { background: #b3261e; border-color: #b3261e; color: #fff; }

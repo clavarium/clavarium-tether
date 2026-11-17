@@ -27,7 +27,10 @@ export const KEYS = Object.freeze(['requests', 'access', 'journal', 'nothing-wai
     'allowed', 'under', 'rule', 'rule-command', 'rule-path', 'add', 'cancel', 'remove', 'stop', 'stopped', 'resume', 'more', 'agent',
     'kind-mcp', 'ask-mcp.call', 'did-class', 'did-tool', 'op-catalog', 'op-tools',
     'mcp-none', 'mcp-watch', 'mcp-propose', 'mcp-free', 'mcp-frame', 'class-read', 'class-write', 'class-destructive', 'class-open',
-    'go-yes', 'go-ask', 'go-no', 'go-class', 'mcp-tools', 'mcp-empty', 'mcp-refresh', 'mcp-add', 'mcp-name', 'mcp-url', 'mcp-secret', 'mcp-ask-open']);
+    'go-yes', 'go-ask', 'go-no', 'go-class', 'mcp-tools', 'mcp-empty', 'mcp-refresh', 'mcp-add', 'mcp-name', 'mcp-url', 'mcp-secret', 'mcp-ask-open',
+    'destructive', 'risk-erase', 'risk-disk', 'risk-power', 'risk-rights', 'risk-other', 'accept-sure']);
+/* What a destructive line does (commands.mjs destructive().kind), said plainly. */
+export const RISKS = ['erase', 'disk', 'power', 'rights', 'other'];
 /* An MCP server's levels as a person reads them: Off, Read, All approved, All, Custom (rights.mjs). */
 export const MCP_LEVELS = ['none', 'watch', 'propose', 'free', 'frame'];
 export const CLASSES = ['read', 'write', 'destructive'];
@@ -72,7 +75,7 @@ function h(tag, props = {}, ...kids) {
 
 export function mount(root, { call, words = {}, lang = 'en', agent = null } = {}) {
     const w = (k) => words[k] ?? k;
-    const ui = { data: null, agent, adding: null, draft: { kind: 'command', value: '' }, limit: 30, error: '', busy: new Set(), places: new Map() };
+    const ui = { data: null, agent, adding: null, draft: { kind: 'command', value: '' }, limit: 30, error: '', busy: new Set(), sure: new Set(), places: new Map() };
     const box = h('div', { class: 'tether' });
     root.replaceChildren(box);
     let alive = true;
@@ -106,23 +109,29 @@ export function mount(root, { call, words = {}, lang = 'en', agent = null } = {}
         const mcp = r.card?.kind === 'mcp';
         const always = alwaysLabel(r.rule, w);
         const busy = ui.busy.has(r.id);
+        /* A destructive line (commands.mjs): marked, said in plain words, accepted in two clicks; never « always ». */
+        const risky = !mcp && r.destructive ? (RISKS.includes(r.destructive) ? r.destructive : 'other') : '';
+        const sure = ui.sure.has(r.id);
         const decide = (decision) => async () => {
+            if (risky && decision === 'yes' && !sure) { ui.sure.add(r.id); paint(); return; }
+            ui.sure.delete(r.id);
             ui.busy.add(r.id); paint();
             await ask('decide', { id: r.id, decision });
             ui.busy.delete(r.id); await refresh();
         };
         const several = !agent && (ui.data?.agents.length ?? 0) > 1;
-        return h('article', { class: `tether-card tether-wait${mcp && r.card.class === 'destructive' ? ' tether-amber' : ''}`, 'data-request': r.id },
+        return h('article', { class: `tether-card tether-wait${(mcp && r.card.class === 'destructive') || risky ? ' tether-amber' : ''}`, 'data-request': r.id, ...(risky ? { 'data-risk': risky } : {}) },
             h('h3', {}, h('span', { class: 'tether-dot', 'aria-hidden': 'true' }), title),
+            risky ? h('p', { class: 'tether-dim tether-risk' }, h('span', { class: 'tether-pill tether-class-destructive', 'data-class': 'destructive' }, w('destructive')), ` ${w(`risk-${risky}`)}`) : null,
             mcp ? h('p', { class: 'tether-dim' }, h('span', { class: `tether-pill tether-class-${r.card.class}`, 'data-class': r.card.class }, w(`class-${r.card.class}`)), r.card.open ? ` ${w('class-open')}` : '') : null,
             /* Its arguments, plainly: each name and its value as the server will get it. */
             mcp ? (r.card.args?.length ? h('dl', { class: 'tether-args' }, r.card.args.flatMap((x) => [h('dt', {}, x.name), h('dd', {}, h('pre', { class: 'tether-code' }, x.value))])) : null)
                 : r.detail ? h('pre', { class: 'tether-code' }, r.detail) : null,
             r.why ? h('p', { class: 'tether-why' }, r.why) : null,
             h('div', { class: 'tether-buttons' },
-                h('button', { type: 'button', class: 'tether-accept', 'data-act': 'yes', disabled: busy, onclick: decide('yes') }, w('accept')),
+                h('button', { type: 'button', class: `tether-accept${sure ? ' tether-sure' : ''}`, 'data-act': 'yes', disabled: busy, onclick: decide('yes') }, sure ? w('accept-sure') : w('accept')),
                 h('button', { type: 'button', class: 'tether-plain', 'data-act': 'no', disabled: busy, onclick: decide('no') }, w('refuse')),
-                always ? h('button', { type: 'button', class: 'tether-soft', 'data-act': 'always', disabled: busy, onclick: decide('always') }, always) : null),
+                always && !risky ? h('button', { type: 'button', class: 'tether-soft', 'data-act': 'always', disabled: busy, onclick: decide('always') }, always) : null),
             h('p', { class: 'tether-foot' },
                 `${several ? `${r.agent.name} · ` : ''}${fill(w('level-of'), { target: r.target.title })} ${mcp ? w(`mcp-${level}`) : `${w(`level-${level}`)} · ${w(`means-${level}`)}`} · ${fill(w('until'), { time: time(r.until) })}`));
     }

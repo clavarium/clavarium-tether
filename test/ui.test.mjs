@@ -91,6 +91,51 @@ test('the screen: a card per call waiting, hostile text stays text, Accept decid
     } finally { Object.assign(globalThis, was); }
 });
 
+test('the screen: a destructive line is marked and said plainly, accepted in two clicks, never Always (17-11)', async () => {
+    /* A document just big enough for the screen to be drawn. */
+    class Node { constructor() { this.childNodes = []; } append(...k) { for (const c of k) { c.parent = this; this.childNodes.push(c); } }
+        replaceChildren(...k) { this.childNodes = []; this.append(...k); } remove() {} contains() { return false; }
+        get textContent() { return this.childNodes.map((c) => c.textContent).join(''); } }
+    class Text extends Node { constructor(t) { super(); this.data = t; } get textContent() { return this.data; } }
+    class El extends Node {
+        constructor(tag) { super(); this.tag = tag; this.attrs = {}; this.on = {}; }
+        setAttribute(k, v) { this.attrs[k] = String(v); } getAttribute(k) { return this.attrs[k] ?? null; }
+        addEventListener(k, fn) { this.on[k] = fn; } focus() {} querySelector() { return null; }
+        set innerHTML(_) { throw new Error('innerHTML used'); }
+        set className(v) { this.attrs.class = v; }
+    }
+    const all = (n, out = []) => { if (n instanceof El) { out.push(n); n.childNodes.forEach((c) => all(c, out)); } return out; };
+    const was = { document: globalThis.document, Node: globalThis.Node };
+    Object.assign(globalThis, { Node, document: { createElement: (t) => new El(t), createTextNode: (t) => new Text(t), activeElement: null } });
+    const k = keeper(mkdtempSync(join(tmpdir(), 'tether-ui-')), { sides: () => [{ dir: mkdtempSync(join(tmpdir(), 'tether-side-')), who: BOT }], connectors: { fake: { run: async () => ({ text: 'ok', size: 2, exit: 0 }) } } });
+    try {
+        k.store.putTarget({ id: 'web', title: 'serveur-web', kind: 'ssh', connector: 'fake' });
+        k.store.grant('web', BOT.id, 'free');
+        const pending = k.act('terminal.run', { target: 'web', command: 'sudo rm -rf /var/log/nginx', why: 'room' }, BOT);
+        await new Promise((r) => setImmediate(r));
+        const root = new El('div');
+        const s = mount(root, { call: (op, args) => k.act(op, args, ME), words: words('fr'), lang: 'fr', agent: BOT.id });
+        await new Promise((r) => setTimeout(r, 30));
+        let els = all(root);
+        const card = els.find((e) => e.attrs['data-request']);
+        assert.equal(card.attrs['data-risk'], 'erase');
+        assert.match(card.attrs.class, /tether-amber/);
+        assert.match(root.textContent, /Destructif Efface des fichiers\. Sans retour\./);
+        assert.equal(els.filter((e) => e.attrs['data-act'] === 'always').length, 0, 'never Always on a destructive line');
+        /* First click: asks to be sure, nothing decided. */
+        await els.find((e) => e.attrs['data-act'] === 'yes').on.click();
+        await new Promise((r) => setTimeout(r, 10));
+        assert.equal(s.state.waiting, 1, 'still waiting after one click');
+        els = all(root);
+        const yes = els.find((e) => e.attrs['data-act'] === 'yes');
+        assert.equal(yes.textContent, 'Oui, lancer');
+        await yes.on.click();
+        assert.equal((await pending).ok, true);
+        assert.equal(s.state.waiting, 0);
+        s.destroy();
+    } finally { Object.assign(globalThis, was); }
+});
+
 test('the screen: an external MCP server -- its card says the server and the tool, its arguments plainly; its tools with their class', async () => {
     class Node { constructor() { this.childNodes = []; } append(...k) { for (const c of k) { c.parent = this; this.childNodes.push(c); } }
         replaceChildren(...k) { this.childNodes = []; this.append(...k); } remove() {} contains() { return false; }

@@ -93,5 +93,12 @@
   "mcp-name": "Name",
   "mcp-url": "Address (https)",
   "mcp-secret": "Key: the name of a secret",
-  "mcp-ask-open": "Ask for what goes outside"
+  "mcp-ask-open": "Ask for what goes outside",
+  "destructive": "Destructive",
+  "risk-erase": "Erases files. No way back.",
+  "risk-disk": "Writes over a disk. No way back.",
+  "risk-power": "Shuts down or restarts the machine.",
+  "risk-rights": "Changes who may do what.",
+  "risk-other": "Cannot be undone.",
+  "accept-sure": "Yes, run it"
 }

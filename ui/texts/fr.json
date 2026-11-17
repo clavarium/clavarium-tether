@@ -93,5 +93,12 @@
   "mcp-name": "Nom",
   "mcp-url": "Adresse (https)",
   "mcp-secret": "Clé : le nom d'un secret",
-  "mcp-ask-open": "Demander pour ce qui sort"
+  "mcp-ask-open": "Demander pour ce qui sort",
+  "destructive": "Destructif",
+  "risk-erase": "Efface des fichiers. Sans retour.",
+  "risk-disk": "Écrase un disque. Sans retour.",
+  "risk-power": "Éteint ou redémarre la machine.",
+  "risk-rights": "Change qui peut faire quoi.",
+  "risk-other": "Sans retour possible.",
+  "accept-sure": "Oui, lancer"
 }
