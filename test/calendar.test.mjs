@@ -582,20 +582,24 @@ test('loop 32: removing a Microsoft category says events keep the name', async (
     assert.match((await calendar({ fetch }).run('calendar.category-delete', M, { name: 'Interne' }, ctx())).text, /Events already tagged keep the name/);
 });
 
-test('calendar.list (Microsoft) also hands its events as data, for a person\'s own view: end, all day, organizer, meeting link, guests, busy', async () => {
+test('calendar.list (Microsoft) also hands its events as data, for a person\'s own view: end, all day, organizer, meeting link, guests, busy, cancelled', async () => {
     const fetch = async (url) => {
         if (url.includes('login.microsoftonline.com')) return json({ access_token: 'T', expires_in: 3600 });
         assert.match(url, /\$select=[^&]*organizer[^&]*onlineMeeting/);
+        assert.match(url, /\$select=[^&]*isCancelled/);
         return json({ value: [
             { id: 'm1', subject: 'Review', start: { dateTime: '2030-01-02T10:00:00.0000000' }, end: { dateTime: '2030-01-02T11:00:00.0000000' }, location: { displayName: 'Teams' },
                 organizer: { emailAddress: { name: 'Ann', address: 'ann@example.com' } }, onlineMeeting: { joinUrl: 'https://teams.example.com/j/1' }, attendees: [{}, {}], showAs: 'busy' },
             { id: 'm2', subject: 'Holiday', isAllDay: true, start: { dateTime: '2030-01-03T00:00:00.0000000' }, end: { dateTime: '2030-01-04T00:00:00.0000000' }, showAs: 'oof' },
+            { id: 'm3', subject: 'Canceled: Grooming', start: { dateTime: '2030-01-05T09:00:00.0000000' }, end: { dateTime: '2030-01-05T10:00:00.0000000' }, showAs: 'free', isCancelled: true },
         ] });
     };
     const r = await calendar({ fetch }).run('calendar.list', M, {}, ctx());
     assert.match(r.text, /Review/, 'the text an agent reads is unchanged');
-    assert.equal(r.data.events.length, 2); assert.equal(r.data.more, false);
-    const [a, b] = r.data.events;
+    assert.equal(r.data.events.length, 3); assert.equal(r.data.more, false);
+    const [a, b, c] = r.data.events;
+    assert.equal(c.cancelled, true, 'a cancelled meeting says so');
+    assert.equal('cancelled' in a, false);
     assert.deepEqual([a.title, a.end.slice(0, 16), a.organizer, a.online, a.attendees, a.show], ['Review', '2030-01-02T11:00', 'Ann', 'https://teams.example.com/j/1', 2, 'busy']);
     assert.deepEqual([b.allDay, b.start, b.end, b.show], [true, '2030-01-03', '2030-01-04', 'oof']);
 });

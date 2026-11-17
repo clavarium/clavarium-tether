@@ -77,7 +77,7 @@ const API = {
         /* calendarView, not /events: /events orders over the WHOLE calendar, so it
            returns the oldest events, not the next ones. calendarView takes a window
            (from now on) and expands recurrences, so "list" means what is coming. */
-        list: (n, { from, to } = {}) => `https://graph.microsoft.com/v1.0/me/calendarView?startDateTime=${encodeURIComponent(from)}&endDateTime=${encodeURIComponent(to)}&$top=${n}&$orderby=start/dateTime&$select=id,subject,start,end,isAllDay,location,categories,organizer,onlineMeeting,onlineMeetingUrl,attendees,showAs,body`,
+        list: (n, { from, to } = {}) => `https://graph.microsoft.com/v1.0/me/calendarView?startDateTime=${encodeURIComponent(from)}&endDateTime=${encodeURIComponent(to)}&$top=${n}&$orderby=start/dateTime&$select=id,subject,start,end,isAllDay,location,categories,organizer,onlineMeeting,onlineMeetingUrl,attendees,showAs,isCancelled,body`,
         event: (id) => `https://graph.microsoft.com/v1.0/me/events/${encodeURIComponent(id)}`,
         create: 'https://graph.microsoft.com/v1.0/me/events',
         items: (j) => j.value ?? [],
@@ -521,6 +521,8 @@ export function calendar({ fetch: fetchImpl = globalThis.fetch } = {}) {
         end: e.isAllDay ? String(e.end?.dateTime ?? '').slice(0, 10) : e.end?.dateTime ?? null, allDay: e.isAllDay === true,
         location: e.location?.displayName ?? '', organizer: e.organizer?.emailAddress?.name || e.organizer?.emailAddress?.address || '',
         notes: textOfBody(e.body), online: e.onlineMeeting?.joinUrl || e.onlineMeetingUrl || JOIN.exec(textOfBody(e.body))?.[0] || null, attendees: Array.isArray(e.attendees) ? e.attendees.length : null, show: e.showAs ?? null,
+        /* A meeting its organiser cancelled, still on an invitee's calendar until removed: the page strikes it out. */
+        ...(e.isCancelled === true ? { cancelled: true } : {}),
     });
 
     const verbs = {
