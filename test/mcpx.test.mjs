@@ -37,12 +37,14 @@ const TOOLS = [
 ];
 
 /* The fake server. `calls`: every tools/call it ran. `push(m)`: a message on its own stream. */
-async function fakeServer({ key = KEY, tools = TOOLS.map((t) => structuredClone(t)), redirect = false, challenge = '' } = {}) {
+async function fakeServer({ key = KEY, tools = TOOLS.map((t) => structuredClone(t)), redirect = false, challenge = '', refuse = '' } = {}) {
     const calls = []; const streams = new Set(); const seen = { sessions: [], auth: [], init: 0 };
     const SESSION = 'sess-1';
     const srv = createServer((req, res) => {
         seen.auth.push(req.headers.authorization ?? '');
         if (redirect) { res.writeHead(307, { location: 'https://elsewhere.example.com/mcp' }); return res.end(); }
+        /* `refuse`: a 400 with its reason, as Slack's MCP gives one (18-11). */
+        if (refuse) { res.writeHead(400, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ error: refuse })); }
         /* `key`: one value, or a function (a token that changes: OAuth, 16-11); `challenge`: its 401's WWW-Authenticate. */
         if (req.headers.authorization !== `Bearer ${typeof key === 'function' ? key() : key}`) { res.writeHead(401, challenge ? { 'www-authenticate': challenge } : {}); return res.end(); }
         if (req.method === 'GET') {
@@ -416,6 +418,10 @@ test('the address is kept: https only unless allowed, a redirect never followed,
         assert.match(wrong.data.error, /refused the key \(HTTP 401\)/);
         assert.doesNotMatch(JSON.stringify(wrong) + readFileSync(join(store, 'journal.jsonl'), 'utf8'), new RegExp(KEY));
         await w.close();
+        const x = await fakeServer({ refuse: 'app_not_enabled_for_mcp' });
+        const refused = await k.act('mcp-add', { name: 'Refusing', url: x.url, secret: 'K', allowHttp: true }, ME);
+        assert.match(refused.data.error, /answered HTTP 400: app_not_enabled_for_mcp/, 'its reason said, not a bare 400');
+        await x.close();
     } finally { await k.close(); }
 });
 

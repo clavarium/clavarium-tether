@@ -165,7 +165,8 @@ export function mcp({ fetch: f = globalThis.fetch, now = () => Date.now(), liste
             if (res.status === 404 && session?.id) throw Object.assign(new Refused(`${t.title}: the session ended`), { expired: true });
             if (res.status === 401) { const oauth = oauthSaid(res); await res.body?.cancel?.().catch?.(() => {}); throw Object.assign(new Refused(statusSaid(t, 401)), { unauthorized: true, oauth }); }
             if (notification) { await res.body?.cancel?.().catch?.(() => {}); if (res.status >= 400) no(statusSaid(t, res.status)); return { res }; }
-            if (res.status >= 400) { await res.body?.cancel?.().catch?.(() => {}); no(statusSaid(t, res.status)); }
+            /* Refused: what the server said of it, a line (18-11: Slack's MCP answered a bare HTTP 400 -- its reason was lost). */
+            if (res.status >= 400) { let why = ''; try { const text = await capped(res); const j = parse(text); why = oneLine(j?.error?.message ?? j?.error_description ?? j?.error ?? j?.message ?? text, 200); } catch { /* said without it */ } no(`${statusSaid(t, res.status)}${why ? `: ${why}` : ''}`); }
             const type = String(res.headers.get('content-type') ?? '');
             let answer = null;
             if (type.includes('text/event-stream') && res.body) {
