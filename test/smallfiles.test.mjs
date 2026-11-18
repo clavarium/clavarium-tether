@@ -69,3 +69,21 @@ test('the files stay small: past ROTATE_BYTES the answers keep the last hour, th
     assert.ok(statSync(join(side, 'answers.jsonl')).size < ROTATE_BYTES);
     assert.equal(k.pump(), 0, 'nothing answered twice after the files changed');
 });
+
+test('the journal is read from its end: newest first, across chunks, limit, since and filters as before', async () => {
+    const { openJournal, CHUNK } = await import('../host/journal.mjs');
+    const dir = tmp(); let t = Date.parse('2026-11-18T00:00:00Z');
+    const j = openJournal(dir, { now: () => t });
+    const n = Math.ceil((3 * CHUNK) / 120);
+    for (let i = 0; i < n; i++) { t += 1000; j.append({ op: 'call', agent: { id: i % 3 === 0 ? 'agent:a' : 'agent:b' }, target: { id: 'web' }, detail: `n${i} ${'z'.repeat(60)}` }); }
+    const last = j.read({ limit: 5 });
+    assert.deepEqual(last.map((l) => l.detail.split(' ')[0]), [n - 1, n - 2, n - 3, n - 4, n - 5].map((i) => `n${i}`));
+    const all = j.read({ limit: 1000 });
+    assert.equal(all.length, Math.min(1000, n));
+    for (let i = 1; i < all.length; i++) assert.ok(all[i - 1].at > all[i].at, 'newest first, no line torn at a chunk');
+    const a = j.read({ agent: 'agent:a', limit: 1000 });
+    assert.ok(a.length > 0 && a.every((l) => l.agent.id === 'agent:a'));
+    const since = new Date(t - 10_000).toISOString();
+    assert.equal(j.read({ since, limit: 1000 }).length, 11, 'since: stops at the first older line');
+    assert.deepEqual(openJournal(tmp()).read(), [], 'none yet');
+});
