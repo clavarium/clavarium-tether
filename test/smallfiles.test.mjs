@@ -87,3 +87,19 @@ test('the journal is read from its end: newest first, across chunks, limit, sinc
     assert.equal(j.read({ since, limit: 1000 }).length, 11, 'since: stops at the first older line');
     assert.deepEqual(openJournal(tmp()).read(), [], 'none yet');
 });
+
+test('a last hour bigger than ROTATE_BYTES is not written again each turn: only once the file doubled', () => {
+    const side = tmp();
+    const k = keeper(tmp(), { sides: () => [{ dir: side, who: BOT }], connectors: { fake: fake() } });
+    const at = new Date().toISOString(); let a = '';
+    for (let i = 0; a.length <= ROTATE_BYTES * 1.2; i++) a += `${JSON.stringify({ at, ask: `r${i}`, ok: true, text: 'y'.repeat(500) })}\n`;
+    writeFileSync(join(side, 'answers.jsonl'), a);
+    k.pump();
+    const ino = statSync(join(side, 'answers.jsonl')).ino;
+    k.pump(); k.pump();
+    assert.equal(statSync(join(side, 'answers.jsonl')).ino, ino, 'not rewritten each turn');
+    appendFileSync(join(side, 'answers.jsonl'), a);
+    appendFileSync(join(side, 'answers.jsonl'), 'z'.repeat(1000) + '\n');
+    k.pump();
+    assert.notEqual(statSync(join(side, 'answers.jsonl')).ino, ino, 'doubled: trimmed again');
+});
