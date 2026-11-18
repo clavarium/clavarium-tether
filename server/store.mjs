@@ -64,7 +64,8 @@ export function openStore(dir, { now = () => Date.now() } = {}) {
             const before = s.targets[key];
             s.targets[key] = { id: key, title: name || key, kind, connector: conn, config: conf, secrets: sec, grants: before?.grants ?? {}, created: before?.created ?? new Date(now()).toISOString(),
                 /* An external MCP server keeps the tools it listed, until it is listed again. */
-                ...(kind === 'mcp' && before?.kind === 'mcp' && before.catalog && before.config?.url === conf.url ? { catalog: before.catalog } : {}) };
+                ...(kind === 'mcp' && before?.kind === 'mcp' && before.catalog && before.config?.url === conf.url ? { catalog: before.catalog } : {}),
+                ...(kind === 'mcp' && before?.newTools ? { newTools: before.newTools } : {}) };
             save({ op: 'put-target', target: key });
             return shown(s.targets[key]);
         },
@@ -115,6 +116,16 @@ export function openStore(dir, { now = () => Date.now() } = {}) {
             t.catalog = { at: new Date(now()).toISOString(), tools: Array.isArray(catalog?.tools) ? catalog.tools : (t.catalog?.tools ?? []), ...(catalog?.error ? { error: oneLine(catalog.error, 500) } : {}), ...(needs ? { needs } : {}) };
             save({ op: 'catalog', target: t.id });
             return structuredClone(t.catalog);
+        },
+        /* What its new tools do (#392): 'ask' | 'read' | 'all' (external.mjs NEW_TOOLS). Those fresh now and taken at once
+           by the new choice are seen. -> the target. */
+        setNewTools(target, mode, accepted) {
+            const t = targetOf(target);
+            if (t.kind !== 'mcp') no(`${t.title} is not an MCP server`);
+            if (!accepted(mode)) no('new tools: ask, read or all');
+            t.newTools = mode;
+            save({ op: 'new-tools', target: t.id });
+            return shown(t);
         },
         /* Tools of an MCP server a person has seen (approved a call of, or marked seen): no longer fresh.
            `names` absent: every tool of it. The names that were fresh, now seen. */

@@ -74,12 +74,16 @@ export function catalogDiff(before = [], after = []) {
 /* A NEW LISTING, ITS FRESH TOOLS (07-11): a tool the server did not list before, or whose annotations
    changed, is marked fresh -- asked (rights.mjs, toolDecide) until a person has seen it once. A fresh
    tool unchanged stays fresh. The first listing of a server (the person adding it sees it whole) marks none. */
-export function freshened(before, after) {
+/* NEW TOOLS (18-11, #392, the owner's choice per server): 'ask' (each new or changed tool asked once, the default),
+   'read' (one that only reads goes by its class at once, the others asked once), 'all' (every one by its class at once). */
+export const NEW_TOOLS = Object.freeze(['ask', 'read', 'all']);
+export const takenAtOnce = (mode, tool) => mode === 'all' || (mode === 'read' && tool?.class === 'read');
+export function freshened(before, after, mode = 'ask') {
     if (!Array.isArray(before)) return after.map(({ fresh, ...t }) => t);
     const was = new Map(before.map((t) => [t.name, t]));
     return after.map(({ fresh, ...t }) => {
         const old = was.get(t.name);
-        const isFresh = !old || JSON.stringify(old.annotations ?? {}) !== JSON.stringify(t.annotations ?? {}) || old.fresh === true;
+        const isFresh = (!old || JSON.stringify(old.annotations ?? {}) !== JSON.stringify(t.annotations ?? {}) || old.fresh === true) && !takenAtOnce(mode, t);
         return isFresh ? { ...t, fresh: true } : t;
     });
 }

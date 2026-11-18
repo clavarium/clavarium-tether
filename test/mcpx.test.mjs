@@ -320,6 +320,22 @@ test('the server says its tools changed: listed again, the new tool asked until 
         assert.equal(seen.ok, true, seen.text);
         assert.deepEqual(seen.data.seen, [search.name]);
         assert.equal(k.store.target('crm').catalog.tools.some((t) => t.fresh), false);
+
+        /* #392, the owner's choice per server: new tools that only read taken at once; then all at once. */
+        assert.equal((await k.act('mcp-new-tools', { target: 'crm', mode: 'often' }, ME)).ok, false, 'ask, read or all');
+        assert.equal((await k.act('mcp-new-tools', { target: 'crm', mode: 'read' }, ME)).ok, true);
+        assert.equal(k.store.target('crm').newTools, 'read');
+        s.tools.push({ name: 'peek', description: 'Look', inputSchema: { type: 'object' }, annotations: { readOnlyHint: true } });
+        s.tools.push({ name: 'purge', description: 'Purge', inputSchema: { type: 'object' }, annotations: { destructiveHint: true } });
+        s.push({ jsonrpc: '2.0', method: 'notifications/tools/list_changed' });
+        await until(() => k.store.target('crm').catalog.tools.some((t) => t.name === 'purge'));
+        const tool = (n) => k.store.target('crm').catalog.tools.find((t) => t.name === n);
+        assert.equal(tool('peek').fresh, undefined, 'reads only: by its class at once');
+        assert.equal(tool('purge').fresh, true, 'deletes: asked once');
+        const all = await k.act('mcp-new-tools', { target: 'crm', mode: 'all' }, ME);
+        assert.deepEqual(all.data.seen, ['purge'], 'all: the fresh ones taken now');
+        assert.equal(tool('purge').fresh, undefined);
+        assert.equal(k.store.target('crm').newTools, 'all');
         rl.close();
     } finally { await done(); }
 });
@@ -469,6 +485,9 @@ test('fresh tools: none on a first listing; new or relabelled ones asked, even s
     assert.deepEqual(freshened(next, next).map((t) => t.fresh), [undefined, true], 'fresh until seen');
     assert.deepEqual(freshened([a, b], [{ ...a, annotations: { readOnlyHint: false } }, b]).map((t) => t.fresh), [true, undefined], 'a label changed');
     assert.deepEqual(freshened([a, b], [{ ...a, description: 'other words' }, b]).map((t) => t.fresh), [undefined, undefined], 'only the labels count');
+    const ra = { ...a, ...classOf(a.annotations) }; const wb = { ...b, ...classOf(b.annotations) };
+    assert.deepEqual(freshened([], [ra, wb], 'read').map((t) => t.fresh), [undefined, true], '#392 read: what only reads is not asked');
+    assert.deepEqual(freshened([], [ra, wb], 'all').map((t) => t.fresh), [undefined, undefined], '#392 all: none asked');
     const tool = { name: 'b', ...classOf(b.annotations), fresh: true };
     assert.deepEqual(toolDecide({ level: 'free' }, tool), { go: 'ask', because: 'fresh' });
     assert.deepEqual(toolDecide({ level: 'free', tools: { b: 'yes' } }, tool), { go: 'ask', because: 'fresh' });
