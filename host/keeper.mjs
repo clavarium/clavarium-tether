@@ -58,6 +58,14 @@ import { device as deviceConnector } from './connectors/device.mjs';
 export { openStore, Refused, LEVELS };
 /* Older than this when first seen, an ask is not done: its command stopped waiting a while ago. */
 export const TOO_LATE_MS = 60_000;
+/* SMALL FILES (18-11, the owner: only what is active, a little past): asks.jsonl and answers.jsonl are a mailbox
+   between an agent and its keeper, not a history (the journal is). Past ROTATE_BYTES, the answers keep only the last
+   KEEP_MS (and those of asks still under way), written whole by the keeper, their only writer; the asks are put aside
+   (asks.jsonl.old, still read) and the agents start a new file; put aside, it goes after OLD_MS. An ask older than
+   KEEP_MS is history: never answered again. */
+export const ROTATE_BYTES = 256 * 1024;
+export const KEEP_MS = 60 * 60_000;
+export const OLD_MS = 10 * 60_000;
 const PERSON = { id: 'person', kind: 'person', name: 'A person' };
 
 const MEANS = {
@@ -448,17 +456,55 @@ export function keeper(dir, { sides = () => [], ask, notify, secrets = async () 
 
     /* What each folder asked and was not answered yet: started, answered when done. */
     const busy = new Set();
+    const pumped = new Map();
     const write = (side, line) => { mkdirSync(side.dir, { recursive: true }); appendFileSync(join(side.dir, 'answers.jsonl'), `${JSON.stringify({ at: new Date(now()).toISOString(), ...line })}\n`); };
+    function rotate(side) {
+        const answersFile = join(side.dir, 'answers.jsonl');
+        try {
+            const a = lstatSync(answersFile, { throwIfNoEntry: false });
+            if (a?.isFile() && a.size > ROTATE_BYTES) {
+                const kept = lines(answersFile).filter((x) => now() - Date.parse(x.at) < KEEP_MS || busy.has(`${side.dir}\n${x.ask}`));
+                const tmp = `${answersFile}.new`;
+                rmSync(tmp, { force: true });
+                writeFileSync(tmp, kept.map((x) => `${JSON.stringify(x)}\n`).join(''), { flag: 'wx' });
+                renameSync(tmp, answersFile);
+                pumped.delete(side.dir);
+            }
+        } catch { /* tried again next turn */ }
+        const asksFile = join(side.dir, 'asks.jsonl'); const aside = `${asksFile}.old`;
+        try {
+            const o = lstatSync(aside, { throwIfNoEntry: false });
+            if (o && now() - o.mtimeMs > OLD_MS) { rmSync(aside, { force: true }); pumped.delete(side.dir); }
+            else if (!o) {
+                const q = lstatSync(asksFile, { throwIfNoEntry: false });
+                if (q?.isFile() && q.size > ROTATE_BYTES) { renameSync(asksFile, aside); pumped.delete(side.dir); }
+            }
+        } catch { /* tried again next turn */ }
+    }
     function pump() {
         let n = 0;
         try { offerTools(); } catch { /* written again next time */ }
         for (const side of sides()) {
+            /* Only what was added since the last turn (18-11: every ask ever made, walked each second, held the owner's
+               server): per folder, the answers' marks and the asks still open, kept up to date. */
+            rotate(side);
             const answers = lines(join(side.dir, 'answers.jsonl'));
-            const done = new Set(answers.filter((x) => x.held !== true).map((x) => x.ask));
-            const holding = new Set(answers.filter((x) => x.held === true).map((x) => x.ask));
-            const running = new Set(answers.filter((x) => x.held === true && x.running === true).map((x) => x.ask));
-            for (const q of lines(join(side.dir, 'asks.jsonl'))) {
-                if (typeof q.id !== 'string' || done.has(q.id)) continue;
+            const asks = lines(join(side.dir, 'asks.jsonl'));
+            const aside = lines(join(side.dir, 'asks.jsonl.old'));
+            let st = pumped.get(side.dir);
+            if (!st || answers.length < st.answers || asks.length < st.asks || aside.length < st.aside) { st = { answers: 0, asks: 0, aside: 0, done: new Set(), holding: new Set(), running: new Set(), open: new Map() }; pumped.set(side.dir, st); }
+            for (let i = st.answers; i < answers.length; i++) {
+                const x = answers[i];
+                if (x.held !== true) { st.done.add(x.ask); st.open.delete(x.ask); } else { st.holding.add(x.ask); if (x.running === true) st.running.add(x.ask); }
+            }
+            st.answers = answers.length;
+            const take = (q) => { if (typeof q.id === 'string' && !st.done.has(q.id) && now() - Date.parse(q.at) < KEEP_MS) st.open.set(q.id, q); };
+            for (let i = st.aside; i < aside.length; i++) take(aside[i]);
+            for (let i = st.asks; i < asks.length; i++) take(asks[i]);
+            st.aside = aside.length; st.asks = asks.length;
+            const { done, holding, running } = st;
+            for (const q of [...st.open.values()]) {
+                if (typeof q.id !== 'string' || done.has(q.id)) { st.open.delete(q.id); continue; }
                 const key = `${side.dir}\n${q.id}`;
                 if (busy.has(key)) continue;
                 n++;
